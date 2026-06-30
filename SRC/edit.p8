@@ -68,6 +68,7 @@ main {
     ubyte cur_col, left_col             ; cursor column / first visible column
     bool cur_dirty                      ; editbuf differs from its stored record
     bool modified                       ; document changed since last save
+    bool ovr_mode                       ; false = insert (default), true = overwrite (Insert key)
     bool g_running
     bool alt_was                        ; ALT held on the previous poll (edge detect)
     ubyte g_mod                         ; modifier byte captured when the last key was read
@@ -145,7 +146,7 @@ main {
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
             1 -> when key { 't' -> return 0   'c' -> return 1   'p' -> return 2   'd' -> return 3 }
-            2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2 }
+            2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
         return 255
@@ -528,6 +529,11 @@ main {
             put_str_at(col, STATUS_ROW, " *")
             col += 2
         }
+        if ovr_mode
+            put_str_at(col, STATUS_ROW, "  OVR")
+        else
+            put_str_at(col, STATUS_ROW, "  INS")
+        col += 5
         ; right-side menu hint (short form when narrow)
         ubyte hint_col
         if SCR_W >= 80 {
@@ -537,15 +543,20 @@ main {
             hint_col = SCR_W - 9
             put_str_at(hint_col, STATUS_ROW, "Alt=Menu")
         }
-        ; document / banked-RAM usage - only if it fits between cursor info and the hint
-        ubyte stats = col + 2
-        if stats + 24 < hint_col {
-            put_str_at(stats, STATUS_ROW, "Lines ")
-            col = put_uw_at(stats + 6, STATUS_ROW, edoc.line_count)
-            put_str_at(col, STATUS_ROW, "  Banks ")
-            col = put_uw_at(col + 8, STATUS_ROW, xarena.high_bank)
-            put_str_at(col, STATUS_ROW, "/")
-            void put_uw_at(col + 1, STATUS_ROW, xarena.max_bank)
+        ; document line count, centered on the bar (drawn only if it clears the cursor
+        ; info on the left and the menu hint on the right)
+        uword lc = edoc.line_count
+        ubyte digits = 1
+        uword t = lc
+        while t >= 10 {
+            digits++
+            t /= 10
+        }
+        ubyte lwidth = 12 + digits          ; "Total Lines " + the number
+        ubyte lstart = (SCR_W - lwidth) / 2
+        if lstart > col + 1 and lstart + lwidth < hint_col {
+            put_str_at(lstart, STATUS_ROW, "Total Lines ")
+            void put_uw_at(lstart + 12, STATUS_ROW, lc)
         }
     }
 
@@ -718,7 +729,8 @@ main {
                 when i {
                     0 -> put_str_at(col, row, "Find...     Ctrl+F/F6")
                     1 -> put_str_at(col, row, "Find Next   Ctrl+G")
-                    else -> put_str_at(col, row, "Replace...  Ctrl+R/F8")
+                    2 -> put_str_at(col, row, "Replace...  Ctrl+R/F8")
+                    else -> put_str_at(col, row, "Go to Line  Ctrl+J")
                 }
             }
             else -> {                       ; Help
@@ -755,7 +767,7 @@ main {
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 4  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
-            2 -> { n = 3  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
+            2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
         }
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
@@ -818,7 +830,8 @@ main {
                 when choice {
                     0 -> act_find()
                     1 -> act_find_next()
-                    else -> act_replace()
+                    2 -> act_replace()
+                    else -> act_goto()
                 }
             }
             else -> {                       ; Help
@@ -995,6 +1008,10 @@ main {
         ubyte x1 = x0 + w - 1
         ubyte y0 = 2
         ubyte y1 = SCR_H - 3
+        if SCR_W >= 80 {            ; 80-col: make the popup 2 rows shorter (1 trimmed each end)
+            y0++
+            y1--
+        }
         ubyte rows = y1 - y0 - 1             ; visible file rows
         ubyte namew = w - 5                  ; name field (marker col + 1 right margin)
         ubyte cursor = 0
@@ -1007,8 +1024,8 @@ main {
         draw_box_frame(x0, y0, x1, y1)
         if x1 + 1 < SCR_W and y1 + 1 < SCR_H
             draw_box_shadow(x0, y0, x1, y1)
-        put_str_at(x0 + (w - 9) / 2, y0, "Open File")
-        put_str_at(x0 + (w - 11) / 2, y1, "Esc to exit")
+        put_str_at(x0 + (w - 10) / 2, y0, " Open File ")
+        put_str_at(x0 + (w - 11) / 2, y1, " Esc to exit ")
         repeat {
             if cursor < top
                 top = cursor
@@ -1200,15 +1217,15 @@ main {
         ubyte tx = x0 + 3
         draw_box_frame(x0, 9, x1, 18)
         draw_box_shadow(x0, 9, x1, 18)
-        put_str_at(x0 + (w - 5) / 2, 9, "About")            ; title on the top frame
+        put_str_at(x0 + (w - 7) / 2, 9, " About ")            ; title on the top frame
         put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
         put_str_at(tx, 12, "Text stored in banked RAM")
         if g_emu
             put_str_at(tx, 13, "Running on:  Emulator")
         else
             put_str_at(tx, 13, "Running on:  Hardware")
-        put_str_at(tx, 14,     "(c)sadLogic 2026 V0.9.0")
-        put_str_at(x0 + (w - 13) / 2, 18, "Press any key")  ; hint on the bottom frame
+        put_str_at(tx, 15,     "(c)sadLogic 2026 V0.9.0")
+        put_str_at(x0 + (w - 13) / 2, 18, " Press any key ")  ; hint on the bottom frame
         void wait_key()
         full_redraw()
     }
@@ -1463,6 +1480,34 @@ main {
         put_str_at(1, STATUS_ROW, "Replaced ")
         void put_uw_at(10, STATUS_ROW, g_repl_count)
         sys.wait(80)
+    }
+
+    sub act_goto() {
+        ; prompt for a line number and jump there
+        fnbuf[0] = 0
+        if not prompt_str("Go to line:", &fnbuf, 5, false)
+            return
+        uword n = 0
+        ubyte i = 0
+        while fnbuf[i] >= '0' and fnbuf[i] <= '9' {
+            if n >= 6553                    ; guard: a further digit would overflow a uword
+                break
+            n = n * 10 + (fnbuf[i] - '0')
+            i++
+        }
+        if n == 0
+            n = 1
+        if n > edoc.line_count
+            n = edoc.line_count
+        sel_active = false
+        goto_row(n - 1)                     ; commits the current line, loads the target
+        cur_col = 0
+        redraw_after_move()
+    }
+
+    sub toggle_overwrite() {
+        ovr_mode = not ovr_mode
+        draw_status()
     }
 
     ; ---------- selection delete / clipboard (Edit menu + Ctrl shortcuts) ----------
@@ -1847,6 +1892,19 @@ main {
     ; ---------- editing ----------
 
     sub ed_insert(ubyte k) {
+        if ovr_mode and cur_col < cur_len {
+            editbuf[cur_col] = k                ; overwrite the char under the cursor
+            cur_col++
+            cur_dirty = true
+            modified = true
+            if ensure_visible()
+                draw_all_text()
+            else
+                draw_doc_line()
+            place_cursor()
+            draw_status()
+            return
+        }
         if cur_len >= edoc.MAX_LEN
             return
         ubyte i = cur_len
@@ -1913,8 +1971,11 @@ main {
     }
 
     sub ed_enter() {
-        ; split the current line at the cursor into two lines
-        ubyte rlen = cur_len - cur_col
+        ; split the current line at the cursor into two lines; auto-indent the new line to
+        ; match the current line's leading whitespace
+        ubyte indent = 0
+        while indent < cur_col and editbuf[indent] == ' '
+            indent++
         if not edoc.commit(cur_row, &editbuf, cur_col) {
             notify("Document full - save now")
             return
@@ -1923,9 +1984,21 @@ main {
             notify("Document full - save now")
             return
         }
-        void edoc.commit(cur_row + 1, &editbuf + cur_col, rlen)
+        ; build the new line: `indent` spaces, then the text right of the cursor
+        ubyte nl = 0
+        while nl < indent and nl < edoc.MAX_LEN {
+            tmpbuf[nl] = ' '
+            nl++
+        }
+        ubyte rp = cur_col
+        while rp < cur_len and nl < edoc.MAX_LEN {
+            tmpbuf[nl] = editbuf[rp]
+            nl++
+            rp++
+        }
+        void edoc.commit(cur_row + 1, &tmpbuf, nl)
         cur_row++
-        cur_col = 0
+        cur_col = indent
         cur_len = edoc.load(cur_row, &editbuf)
         cur_dirty = false
         modified = true
@@ -2000,6 +2073,8 @@ main {
             2 -> ed_pgdn()
             130 -> ed_pgup()
             9 -> ed_tab()
+            148 -> toggle_overwrite()       ; Insert key: toggle insert/overwrite
+            10 -> act_goto()                ; Ctrl+J  go to line
             ; ---- shortcut hotkeys (Ctrl+letter arrive as control codes 1..26) ----
             ; x16emu STEALS Ctrl+V (paste), Ctrl+F (fullscreen) and Ctrl+R (reset!)
             ; before they reach us (verified via Help>Key Probe). So those three
