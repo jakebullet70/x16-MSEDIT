@@ -1,0 +1,266 @@
+; edoc - document / storage layer for the EDIT text editor.
+;
+; The document is a list of text lines. Each line is stored in BANKED RAM
+; (the X16 8KB window at $A000, banks 1..255) via the xarena bump allocator,
+; length-prefixed:  [len:ubyte][chars...].  Main RAM holds a far-pointer table
+; - 3 bytes per line: [bank][off_lo][off_hi] - in a memory() slab (prog8 arrays
+; are capped at 256 entries, so a slab indexed by pointer arithmetic is used to
+; allow far more lines) plus the line count.
+;
+; The UI keeps the line under the cursor in its own RAM buffer (editbuf) and
+; calls commit() to (re)store it only when the cursor leaves the line or on
+; save, so we don't re-allocate on every keystroke. xarena never frees a single
+; record, so an edited-and-left line leaks its old slot; the editor reclaims it
+; with free compaction on save (write to disk, reset(), reload).
+
+%import xarena
+%import diskio
+
+edoc {
+    %option ignore_unused
+
+    const uword MAX_LINES = 1000
+    const ubyte MAX_LEN   = 250         ; max chars per line (1-byte length prefix)
+
+    uword linetab = memory("linetab", MAX_LINES * 3, 0)  ; 3 bytes/line far pointer
+    uword line_count
+    bool  oom                           ; set if an allocation failed (document full)
+
+    uword iobuf = memory("iobuf", 512, 0)   ; disk read chunk buffer (main RAM)
+    ubyte[256] linebuf                       ; scratch: assembling / reading one line
+
+    ; result of the last store(): far pointer to the new record
+    ubyte r_bank
+    uword r_off
+
+    ubyte[2] crlf                       ; line terminator written on save
+
+    ; ASCII <-> PETSCII: keyboard and screen are PETSCII, but text files on disk
+    ; are plain ASCII (so they round-trip with the host and other tools). The only
+    ; real difference for printable text is the letter case ranges.
+    sub a2p(ubyte b) -> ubyte {
+        if b >= $41 and b <= $5a
+            return b + $80              ; ASCII A-Z -> PETSCII upper ($C1-$DA)
+        if b >= $61 and b <= $7a
+            return b - $20              ; ASCII a-z -> PETSCII lower ($41-$5A)
+        return b
+    }
+    sub p2a(ubyte b) -> ubyte {
+        if b >= $41 and b <= $5a
+            return b + $20              ; PETSCII lower -> ASCII a-z
+        if b >= $c1 and b <= $da
+            return b - $80              ; PETSCII upper -> ASCII A-Z
+        return b
+    }
+
+    sub init() {
+        xarena.reset()
+        line_count = 0
+        oom = false
+    }
+
+    ; ---- far-pointer table accessors (3 bytes per line in the slab) ----
+
+    sub set_entry(uword idx, ubyte bank, uword off) {
+        uword p = linetab + idx * 3
+        @(p) = bank
+        pokew(p + 1, off)
+    }
+    sub ent_bank(uword idx) -> ubyte {
+        return @(linetab + idx * 3)
+    }
+    sub ent_off(uword idx) -> uword {
+        return peekw(linetab + idx * 3 + 1)
+    }
+
+    ; ---- low-level banked record I/O (one bank switch per record; a record
+    ;      never straddles a bank boundary, guaranteed by xarena.alloc) ----
+
+    sub store(uword src, ubyte slen) -> bool {
+        ; allocate slen+1 bytes and write [slen][chars] into the arena
+        if not xarena.alloc(slen + 1) {
+            oom = true
+            return false
+        }
+        r_bank = xarena.result_bank
+        r_off  = xarena.result_off
+        cx16.push_rambank(r_bank)
+        uword dst = r_off
+        @(dst) = slen
+        dst++
+        ubyte i = 0
+        while i < slen {
+            @(dst) = @(src)
+            dst++
+            src++
+            i++
+        }
+        cx16.pop_rambank()
+        return true
+    }
+
+    sub get_len(uword idx) -> ubyte {
+        return xarena.far_peek(ent_bank(idx), ent_off(idx))
+    }
+
+    sub load(uword idx, uword dest) -> ubyte {
+        ; copy line idx's chars into dest (main RAM); returns the length
+        ubyte bank = ent_bank(idx)
+        uword src = ent_off(idx)
+        cx16.push_rambank(bank)
+        ubyte slen = @(src)
+        src++
+        ubyte i = 0
+        while i < slen {
+            @(dest) = @(src)
+            dest++
+            src++
+            i++
+        }
+        cx16.pop_rambank()
+        return slen
+    }
+
+    ; ---- line-table operations ----
+
+    sub commit(uword idx, uword src, ubyte slen) -> bool {
+        ; (re)store line idx's content from src/slen
+        if not store(src, slen)
+            return false
+        set_entry(idx, r_bank, r_off)
+        return true
+    }
+
+    sub append(uword src, ubyte slen) -> bool {
+        ; add a new line at the end
+        if line_count >= MAX_LINES {
+            oom = true
+            return false
+        }
+        if not commit(line_count, src, slen)
+            return false
+        line_count++
+        return true
+    }
+
+    sub insert_line(uword idx) -> bool {
+        ; open a gap at idx (shift idx..count-1 up by one entry); slot idx left unset
+        if line_count >= MAX_LINES {
+            oom = true
+            return false
+        }
+        uword n = (line_count - idx) * 3
+        if n > 0 {                          ; backward byte copy (dst > src, overlap)
+            uword s = linetab + idx * 3 + n - 1
+            uword d = s + 3
+            while n > 0 {
+                @(d) = @(s)
+                d--
+                s--
+                n--
+            }
+        }
+        line_count++
+        return true
+    }
+
+    sub delete_line(uword idx) {
+        ; remove line idx (shift idx+1..count-1 down by one entry).
+        ; ascending byte copy (dst < src), so overlap is always safe - do NOT use
+        ; sys.memcopy here, its copy direction isn't guaranteed for this overlap.
+        if line_count == 0
+            return
+        uword d = linetab + idx * 3
+        uword s = d + 3
+        uword n = (line_count - 1 - idx) * 3
+        while n > 0 {
+            @(d) = @(s)
+            d++
+            s++
+            n--
+        }
+        line_count--
+    }
+
+    ; ---- file load / save ----
+
+    sub flush_line(ubyte slen) {
+        ; helper for load_file: append linebuf[0..slen-1] as a new line
+        void append(&linebuf, slen)
+    }
+
+    sub load_file(str name) -> bool {
+        ; replace the document with the contents of `name` (split on CR/LF/CRLF)
+        init()
+        if not diskio.f_open(name)
+            return false
+        ubyte ll = 0
+        bool prev_cr = false
+        repeat {
+            uword n = diskio.f_read(iobuf, 256)
+            if n == 0
+                break
+            uword j = 0
+            while j < n {
+                ubyte ch = @(iobuf + j)
+                j++
+                if prev_cr and ch == 10 {
+                    prev_cr = false             ; swallow LF of a CR/LF pair
+                    continue
+                }
+                prev_cr = false
+                if ch == 13 or ch == 10 {
+                    if ch == 13
+                        prev_cr = true
+                    flush_line(ll)              ; terminate the current line
+                    ll = 0
+                } else {
+                    if ch < 32                  ; sanitize stray control bytes (incl tab)
+                        ch = 32
+                    if ll >= MAX_LEN {          ; force-break over-long lines
+                        flush_line(ll)
+                        ll = 0
+                    }
+                    linebuf[ll] = a2p(ch)       ; store as PETSCII
+                    ll++
+                }
+            }
+        }
+        diskio.f_close()
+        if ll > 0                               ; trailing line without a newline
+            flush_line(ll)
+        if line_count == 0
+            void append(&linebuf, 0)            ; never leave an empty document
+        return not oom
+    }
+
+    sub save_file(str name) -> bool {
+        ; write every line as ASCII + a CR/LF terminator
+        if not diskio.f_open_w(name)
+            return false
+        crlf[0] = 13
+        crlf[1] = 10
+        uword i = 0
+        while i < line_count {
+            ubyte slen = load(i, &linebuf)      ; PETSCII content
+            ubyte j = 0
+            while j < slen {                    ; convert to ASCII in place
+                linebuf[j] = p2a(linebuf[j])
+                j++
+            }
+            if slen > 0 {
+                if not diskio.f_write(&linebuf, slen) {
+                    diskio.f_close_w()
+                    return false
+                }
+            }
+            if not diskio.f_write(&crlf, 2) {
+                diskio.f_close_w()
+                return false
+            }
+            i++
+        }
+        diskio.f_close_w()
+        return true
+    }
+}

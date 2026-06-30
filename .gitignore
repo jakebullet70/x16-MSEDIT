@@ -1,0 +1,8 @@
+*.SYM
+*.BAK
+*.TMP
+*.OLD
+*.vice-mon-list
+*.asm
+.vscode/settings.json
+run/*
