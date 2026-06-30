@@ -64,6 +64,7 @@ main {
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
+    uword prev_cur_row                  ; doc row that currently shows the cursor highlight
     ubyte cur_col, left_col             ; cursor column / first visible column
     bool cur_dirty                      ; editbuf differs from its stored record
     bool modified                       ; document changed since last save
@@ -114,6 +115,7 @@ main {
     const ubyte FNREC    = 32           ; bytes per record (name up to 31 + NUL)
     uword filelist = memory("flist", 4096, 0)   ; FILE_CAP * FNREC
     ubyte file_count
+    ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
 
     ubyte[NMENU] menu_col = [2, 9, 16, 25]   ; start column of each top-menu title
@@ -178,6 +180,7 @@ main {
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
+        xarena.first_bank = edoc.ARENA_FIRST_BANK   ; reserve the low banks for edoc's line table
         find_term[0] = 0                ; the "?"*N buffers start non-empty; clear them
         repl_term[0] = 0
         clip_has = false
@@ -200,7 +203,7 @@ main {
         txt.color2(COL_FG, COL_BG)
         txt.clear_screen()
         cx16.set_screen_mode(saved_mode)
-        txt.print("edit done.\n")
+        txt.print("bye!\n")
     }
 
     ; ---------- low-level drawing helpers ----------
@@ -292,14 +295,10 @@ main {
         ; paint one screen row: characters, body colour, selection highlight, cursor cell
         ubyte sy = TEXT_TOP + r
         uword idx = top_line + r
-        ubyte c
-        for c in 0 to SCR_W - 1 {
-            txt.setchr(c, sy, SPACE_SC)
-            txt.setclr(c, sy, CB_BODY)
-        }
+        ; resolve this row's source line once (the cursor row uses the live editbuf)
         ubyte blen = 0
+        uword bufptr = 0
         if idx < edoc.line_count {
-            uword bufptr
             if idx == cur_row {
                 bufptr = &editbuf
                 blen = cur_len
@@ -307,15 +306,16 @@ main {
                 blen = edoc.load(idx, &tmpbuf)
                 bufptr = &tmpbuf
             }
-            ubyte sc_i = 0
-            while sc_i < SCR_W {
-                uword srcidx = left_col
-                srcidx += sc_i
-                if srcidx >= blen
-                    break
-                txt.setchr(sc_i, sy, txt.petscii2scr(@(bufptr + srcidx)))
-                sc_i++
-            }
+        }
+        ; single pass: each cell gets its char (or a blank past end-of-line) + body colour
+        ubyte c
+        for c in 0 to SCR_W - 1 {
+            uword srcidx = (left_col as uword) + c
+            ubyte ch = SPACE_SC
+            if srcidx < blen
+                ch = txt.petscii2scr(@(bufptr + srcidx))
+            txt.setchr(c, sy, ch)
+            txt.setclr(c, sy, CB_BODY)
         }
         ; selection highlight: cells whose doc column is in [c0, c1) on this row
         if sel_active {
@@ -351,6 +351,33 @@ main {
         ubyte r
         for r in 0 to TEXT_ROWS - 1
             draw_text_row(r)
+        prev_cur_row = cur_row          ; a full repaint freshly draws the cursor at cur_row
+    }
+
+    sub vram_copy_row(ubyte src_sy, ubyte dst_sy) {
+        ; copy one whole screen row (SCR_W cells x 2 bytes) within VRAM using VERA's two
+        ; data ports: port0 reads the source, port1 writes the destination, both auto-
+        ; incrementing. Far cheaper than re-emitting the row through conio. The text map is
+        ; 256 bytes per row; its base is decoded from VERA_L1_MAPBASE (bit7 -> VRAM bank).
+        ubyte bnk = cx16.VERA_L1_MAPBASE >> 7
+        uword mb = (cx16.VERA_L1_MAPBASE & $7f) as uword
+        mb <<= 9                                    ; map base, bits 15:9
+        uword src = mb + (src_sy as uword) * 256
+        uword dst = mb + (dst_sy as uword) * 256
+        cx16.VERA_CTRL = 0                          ; ADDRSEL 0 -> set ADDR0 (source)
+        cx16.VERA_ADDR_L = lsb(src)
+        cx16.VERA_ADDR_M = msb(src)
+        cx16.VERA_ADDR_H = %00010000 | bnk          ; auto-increment by 1, bank bit
+        cx16.VERA_CTRL = 1                          ; ADDRSEL 1 -> set ADDR1 (destination)
+        cx16.VERA_ADDR_L = lsb(dst)
+        cx16.VERA_ADDR_M = msb(dst)
+        cx16.VERA_ADDR_H = %00010000 | bnk
+        ubyte c
+        for c in 0 to SCR_W - 1 {
+            cx16.VERA_DATA1 = cx16.VERA_DATA0       ; char  (DATA0 uses ADDR0, DATA1 ADDR1)
+            cx16.VERA_DATA1 = cx16.VERA_DATA0       ; colour
+        }
+        cx16.VERA_CTRL = 0                          ; leave ADDRSEL at conio's default
     }
 
     sub draw_doc_line() {
@@ -397,10 +424,50 @@ main {
     }
 
     sub redraw_after_move() {
-        ; a move can change the cursor row, the old cursor row, and the selection,
-        ; so repaint the whole text area (cheap enough at human key rates)
-        void ensure_visible()
-        draw_all_text()
+        ; Repaint after a cursor move as cheaply as the move allows:
+        ;   * selection active        -> full repaint (the highlight spans many rows)
+        ;   * no scroll                -> repaint only the old + new cursor rows
+        ;   * scrolled by exactly 1    -> shift the text window in VRAM, repaint 1-2 rows
+        ;   * scrolled further (PgUp/Dn)-> full repaint
+        uword old_top = top_line
+        ubyte old_left = left_col
+        bool scrolled = ensure_visible()
+        if sel_active or left_col != old_left {
+            ; selection spans rows, or a horizontal scroll changed every row -> full repaint
+            draw_all_text()
+            draw_status()
+            return
+        }
+        if not scrolled {
+            if prev_cur_row >= top_line and prev_cur_row < top_line + TEXT_ROWS
+                draw_text_row(lsb(prev_cur_row - top_line))
+            draw_text_row(lsb(cur_row - top_line))
+            prev_cur_row = cur_row
+            draw_status()
+            return
+        }
+        if top_line == old_top + 1 {
+            ; scrolled down one: text content moves up a row (copy rows 1..n-1 -> 0..n-2)
+            ubyte r
+            for r in 0 to TEXT_ROWS - 2
+                vram_copy_row(TEXT_TOP + r + 1, TEXT_TOP + r)
+            draw_text_row(TEXT_ROWS - 1)                ; new bottom row (holds the cursor)
+            if prev_cur_row >= top_line and prev_cur_row < top_line + TEXT_ROWS
+                draw_text_row(lsb(prev_cur_row - top_line))   ; clear the old cursor cell
+        } else if old_top == top_line + 1 {
+            ; scrolled up one: text content moves down a row (copy bottom-up to avoid clobber)
+            ubyte rd = TEXT_ROWS - 1
+            while rd != 0 {
+                vram_copy_row(TEXT_TOP + rd - 1, TEXT_TOP + rd)
+                rd--
+            }
+            draw_text_row(0)                            ; new top row (holds the cursor)
+            if prev_cur_row >= top_line and prev_cur_row < top_line + TEXT_ROWS
+                draw_text_row(lsb(prev_cur_row - top_line))
+        } else {
+            draw_all_text()
+        }
+        prev_cur_row = cur_row
         draw_status()
     }
 
@@ -588,10 +655,42 @@ main {
         }
     }
 
-    sub notify(str m) {
+    sub status_msg(str m) {
+        ; paint a transient message on the status bar with NO delay - used for progress
+        ; hints ("Saving..."/"Loading...") right before a slow operation that will repaint
         bar_fill(STATUS_ROW, CB_BAR)
         put_str_at(1, STATUS_ROW, m)
+    }
+
+    sub notify(str m) {
+        status_msg(m)
         sys.wait(60)
+    }
+
+    sub blink_phases(uword sz) -> ubyte {
+        ; map an approximate size (256-byte blocks) to a blink length:
+        ; small -> ~0.5s (2 phases), medium -> ~1.1s (4), large -> ~1.6s (6)
+        if sz < 16
+            return 1
+        if sz < 64
+            return 4
+        return 6
+    }
+
+    sub notify_blink(str m, ubyte phases) {
+        ; bold, impossible-to-miss status-bar flash: invert the WHOLE line between bright
+        ; red and white `phases` times (16 jiffies each). Announces a save/load; the phase
+        ; count scales with file size so tiny files don't blink for long.
+        ubyte i
+        for i in 0 to phases - 1 {
+            ubyte col = $21                 ; red bg, white fg
+            if (i & 1) != 0
+                col = $12                   ; white bg, red fg  (hard invert each phase)
+            bar_fill(STATUS_ROW, col)
+            put_str_at(1, STATUS_ROW, m)
+            sys.wait(16)
+        }
+        status_msg(m)                       ; end static and readable on the normal bar
     }
 
     ; ---------- dropdown menus ----------
@@ -793,19 +892,25 @@ main {
 
     ; ---------- file-picker popup (Open) ----------
 
-    sub add_entry(ubyte etype, uword nameptr) {
-        ; append one slab record: [type byte][name + NUL]. type 0 = file, 1 = dir.
-        ; name copied verbatim (truncated) so the bytes round-trip back to diskio.
+    sub add_entry(ubyte etype, uword nameptr, uword blocks) {
+        ; append one slab record: [type][name + NUL ...][blocks @ FNREC-1]. type 0=file,
+        ; 1=dir. blocks = diskio file size (256-byte units) clamped to a byte and kept in
+        ; the record's last byte, so it rides through sort_dirs_first and lets the caller
+        ; size the "Loading..." blink to the file.
         if file_count >= FILE_CAP
             return
         uword rec = filelist + (file_count as uword) * FNREC
         @(rec) = etype
         ubyte i = 0
-        while i < FNREC - 2 and @(nameptr + i) != 0 {
+        while i < FNREC - 3 and @(nameptr + i) != 0 {   ; reserve the last byte for blocks
             @(rec + 1 + i) = @(nameptr + i)
             i++
         }
         @(rec + 1 + i) = 0
+        ubyte bb = 255                          ; 255 blocks (~64KB+) saturates to "large"
+        if blocks < 256
+            bb = lsb(blocks)
+        @(rec + FNREC - 1) = bb
         file_count++
     }
 
@@ -849,7 +954,7 @@ main {
         ; entry first, then sub-directories and files. '.'-prefixed entries from the
         ; listing (incl. its own . / ..) are skipped; we synthesize our own "..".
         file_count = 0
-        add_entry(1, "..")
+        add_entry(1, "..", 0)
         if not diskio.lf_start_list("*")
             return
         while diskio.lf_next_entry() {
@@ -858,7 +963,7 @@ main {
             ubyte etype = 0
             if diskio.list_filetype == "dir"
                 etype = 1
-            add_entry(etype, &diskio.list_filename)
+            add_entry(etype, &diskio.list_filename, diskio.list_blocks)
             if file_count >= FILE_CAP
                 break
         }
@@ -897,26 +1002,33 @@ main {
         ubyte nav_depth = 0                  ; sub-dirs descended below the start dir
         uword rec
         ubyte i
+        ; draw the static frame, title and footer ONCE - only the file list below is
+        ; repainted as the cursor moves (redrawing the title each key caused header flicker)
+        draw_box_frame(x0, y0, x1, y1)
+        if x1 + 1 < SCR_W and y1 + 1 < SCR_H
+            draw_box_shadow(x0, y0, x1, y1)
+        put_str_at(x0 + (w - 9) / 2, y0, "Open File")
+        put_str_at(x0 + (w - 11) / 2, y1, "Esc to exit")
         repeat {
             if cursor < top
                 top = cursor
             if cursor >= top + rows
                 top = cursor - rows + 1
-            draw_box_frame(x0, y0, x1, y1)
-            if x1 + 1 < SCR_W and y1 + 1 < SCR_H
-                draw_box_shadow(x0, y0, x1, y1)
-            put_str_at(x0 + (w - 9) / 2, y0, "Open File")
-            put_str_at(x0 + (w - 11) / 2, y1, "Esc to exit")
             ubyte r
             for r in 0 to rows - 1 {
+                ubyte rr = y0 + 1 + r
+                set_color_run(x0 + 1, x1 - 1, rr, CB_BAR)   ; clear the row (colour + chars)
+                ubyte cc
+                for cc in x0 + 1 to x1 - 1
+                    txt.setchr(cc, rr, SPACE_SC)
                 ubyte idx = top + r
                 if idx < file_count {
                     rec = filelist + (idx as uword) * FNREC
                     if @(rec) != 0                          ; directory: "/" marker
-                        txt.setchr(x0 + 2, y0 + 1 + r, sc:'/')
-                    put_mem_trunc(x0 + 3, y0 + 1 + r, rec + 1, namew)
+                        txt.setchr(x0 + 2, rr, sc:'/')
+                    put_mem_trunc(x0 + 3, rr, rec + 1, namew)
                     if idx == cursor
-                        set_color_run(x0 + 1, x1 - 1, y0 + 1 + r, CB_SEL)
+                        set_color_run(x0 + 1, x1 - 1, rr, CB_SEL)
                 }
             }
             if top != 0
@@ -968,7 +1080,9 @@ main {
                         cursor = 0
                         top = 0
                     } else {
+                        pick_blocks = @(rec + FNREC - 1)   ; size hint for the load blink
                         return true             ; file -> dest holds the chosen name
+                                                ; (caller shows "Loading..." on the status bar)
                     }
                 }
                 27, 3 -> {                      ; cancel: climb back to the start dir
@@ -995,6 +1109,8 @@ main {
             full_redraw()
             return
         }
+        full_redraw()                   ; hide the Open popup before the load blink
+        notify_blink("Loading...", blink_phases(pick_blocks as uword))  ; flash scaled to file size
         if edoc.load_file(fnbuf) {
             void strings.copy(fnbuf, filename)
             cur_row = 0
@@ -1004,6 +1120,19 @@ main {
             cur_len = edoc.load(0, &editbuf)
             cur_dirty = false
             modified = false
+        } else if edoc.line_count > 0 {
+            ; the file opened but ran past the MAX_LINES limit (load_file truncates and
+            ; sets oom). Show the lines that fit, but DON'T adopt the filename - that way
+            ; a later Save prompts for a new name instead of overwriting the big original.
+            filename[0] = 0
+            cur_row = 0
+            cur_col = 0
+            top_line = 0
+            left_col = 0
+            cur_len = edoc.load(0, &editbuf)
+            cur_dirty = false
+            modified = false
+            notify("File too big: first 10000 lines shown")
         } else {
             notify("Cannot open file")
         }
@@ -1015,6 +1144,8 @@ main {
         savebuf[0] = '@'
         savebuf[1] = ':'
         void strings.copy(name, &savebuf + 2)
+        ; flash scaled to document size (~6 lines per 256-byte block) before the disk write
+        notify_blink("Saving...", blink_phases(edoc.line_count / 6))
         if not edoc.save_file(savebuf) {
             notify("Save error")
             return false
@@ -1027,7 +1158,7 @@ main {
             cur_len = edoc.load(cur_row, &editbuf)
             cur_dirty = false
         }
-        notify("Saved")
+        notify("Saved")                     ; static confirmation (the blink ran on "Saving...")
         return true
     }
 

@@ -16,7 +16,9 @@
 xarena {
     %option ignore_unused
 
-    const ubyte FIRST_BANK = 1          ; bank 0 is reserved by the Kernal
+    ; first bank used for CONTENT. Bank 0 is the Kernal's; edoc reserves a few low
+    ; banks for its line-pointer table and bumps this up so content starts above them.
+    ubyte first_bank = 1
     ; highest usable bank. Defaults to 255 (a full 2MB machine) but detect_banks()
     ; clamps it to the RAM actually installed: a 512KB machine has 64 banks (0..63),
     ; so the top usable bank is 63. Without this the arena would write to
@@ -43,9 +45,9 @@ xarena {
 
     sub reset() {
         ; Bulk-free everything. No traversal needed.
-        cur_bank  = FIRST_BANK
+        cur_bank  = first_bank
         cur_ptr   = WIN_START
-        high_bank = FIRST_BANK
+        high_bank = first_bank
     }
 
     sub alloc(uword nbytes) -> bool {

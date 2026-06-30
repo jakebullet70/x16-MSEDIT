@@ -19,10 +19,19 @@
 edoc {
     %option ignore_unused
 
-    const uword MAX_LINES = 1000
+    const uword MAX_LINES = 10000
     const ubyte MAX_LEN   = 250         ; max chars per line (1-byte length prefix)
 
-    uword linetab = memory("linetab", MAX_LINES * 3, 0)  ; 3 bytes/line far pointer
+    ; The line-pointer table lives in BANKED RAM (not scarce low RAM): 3 bytes per
+    ; line - [bank][off_lo][off_hi]. 2048 entries per 8KB bank (a power of 2, so
+    ; idx -> bank/offset is a cheap shift/mask and an entry never straddles a bank).
+    ; 10000 lines -> 5 table banks (1..5); xarena.first_bank is bumped to 6 so the
+    ; line CONTENT is stored in the banks above the table.
+    const uword TBL_PER_BANK     = 2048                        ; must stay a power of 2
+    const ubyte TBL_FIRST_BANK   = 1
+    const ubyte TBL_BANKS        = 5                           ; ceil(MAX_LINES / 2048)
+    const ubyte ARENA_FIRST_BANK = TBL_FIRST_BANK + TBL_BANKS  ; first content bank (6)
+    const uword TBL_WIN          = $a000
     uword line_count
     bool  oom                           ; set if an allocation failed (document full)
 
@@ -61,16 +70,27 @@ edoc {
 
     ; ---- far-pointer table accessors (3 bytes per line in the slab) ----
 
+    ; far-table addressing: idx>>11 = idx/2048 = which table bank; idx&$07ff = the
+    ; slot within it (both derived from TBL_PER_BANK=2048). Switch to that bank, then
+    ; the 3-byte record sits in the $A000 window.
     sub set_entry(uword idx, ubyte bank, uword off) {
-        uword p = linetab + idx * 3
+        cx16.push_rambank(TBL_FIRST_BANK + lsb(idx >> 11))
+        uword p = TBL_WIN + (idx & $07ff) * 3
         @(p) = bank
         pokew(p + 1, off)
+        cx16.pop_rambank()
     }
     sub ent_bank(uword idx) -> ubyte {
-        return @(linetab + idx * 3)
+        cx16.push_rambank(TBL_FIRST_BANK + lsb(idx >> 11))
+        ubyte b = @(TBL_WIN + (idx & $07ff) * 3)
+        cx16.pop_rambank()
+        return b
     }
     sub ent_off(uword idx) -> uword {
-        return peekw(linetab + idx * 3 + 1)
+        cx16.push_rambank(TBL_FIRST_BANK + lsb(idx >> 11))
+        uword o = peekw(TBL_WIN + (idx & $07ff) * 3 + 1)
+        cx16.pop_rambank()
+        return o
     }
 
     ; ---- low-level banked record I/O (one bank switch per record; a record
@@ -144,40 +164,29 @@ edoc {
     }
 
     sub insert_line(uword idx) -> bool {
-        ; open a gap at idx (shift idx..count-1 up by one entry); slot idx left unset
+        ; open a gap at idx by shifting entries idx..count-1 up one slot, high-to-low so
+        ; each source entry is read before it is overwritten. slot idx is left unset.
         if line_count >= MAX_LINES {
             oom = true
             return false
         }
-        uword n = (line_count - idx) * 3
-        if n > 0 {                          ; backward byte copy (dst > src, overlap)
-            uword s = linetab + idx * 3 + n - 1
-            uword d = s + 3
-            while n > 0 {
-                @(d) = @(s)
-                d--
-                s--
-                n--
-            }
+        uword i = line_count
+        while i > idx {
+            set_entry(i, ent_bank(i - 1), ent_off(i - 1))
+            i--
         }
         line_count++
         return true
     }
 
     sub delete_line(uword idx) {
-        ; remove line idx (shift idx+1..count-1 down by one entry).
-        ; ascending byte copy (dst < src), so overlap is always safe - do NOT use
-        ; sys.memcopy here, its copy direction isn't guaranteed for this overlap.
+        ; remove entry idx by shifting entries idx+1..count-1 down one slot, low-to-high.
         if line_count == 0
             return
-        uword d = linetab + idx * 3
-        uword s = d + 3
-        uword n = (line_count - 1 - idx) * 3
-        while n > 0 {
-            @(d) = @(s)
-            d++
-            s++
-            n--
+        uword i = idx
+        while i + 1 < line_count {
+            set_entry(i, ent_bank(i + 1), ent_off(i + 1))
+            i++
         }
         line_count--
     }
