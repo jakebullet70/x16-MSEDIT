@@ -144,7 +144,7 @@ main {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
             1 -> when key { 't' -> return 0   'c' -> return 1   'p' -> return 2   'd' -> return 3 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2 }
-            else -> when key { 'k' -> return 0   'p' -> return 1   'a' -> return 2 }
+            else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
         return 255
     }
@@ -155,7 +155,6 @@ main {
             0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1
             1 -> when i { 0 -> return 2 }                       ; Cut 'T'@2
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
-            else -> when i { 1 -> return 4 }                    ; Key Probe 'P'@4
         }
         return 0
     }
@@ -626,7 +625,6 @@ main {
             else -> {                       ; Help
                 when i {
                     0 -> put_str_at(col, row, "Keyboard...")
-                    1 -> put_str_at(col, row, "Key Probe...")
                     else -> put_str_at(col, row, "About      F1")
                 }
             }
@@ -653,8 +651,8 @@ main {
 
     sub run_dropdown(ubyte active) -> ubyte {
         ; returns the chosen item index, or 255=esc, 254=prev menu, 253=next menu
-        ubyte n = 3
-        ubyte boxw = 13                     ; Help ("Key Probe..." / "About  F1")
+        ubyte n = 2
+        ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 4  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
@@ -727,7 +725,6 @@ main {
             else -> {                       ; Help
                 when choice {
                     0 -> act_keymap()
-                    1 -> act_keyprobe()
                     else -> act_about()
                 }
             }
@@ -909,6 +906,7 @@ main {
             if x1 + 1 < SCR_W and y1 + 1 < SCR_H
                 draw_box_shadow(x0, y0, x1, y1)
             put_str_at(x0 + (w - 9) / 2, y0, "Open File")
+            put_str_at(x0 + (w - 11) / 2, y1, "Esc to exit")
             ubyte r
             for r in 0 to rows - 1 {
                 ubyte idx = top + r
@@ -1070,15 +1068,16 @@ main {
         ubyte x1 = x0 + w - 1
         ubyte tx = x0 + 3
         draw_box_frame(x0, 9, x1, 18)
-        draw_box_shadow(x0, 9, x1, 16)
+        draw_box_shadow(x0, 9, x1, 18)
+        put_str_at(x0 + (w - 5) / 2, 9, "About")            ; title on the top frame
         put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
         put_str_at(tx, 12, "Text stored in banked RAM")
         if g_emu
             put_str_at(tx, 13, "Running on:  Emulator")
         else
             put_str_at(tx, 13, "Running on:  Hardware")
-        put_str_at(tx, 14, "(c)sadLogic 2026")
-        put_str_at(tx, 15, "Press any key...")
+        put_str_at(tx, 14,     "(c)sadLogic 2026 V0.9.0")
+        put_str_at(x0 + (w - 13) / 2, 18, "Press any key")  ; hint on the bottom frame
         void wait_key()
         full_redraw()
     }
@@ -1130,57 +1129,61 @@ main {
         full_redraw()
     }
 
-    sub probe_byte(ubyte col, ubyte row, ubyte v) {
-        ; print a 0..255 value left-aligned in a 3-cell field (blank the field first)
-        put_str_at(col, row, "   ")
-        void put_uw_at(col, row, v)
-    }
-
-    sub act_keyprobe() {
-        ; live key diagnostic: shows the raw GETIN code of the last key plus the
-        ; current modifier byte. Because the modifier readout updates even when no
-        ; key arrives, combos the emulator swallows (e.g. Ctrl+Shift+arrow) show up
-        ; as "modifiers change but no new key code" - that is the override, exposed.
-        const ubyte w = 38
-        ubyte x0 = (SCR_W - w) / 2
-        ubyte x1 = x0 + w - 1
-        ubyte tx = x0 + 3
-        draw_box_frame(x0, 7, x1, 20)
-        draw_box_shadow(x0, 7, x1, 20)
-        put_str_at(x0 + (w - 9) / 2, 8, "Key Probe")
-        put_str_at(tx, 10, "Last key code:")
-        put_str_at(tx, 12, "Modifier byte:")
-        put_str_at(tx, 13, "Shift=   Ctrl=   Alt=")
-        put_str_at(tx, 17, "Press keys to test.")
-        put_str_at(tx, 18, "Press Esc twice to exit.")
-        ubyte prev = 0
-        ubyte last = 0
-        repeat {
-            ubyte m = cx16.kbdbuf_get_modifiers()
-            ubyte k = cbm.GETIN2()
-            if k != 0 {
-                if k == 27 and prev == 27
-                    break
-                prev = k
-                last = k
-            }
-            probe_byte(x0 + 18, 10, last)
-            probe_byte(x0 + 18, 12, m)
-            ubyte b = 0
-            if (m & MOD_SHIFT) != 0
-                b = 1
-            void put_uw_at(x0 + 9, 13, b)
-            b = 0
-            if (m & MOD_CTRL) != 0
-                b = 1
-            void put_uw_at(x0 + 17, 13, b)
-            b = 0
-            if (m & MOD_ALT) != 0
-                b = 1
-            void put_uw_at(x0 + 24, 13, b)
-        }
-        full_redraw()
-    }
+    ; ----- Key Probe diagnostic: disabled (removed from the Help menu). Kept here,
+    ; ----- commented out, in case the raw-keycode/modifier readout is needed again.
+    ; ----- To re-enable: uncomment both subs and restore the Help menu's 3rd item
+    ; -----   (item count, draw_item, item_accel, accel_off, menu_dispatch).
+    ; sub probe_byte(ubyte col, ubyte row, ubyte v) {
+    ;     ; print a 0..255 value left-aligned in a 3-cell field (blank the field first)
+    ;     put_str_at(col, row, "   ")
+    ;     void put_uw_at(col, row, v)
+    ; }
+    ;
+    ; sub act_keyprobe() {
+    ;     ; live key diagnostic: shows the raw GETIN code of the last key plus the
+    ;     ; current modifier byte. Because the modifier readout updates even when no
+    ;     ; key arrives, combos the emulator swallows (e.g. Ctrl+Shift+arrow) show up
+    ;     ; as "modifiers change but no new key code" - that is the override, exposed.
+    ;     const ubyte w = 38
+    ;     ubyte x0 = (SCR_W - w) / 2
+    ;     ubyte x1 = x0 + w - 1
+    ;     ubyte tx = x0 + 3
+    ;     draw_box_frame(x0, 7, x1, 20)
+    ;     draw_box_shadow(x0, 7, x1, 20)
+    ;     put_str_at(x0 + (w - 9) / 2, 8, "Key Probe")
+    ;     put_str_at(tx, 10, "Last key code:")
+    ;     put_str_at(tx, 12, "Modifier byte:")
+    ;     put_str_at(tx, 13, "Shift=   Ctrl=   Alt=")
+    ;     put_str_at(tx, 17, "Press keys to test.")
+    ;     put_str_at(tx, 18, "Press Esc twice to exit.")
+    ;     ubyte prev = 0
+    ;     ubyte last = 0
+    ;     repeat {
+    ;         ubyte m = cx16.kbdbuf_get_modifiers()
+    ;         ubyte k = cbm.GETIN2()
+    ;         if k != 0 {
+    ;             if k == 27 and prev == 27
+    ;                 break
+    ;             prev = k
+    ;             last = k
+    ;         }
+    ;         probe_byte(x0 + 18, 10, last)
+    ;         probe_byte(x0 + 18, 12, m)
+    ;         ubyte b = 0
+    ;         if (m & MOD_SHIFT) != 0
+    ;             b = 1
+    ;         void put_uw_at(x0 + 9, 13, b)
+    ;         b = 0
+    ;         if (m & MOD_CTRL) != 0
+    ;             b = 1
+    ;         void put_uw_at(x0 + 17, 13, b)
+    ;         b = 0
+    ;         if (m & MOD_ALT) != 0
+    ;             b = 1
+    ;         void put_uw_at(x0 + 24, 13, b)
+    ;     }
+    ;     full_redraw()
+    ; }
 
     ; ---------- search / replace ----------
 
