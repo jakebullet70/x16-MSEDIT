@@ -53,7 +53,9 @@ main {
 
     ; runtime screen geometry (queried after the mode switch)
     ubyte SCR_W, SCR_H, TEXT_ROWS, STATUS_ROW
-    ubyte saved_mode
+    ubyte saved_mode                    ; screen mode to restore on exit
+    ubyte saved_charset                 ; pre-launch charset (1=ISO 2=upper/gfx 3=lower); restored on exit
+    ubyte saved_color                   ; pre-launch text colour; restored on exit
 
     ; document/cursor/view state
     str filename = "?" * 40
@@ -164,6 +166,7 @@ main {
 
     sub start() {
         saved_mode, cx16.r0L, cx16.r0H = cx16.get_screen_mode()
+        snapshot_machine_state()                ; capture charset + text colour while still in the booted mode
         ; adopt the column width the machine booted in: 40-col -> 40x30, else 80x30.
         ; both normalize to a 30-row layout; the UI lays itself out from SCR_W/SCR_H below.
         ; NOTE: use the booted MODE byte, not txt.width() - at startup conio still reports
@@ -178,6 +181,8 @@ main {
         TEXT_ROWS  = SCR_H - 2
         STATUS_ROW = SCR_H - 1
         txt.lowercase()
+        sys.disable_caseswitch()        ; lock the charset in lowercase - Shift+Commodore can't
+                                        ; flip the whole display to uppercase mid-edit (as in XFMGR2)
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
@@ -201,10 +206,35 @@ main {
 
         if startdir[0] != 0             ; restore the working dir we started in
             diskio.chdir(startdir)
-        txt.color2(COL_FG, COL_BG)
         txt.clear_screen()
-        cx16.set_screen_mode(saved_mode)
+        cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
+        restore_machine_state()                 ; re-apply the user's charset + text colour (CINT reset them)
+        txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
         txt.print("bye!\n")
+    }
+
+    sub snapshot_machine_state() {
+        ; capture the user's charset + text colour BEFORE we switch screen mode, so exit can
+        ; put them back (set_screen_mode's CINT resets both to X16 defaults). Read while STILL
+        ; in the booted screen mode. (pattern from sibling XFMGR2's snapshot_machine_state)
+        saved_charset = cx16.get_charset()          ; 1=ISO 2=PETSCII upper/gfx 3=PETSCII lower (0=unknown)
+        ; text colour = the colour matrix at the cursor cell. MUST use txt.getclr, not a hand-
+        ; computed VERA address (the text matrix has a fixed 256-byte row stride, so row*width*2
+        ; is wrong for row>0). High nibble = bg, low nibble = fg.
+        ubyte cx_col
+        ubyte cx_row
+        cx_col, cx_row = txt.get_cursor()
+        saved_color = txt.getclr(cx_col, cx_row)
+    }
+
+    sub restore_machine_state() {
+        ; re-apply the charset + text colour captured at startup (the set_screen_mode call on
+        ; exit already reset them to X16 defaults via its CINT).
+        sys.enable_caseswitch()                             ; unlock the case switch we locked at startup
+        if saved_charset >= 1 and saved_charset <= 3
+            cx16.screen_set_charset(saved_charset, 0)       ; 0 ptr = built-in ROM charset
+        if saved_color != 0                                 ; 0 = black-on-black -> skip a bad read
+            txt.color2(saved_color & 15, saved_color >> 4)  ; low nibble = fg, high nibble = bg
     }
 
     ; ---------- low-level drawing helpers ----------
@@ -1217,7 +1247,9 @@ main {
         ubyte tx = x0 + 3
         draw_box_frame(x0, 9, x1, 18)
         draw_box_shadow(x0, 9, x1, 18)
-        put_str_at(x0 + (w - 7) / 2, 9, " About ")            ; title on the top frame
+        ubyte tcol = x0 + (w - 7) / 2
+        put_str_at(tcol, 9, " About ")                        ; title on the top frame
+        set_color_run(tcol, tcol + 6, 9, (CB_BAR & $f0) | ACCEL_FG)    ; in red
         put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
         put_str_at(tx, 12, "Text stored in banked RAM")
         if g_emu
@@ -1225,7 +1257,10 @@ main {
         else
             put_str_at(tx, 13, "Running on:  Hardware")
         put_str_at(tx, 15,     "(c)sadLogic 2026 V0.9.0")
-        put_str_at(x0 + (w - 13) / 2, 18, " Press any key ")  ; hint on the bottom frame
+        put_str_at(tx, 16,     "Open Source! play, have fun!")
+        ubyte fcol = x0 + (w - 13) / 2
+        put_str_at(fcol, 18, " Press any key ")               ; hint on the bottom frame
+        set_color_run(fcol, fcol + 14, 18, (CB_BAR & $f0) | ACCEL_FG)  ; in red
         void wait_key()
         full_redraw()
     }
@@ -1251,10 +1286,13 @@ main {
             km_keyc = x0 + 2
             km_desc = x0 + 18
         }
+        ubyte w = x1 - x0 + 1
         draw_box_frame(x0, 3, x1, 25)
         if SCR_W >= 80                  ; shadow would run off the right edge in 40-col
             draw_box_shadow(x0, 3, x1, 25)
-        put_str_at(x0 + (x1 - x0 - 11) / 2, 4, "Keyboard Map")
+        ubyte tcol = x0 + (w - 14) / 2
+        put_str_at(tcol, 3, " Keyboard Map ")                  ; title on the top frame
+        set_color_run(tcol, tcol + 13, 3, (CB_BAR & $f0) | ACCEL_FG)   ; in red
         km_row( 5, "Arrows",          "Move cursor")
         km_row( 6, "Ctrl + Lt/Rt",    "Jump a word")
         km_row( 7, "Home / End",      "Start/end of line")
@@ -1273,6 +1311,9 @@ main {
             put_str_at(20, 23, "Emulator eats Ctrl+F/R/V - use F6/F8/F4")
         else
             put_str_at(km_keyc, 23, "Emu eats Ctrl+F/R/V")
+        ubyte fcol = x0 + (w - 15) / 2
+        put_str_at(fcol, 25, " Press any key ")                ; hint on the bottom frame
+        set_color_run(fcol, fcol + 14, 25, (CB_BAR & $f0) | ACCEL_FG)  ; in red
         void wait_key()
         full_redraw()
     }
