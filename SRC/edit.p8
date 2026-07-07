@@ -17,6 +17,7 @@
 %import xarena
 %import emudbg
 %import diskio                          ; directory listing for the Open file picker
+%import syntax                          ; BASIC syntax colouring (per-column colour classifier)
 %zeropage basicsafe
 ; skip prog8's system re-init (IOINIT/RESTOR/CINT) so the screen mode the machine booted
 ; in (e.g. BASIC "SCREEN 3" = 40x30) survives into start() and can be adopted. CINT would
@@ -30,15 +31,19 @@ main {
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
 
-    ; colour bytes for setclr (high nibble = bg, low nibble = fg; X16 default palette)
-    const ubyte COL_FG  = 1             ; white  (clear_screen / chrout colour)
-    const ubyte COL_BG  = 6             ; blue
-    const ubyte CB_BODY = $61           ; blue bg, white fg   (edit area)
-    const ubyte CB_BAR  = $f0           ; lt-grey bg, black fg (bars + popups)
-    const ubyte CB_SEL  = $6f           ; blue bg, white fg   (highlighted item)
-    const ubyte CB_CUR  = $16           ; white bg, blue fg   (text cursor cell)
-    const ubyte CB_MARK = $30           ; cyan bg, black fg   (selected text)
-    const ubyte CB_SHADOW = $00         ; black bg, black fg  (popup drop-shadow)
+    ; colour bytes for setclr (high nibble = bg, low nibble = fg). Palette follows XFMGR's
+    ; default "Classic" scheme: 1=white 7=yellow 11=dark grey 14=light blue 0=black.
+    const ubyte COL_FG  = 1             ; white     (clear_screen / chrout colour)
+    const ubyte COL_BG  = 11            ; dark grey (content field background)
+    const ubyte CB_BODY = $b1           ; edit area:                 white on dark grey
+    const ubyte CB_BAR  = $e1           ; menu + status bars:        white on light blue
+    const ubyte CB_BOX  = $b1           ; popup / dropdown interior:  white on dark grey
+    const ubyte CB_BORDER = $be         ; popup frame lines + titles: light blue on dark grey
+    const ubyte CB_SEL  = $e1           ; selected dropdown/picker item: white on light blue
+    const ubyte CB_MENUSEL = $1e        ; active menu-bar title:      light blue on white
+    const ubyte CB_CUR  = $10           ; text cursor cell:           black on white
+    const ubyte CB_MARK = $e1           ; selected text:              white on light blue
+    const ubyte CB_SHADOW = $00         ; drop shadow:                black on black
     const ubyte MOD_SHIFT = $01         ; kbdbuf_get_modifiers shift bit
     const ubyte MOD_CTRL  = $04         ; kbdbuf_get_modifiers ctrl bit
 
@@ -64,6 +69,8 @@ main {
     str untitled = "untitled"
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
+    ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
+    bool hl_on = true                   ; BASIC syntax colouring on (toggle in the Edit menu)
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
     uword prev_cur_row                  ; doc row that currently shows the cursor highlight
@@ -124,7 +131,7 @@ main {
     ubyte[NMENU] menu_col = [2, 9, 16, 25]   ; start column of each top-menu title
     ubyte[NMENU] menu_len = [4, 4, 6, 4]     ; File, Edit, Search, Help
 
-    const ubyte ACCEL_FG = 2                 ; red - accelerator-letter highlight fg
+    const ubyte ACCEL_FG = 0                 ; black - accelerator-letter highlight fg
     ; ALT is the Commodore key, so ALT+letter arrives as a graphics code $A1..$BF (161..191);
     ; this maps each (indexed by code-161) back to its base letter. 0 = not a letter.
     ; (verbatim from sibling XFMGR2; e.g. ALT+F=187, ALT+E=177, ALT+S=174, ALT+H=180)
@@ -147,7 +154,7 @@ main {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
-            1 -> when key { 't' -> return 0   'c' -> return 1   'p' -> return 2   'd' -> return 3 }
+            1 -> when key { 't' -> return 0   'c' -> return 1   'p' -> return 2   'd' -> return 3   's' -> return 4 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
@@ -288,7 +295,7 @@ main {
         ubyte r
         ubyte c
         for r in y0 to y1 {
-            set_color_run(x0, x1, r, CB_BAR)
+            set_color_run(x0, x1, r, CB_BOX)    ; dark-grey interior
             for c in x0 to x1                   ; blank interior so text behind doesn't bleed through
                 txt.setchr(c, r, SPACE_SC)
         }
@@ -303,6 +310,13 @@ main {
         for r in y0 + 1 to y1 - 1 {
             txt.setchr(x0, r, SC_V)
             txt.setchr(x1, r, SC_V)
+        }
+        ; recolour the frame perimeter light-blue (XFMGR box borders); interior stays dark grey
+        set_color_run(x0, x1, y0, CB_BORDER)
+        set_color_run(x0, x1, y1, CB_BORDER)
+        for r in y0 + 1 to y1 - 1 {
+            txt.setclr(x0, r, CB_BORDER)
+            txt.setclr(x1, r, CB_BORDER)
         }
     }
 
@@ -338,15 +352,23 @@ main {
                 bufptr = &tmpbuf
             }
         }
-        ; single pass: each cell gets its char (or a blank past end-of-line) + body colour
+        ; syntax colouring: classify the whole line once into hlcol[] (one colour per doc
+        ; column), then the cell loop reads it. Display-only; selection/cursor still override.
+        if hl_on and blen != 0
+            syntax.classify(bufptr, blen, &hlcol)
+        ; single pass: each cell gets its char (or a blank past end-of-line) + its colour
         ubyte c
         for c in 0 to SCR_W - 1 {
             uword srcidx = (left_col as uword) + c
             ubyte ch = SPACE_SC
-            if srcidx < blen
+            ubyte col = CB_BODY
+            if srcidx < blen {
                 ch = txt.petscii2scr(@(bufptr + srcidx))
+                if hl_on
+                    col = hlcol[lsb(srcidx)]        ; srcidx < blen <= 250, fits a byte index
+            }
             txt.setchr(c, sy, ch)
-            txt.setclr(c, sy, CB_BODY)
+            txt.setclr(c, sy, col)
         }
         ; selection highlight: cells whose doc column is in [c0, c1) on this row
         if sel_active {
@@ -534,14 +556,14 @@ main {
         if active != 255 {
             ubyte x
             for x in menu_col[active] to menu_col[active] + menu_len[active] - 1
-                txt.setclr(x, 0, CB_SEL)
+                txt.setclr(x, 0, CB_MENUSEL)
         }
         ; highlight each title's accelerator letter (F/E/S/H, always the first char)
         ubyte mi
         for mi in 0 to NMENU - 1 {
             ubyte base = CB_BAR
             if mi == active
-                base = CB_SEL
+                base = CB_MENUSEL
             txt.setclr(menu_col[mi], 0, (base & $f0) | ACCEL_FG)
         }
     }
@@ -752,7 +774,13 @@ main {
                     0 -> put_str_at(col, row, "Cut Line     Ctrl+X")
                     1 -> put_str_at(col, row, "Copy         Ctrl+C")
                     2 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
-                    else -> put_str_at(col, row, "Delete Line  Ctrl+K")
+                    3 -> put_str_at(col, row, "Delete Line  Ctrl+K")
+                    else -> {
+                        if hl_on
+                            put_str_at(col, row, "Syntax Color On ")
+                        else
+                            put_str_at(col, row, "Syntax Color Off")
+                    }
                 }
             }
             2 -> {                          ; Search
@@ -774,6 +802,11 @@ main {
 
     sub draw_dropdown(ubyte active, ubyte x0, ubyte y0, ubyte x1, ubyte y1, ubyte n, ubyte sel) {
         draw_box_frame(x0, y0, x1, y1)
+        ; the dropdown shares the top bar's light-blue background; recolour the whole box so
+        ; the frame glyphs become white on light blue and items match the menu bar.
+        ubyte fr
+        for fr in y0 to y1
+            set_color_run(x0, x1, fr, CB_BAR)
         ubyte i
         for i in 0 to n - 1 {
             ubyte row = y0 + 1 + i
@@ -781,8 +814,8 @@ main {
             set_color_run(x0 + 1, x1 - 1, row, CB_BAR)
             draw_item(active, i, x0 + 2, row)
             if i == sel {
-                set_color_run(x0 + 1, x1 - 1, row, CB_SEL)
-                base = CB_SEL
+                set_color_run(x0 + 1, x1 - 1, row, CB_MENUSEL)   ; selected row: reverse (white) so it pops on light blue
+                base = CB_MENUSEL
             }
             ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
             ; survives the selection fill
@@ -796,7 +829,7 @@ main {
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
-            1 -> { n = 4  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
+            1 -> { n = 5  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
         }
         ubyte x0 = menu_col[active] - 1
@@ -853,7 +886,8 @@ main {
                     0 -> op_cut()
                     1 -> op_copy()
                     2 -> op_paste()
-                    else -> op_delete_line()
+                    3 -> op_delete_line()
+                    else -> hl_on = not hl_on   ; toggle syntax colouring (menu_mode_loop repaints)
                 }
             }
             2 -> {                          ; Search
@@ -1064,7 +1098,7 @@ main {
             ubyte r
             for r in 0 to rows - 1 {
                 ubyte rr = y0 + 1 + r
-                set_color_run(x0 + 1, x1 - 1, rr, CB_BAR)   ; clear the row (colour + chars)
+                set_color_run(x0 + 1, x1 - 1, rr, CB_BOX)   ; clear the row (colour + chars)
                 ubyte cc
                 for cc in x0 + 1 to x1 - 1
                     txt.setchr(cc, rr, SPACE_SC)
@@ -1249,7 +1283,7 @@ main {
         draw_box_shadow(x0, 9, x1, 18)
         ubyte tcol = x0 + (w - 7) / 2
         put_str_at(tcol, 9, " About ")                        ; title on the top frame
-        set_color_run(tcol, tcol + 6, 9, (CB_BAR & $f0) | ACCEL_FG)    ; in red
+        set_color_run(tcol, tcol + 6, 9, CB_BORDER)           ; light-blue title (XFMGR)
         put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
         put_str_at(tx, 12, "Text stored in banked RAM")
         if g_emu
@@ -1260,7 +1294,7 @@ main {
         put_str_at(tx, 16,     "Open Source! play, have fun!")
         ubyte fcol = x0 + (w - 13) / 2
         put_str_at(fcol, 18, " Press any key ")               ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, 18, (CB_BAR & $f0) | ACCEL_FG)  ; in red
+        set_color_run(fcol, fcol + 14, 18, CB_BORDER)         ; light-blue hint (XFMGR)
         void wait_key()
         full_redraw()
     }
@@ -1292,7 +1326,7 @@ main {
             draw_box_shadow(x0, 3, x1, 25)
         ubyte tcol = x0 + (w - 14) / 2
         put_str_at(tcol, 3, " Keyboard Map ")                  ; title on the top frame
-        set_color_run(tcol, tcol + 13, 3, (CB_BAR & $f0) | ACCEL_FG)   ; in red
+        set_color_run(tcol, tcol + 13, 3, CB_BORDER)          ; light-blue title (XFMGR)
         km_row( 5, "Arrows",          "Move cursor")
         km_row( 6, "Ctrl + Lt/Rt",    "Jump a word")
         km_row( 7, "Home / End",      "Start/end of line")
@@ -1313,7 +1347,7 @@ main {
             put_str_at(km_keyc, 23, "Emu eats Ctrl+F/R/V")
         ubyte fcol = x0 + (w - 15) / 2
         put_str_at(fcol, 25, " Press any key ")                ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, 25, (CB_BAR & $f0) | ACCEL_FG)  ; in red
+        set_color_run(fcol, fcol + 14, 25, CB_BORDER)         ; light-blue hint (XFMGR)
         void wait_key()
         full_redraw()
     }
