@@ -119,6 +119,27 @@ main {
     bool clip_has
     bool clip_line
 
+    ; ---------- undo / redo (per-line snapshots kept in banked RAM) ----------
+    const ubyte UNDO_DEPTH = 64
+    const ubyte OP_REPLACE = 1          ; line content changed; snapshot = old content
+    const ubyte OP_ADDLINE = 2          ; a line was inserted; apply => delete it (no snapshot)
+    const ubyte OP_DELLINE = 3          ; a line was deleted; snapshot = its old content
+    ; two parallel-array rings (undo=u_*, redo=d_*). Snapshot bytes live in the xarena and
+    ; leak until Save's edoc.reset() compaction - the same model edoc uses for line records.
+    ubyte[UNDO_DEPTH] u_op
+    uword[UNDO_DEPTH] u_row
+    uword[UNDO_DEPTH] u_grp
+    ubyte[UNDO_DEPTH] u_bnk
+    uword[UNDO_DEPTH] u_off
+    ubyte u_sp
+    ubyte[UNDO_DEPTH] d_op
+    uword[UNDO_DEPTH] d_row
+    uword[UNDO_DEPTH] d_grp
+    ubyte[UNDO_DEPTH] d_bnk
+    uword[UNDO_DEPTH] d_off
+    ubyte d_sp
+    uword g_group                       ; monotonically increasing action-group id
+
     ; file-picker popup: directory entries copied verbatim from diskio's listing into
     ; a flat slab (FNREC bytes per record, NUL-terminated name) for the Open dialog.
     const ubyte FILE_CAP = 128          ; max entries shown
@@ -154,7 +175,7 @@ main {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
-            1 -> when key { 't' -> return 0   'c' -> return 1   'p' -> return 2   'd' -> return 3   's' -> return 4 }
+            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   's' -> return 6 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
@@ -165,7 +186,7 @@ main {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
             0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1
-            1 -> when i { 0 -> return 2 }                       ; Cut 'T'@2
+            1 -> when i { 2 -> return 2 }                       ; Cut 'T'@2 (Undo/Redo accel @0)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
         }
         return 0
@@ -771,10 +792,12 @@ main {
             }
             1 -> {                          ; Edit
                 when i {
-                    0 -> put_str_at(col, row, "Cut Line     Ctrl+X")
-                    1 -> put_str_at(col, row, "Copy         Ctrl+C")
-                    2 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
-                    3 -> put_str_at(col, row, "Delete Line  Ctrl+K")
+                    0 -> put_str_at(col, row, "Undo         Ctrl+Z")
+                    1 -> put_str_at(col, row, "Redo         Ctrl+U")
+                    2 -> put_str_at(col, row, "Cut Line     Ctrl+X")
+                    3 -> put_str_at(col, row, "Copy         Ctrl+C")
+                    4 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
+                    5 -> put_str_at(col, row, "Delete Line  Ctrl+K")
                     else -> {
                         if hl_on
                             put_str_at(col, row, "Syntax Color On ")
@@ -829,7 +852,7 @@ main {
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
-            1 -> { n = 5  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
+            1 -> { n = 7  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
         }
         ubyte x0 = menu_col[active] - 1
@@ -883,10 +906,12 @@ main {
             }
             1 -> {                          ; Edit
                 when choice {
-                    0 -> op_cut()
-                    1 -> op_copy()
-                    2 -> op_paste()
-                    3 -> op_delete_line()
+                    0 -> do_undo()
+                    1 -> do_redo()
+                    2 -> op_cut()
+                    3 -> op_copy()
+                    4 -> op_paste()
+                    5 -> op_delete_line()
                     else -> hl_on = not hl_on   ; toggle syntax colouring (menu_mode_loop repaints)
                 }
             }
@@ -942,6 +967,7 @@ main {
 
     sub new_document() {
         edoc.init()
+        undo_clear()                        ; the arena was reset - old snapshots are gone
         void edoc.append(&editbuf, 0)       ; start with one empty line
         filename[0] = 0
         modified = false
@@ -1192,6 +1218,7 @@ main {
         }
         full_redraw()                   ; hide the Open popup before the load blink
         notify_blink("Loading...", blink_phases(pick_blocks as uword))  ; flash scaled to file size
+        undo_clear()                        ; fresh document -> old snapshots are invalid
         if edoc.load_file(fnbuf) {
             void strings.copy(fnbuf, filename)
             cur_row = 0
@@ -1232,7 +1259,8 @@ main {
             return false
         }
         modified = false
-        ; free compaction: write to disk, then reload into a fresh arena
+        ; free compaction: write to disk, then reload into a fresh arena (clears undo history)
+        undo_clear()
         if edoc.load_file(name) {
             if cur_row >= edoc.line_count
                 cur_row = edoc.line_count - 1
@@ -1532,6 +1560,7 @@ main {
         if not prompt_str("Replace with:", &repl_term, 38, true)    ; empty = delete
             return
         commit_editbuf()
+        undo_clear()                        ; replace-all touches many lines; not tracked in v1
         g_repl_count = 0
         uword r = 0
         while r < edoc.line_count {
@@ -1591,6 +1620,19 @@ main {
         ; remove the selected text; cursor ends at the selection start
         commit_editbuf()
         sel_norm()
+        ; undo (one group): REPLACE the start line, then DELLINE each line below it that gets
+        ; merged away (pushed high row first so undo re-inserts them in ascending order).
+        undo_begin()
+        ubyte snap0 = edoc.load(s_row, &tmpbuf)
+        urec_replace(s_row, &tmpbuf, snap0)
+        if s_row != e_row {
+            uword rr = e_row
+            while rr > s_row {
+                ubyte dl = edoc.load(rr, &tmpbuf)
+                urec_delline(rr, &tmpbuf, dl)
+                rr--
+            }
+        }
         if s_row == e_row {
             ubyte llen = edoc.load(s_row, &tmpbuf)
             ubyte o = s_col
@@ -1719,11 +1761,14 @@ main {
 
     sub op_delete_line() {
         commit_editbuf()
+        undo_begin()
         if edoc.line_count <= 1 {
+            urec_replace(0, &editbuf, cur_len)   ; undo: restore the cleared line's content
             cur_len = 0                          ; clear the only line, keep one empty line
             void edoc.commit(0, &editbuf, 0)
             cur_col = 0
         } else {
+            urec_delline(cur_row, &editbuf, cur_len)   ; undo: re-insert the deleted line
             edoc.delete_line(cur_row)
             if cur_row >= edoc.line_count
                 cur_row = edoc.line_count - 1
@@ -1768,6 +1813,8 @@ main {
                 notify("Document full - save now")
                 return
             }
+            undo_begin()
+            urec_addline(cur_row + 1)           ; undo: delete the pasted line
             ubyte bi = 0
             while bi < lsb(clip_len) {
                 tmpbuf[bi] = @(clipbuf + bi)
@@ -1779,6 +1826,14 @@ main {
             cur_len = edoc.load(cur_row, &editbuf)
             cur_dirty = false
         } else {
+            ; undo: a single-line inline paste is one REPLACE; a multi-line one (splits the
+            ; line) isn't tracked in v1, so drop history to stay safe.
+            if clip_has_newline()
+                undo_clear()
+            else {
+                undo_begin()
+                urec_replace(cur_row, &editbuf, cur_len)
+            }
             ; selection clipboard: insert inline at the cursor, splitting on $0D
             uword pi = 0
             while pi < clip_len {
@@ -1814,6 +1869,201 @@ main {
                 notify("Document full - save now")
             cur_dirty = false
         }
+    }
+
+    ; ---------- undo / redo engine ----------
+
+    sub undo_clear() {
+        u_sp = 0
+        d_sp = 0
+    }
+
+    sub redo_clear() {
+        d_sp = 0
+    }
+
+    sub u_drop_oldest() {               ; ring full: drop the oldest undo record (its snapshot leaks)
+        ubyte i = 0
+        while i + 1 < UNDO_DEPTH {
+            u_op[i] = u_op[i+1]
+            u_row[i] = u_row[i+1]
+            u_grp[i] = u_grp[i+1]
+            u_bnk[i] = u_bnk[i+1]
+            u_off[i] = u_off[i+1]
+            i++
+        }
+        u_sp = UNDO_DEPTH - 1
+    }
+
+    sub d_drop_oldest() {
+        ubyte i = 0
+        while i + 1 < UNDO_DEPTH {
+            d_op[i] = d_op[i+1]
+            d_row[i] = d_row[i+1]
+            d_grp[i] = d_grp[i+1]
+            d_bnk[i] = d_bnk[i+1]
+            d_off[i] = d_off[i+1]
+            i++
+        }
+        d_sp = UNDO_DEPTH - 1
+    }
+
+    sub push_rec(bool to_redo, ubyte op, uword row, ubyte bnk, uword off) {
+        if to_redo {
+            if d_sp >= UNDO_DEPTH
+                d_drop_oldest()
+            d_op[d_sp] = op
+            d_row[d_sp] = row
+            d_grp[d_sp] = g_group
+            d_bnk[d_sp] = bnk
+            d_off[d_sp] = off
+            d_sp++
+        } else {
+            if u_sp >= UNDO_DEPTH
+                u_drop_oldest()
+            u_op[u_sp] = op
+            u_row[u_sp] = row
+            u_grp[u_sp] = g_group
+            u_bnk[u_sp] = bnk
+            u_off[u_sp] = off
+            u_sp++
+        }
+    }
+
+    sub undo_begin() {                  ; start a new user-action group; new edits invalidate redo
+        g_group++
+        redo_clear()
+    }
+
+    ; record helpers used by the mutation hooks (push onto the undo ring, group = g_group)
+    sub urec_replace(uword row, uword src, ubyte slen) {
+        if not edoc.store(src, slen) {          ; arena full -> can't track; drop history to stay safe
+            undo_clear()
+            return
+        }
+        push_rec(false, OP_REPLACE, row, edoc.r_bank, edoc.r_off)
+    }
+    sub urec_addline(uword row) {
+        push_rec(false, OP_ADDLINE, row, 0, 0)
+    }
+    sub urec_delline(uword row, uword src, ubyte slen) {
+        if not edoc.store(src, slen) {
+            undo_clear()
+            return
+        }
+        push_rec(false, OP_DELLINE, row, edoc.r_bank, edoc.r_off)
+    }
+
+    sub undo_touch_line() {
+        ; called before mutating editbuf on the current line: records the pre-edit content once
+        ; per editing session (the cur_dirty false->true transition collapses all its keystrokes).
+        if not cur_dirty {
+            undo_begin()
+            urec_replace(cur_row, &editbuf, cur_len)
+        }
+    }
+
+    sub apply_rec(ubyte op, uword row, ubyte bnk, uword off, bool to_redo) {
+        ; restore this record's effect and push the inverse onto the opposite ring
+        ubyte curlen                        ; function-scoped scratch (prog8 has no block scope)
+        ubyte ib
+        uword io
+        ubyte slen
+        when op {
+            OP_REPLACE -> {
+                if row < edoc.line_count {
+                    curlen = edoc.load(row, &workbuf)           ; capture current for the inverse
+                    void edoc.store(&workbuf, curlen)
+                    ib = edoc.r_bank
+                    io = edoc.r_off
+                    slen = edoc.snap_load(bnk, off, &tmpbuf)
+                    void edoc.commit(row, &tmpbuf, slen)
+                    push_rec(to_redo, OP_REPLACE, row, ib, io)
+                }
+            }
+            OP_ADDLINE -> {                                     ; undo an insertion => delete the line
+                if row < edoc.line_count {
+                    curlen = edoc.load(row, &workbuf)           ; capture content so it can be re-added
+                    void edoc.store(&workbuf, curlen)
+                    ib = edoc.r_bank
+                    io = edoc.r_off
+                    edoc.delete_line(row)
+                    push_rec(to_redo, OP_DELLINE, row, ib, io)
+                }
+            }
+            OP_DELLINE -> {                                     ; undo a deletion => re-insert the line
+                if edoc.insert_line(row) {
+                    slen = edoc.snap_load(bnk, off, &tmpbuf)
+                    void edoc.commit(row, &tmpbuf, slen)
+                    push_rec(to_redo, OP_ADDLINE, row, 0, 0)
+                }
+            }
+        }
+    }
+
+    sub after_undo_redo(uword focus) {
+        if edoc.line_count == 0
+            void edoc.append(&editbuf, 0)       ; never leave a zero-line document
+        if focus >= edoc.line_count
+            focus = edoc.line_count - 1
+        cur_row = focus
+        cur_col = 0
+        left_col = 0
+        cur_len = edoc.load(cur_row, &editbuf)
+        cur_dirty = false
+        sel_active = false
+        modified = true
+        void ensure_visible()
+        draw_all_text()
+        draw_status()
+    }
+
+    sub do_undo() {
+        if u_sp == 0 {
+            notify("Nothing to undo")
+            return
+        }
+        commit_editbuf()                        ; flush the live line before touching storage
+        g_group++                               ; inverses pushed to redo share this new group
+        uword grp = u_grp[u_sp - 1]
+        uword focus = u_row[u_sp - 1]
+        while u_sp != 0 {
+            if u_grp[u_sp - 1] != grp
+                break
+            u_sp--
+            focus = u_row[u_sp]
+            apply_rec(u_op[u_sp], u_row[u_sp], u_bnk[u_sp], u_off[u_sp], true)
+        }
+        after_undo_redo(focus)
+    }
+
+    sub do_redo() {
+        if d_sp == 0 {
+            notify("Nothing to redo")
+            return
+        }
+        commit_editbuf()
+        g_group++
+        uword grp = d_grp[d_sp - 1]
+        uword focus = d_row[d_sp - 1]
+        while d_sp != 0 {
+            if d_grp[d_sp - 1] != grp
+                break
+            d_sp--
+            focus = d_row[d_sp]
+            apply_rec(d_op[d_sp], d_row[d_sp], d_bnk[d_sp], d_off[d_sp], false)
+        }
+        after_undo_redo(focus)
+    }
+
+    sub clip_has_newline() -> bool {
+        uword i = 0
+        while i < clip_len {
+            if @(clipbuf + i) == 13
+                return true
+            i++
+        }
+        return false
     }
 
     sub goto_row(uword nr) {
@@ -1908,6 +2158,7 @@ main {
         ; forward delete: remove the char at the cursor, or join the next line
         ubyte i
         if cur_col < cur_len {
+            undo_touch_line()
             i = cur_col
             while i + 1 < cur_len {
                 editbuf[i] = editbuf[i + 1]
@@ -1924,6 +2175,10 @@ main {
             draw_status()
         } else if cur_row + 1 < edoc.line_count {
             ubyte nlen = edoc.load(cur_row + 1, &tmpbuf)
+            ; undo: restore this line's old content + re-insert the next line (one group)
+            undo_begin()
+            urec_replace(cur_row, &editbuf, cur_len)
+            urec_delline(cur_row + 1, &tmpbuf, nlen)
             i = 0
             while i < nlen and cur_len < edoc.MAX_LEN {
                 editbuf[cur_len] = tmpbuf[i]
@@ -1967,6 +2222,7 @@ main {
     ; ---------- editing ----------
 
     sub ed_insert(ubyte k) {
+        undo_touch_line()
         if ovr_mode and cur_col < cur_len {
             editbuf[cur_col] = k                ; overwrite the char under the cursor
             cur_col++
@@ -2002,6 +2258,7 @@ main {
 
     sub ed_backspace() {
         if cur_col > 0 {
+            undo_touch_line()
             ubyte i = cur_col - 1
             while i + 1 < cur_len {
                 editbuf[i] = editbuf[i + 1]
@@ -2026,6 +2283,10 @@ main {
         ; merge the current line onto the end of the previous one
         ubyte joincol = edoc.get_len(cur_row - 1)
         ubyte plen = edoc.load(cur_row - 1, &tmpbuf)
+        ; undo: restore the previous line's old content + re-insert this line (one group)
+        undo_begin()
+        urec_replace(cur_row - 1, &tmpbuf, plen)
+        urec_delline(cur_row, &editbuf, cur_len)
         ubyte i = 0
         while i < cur_len and plen < edoc.MAX_LEN {
             tmpbuf[plen] = editbuf[i]
@@ -2059,6 +2320,10 @@ main {
             notify("Document full - save now")
             return
         }
+        ; undo: restore this line to its full pre-split content + delete the new line (one group)
+        undo_begin()
+        urec_replace(cur_row, &editbuf, cur_len)
+        urec_addline(cur_row + 1)
         ; build the new line: `indent` spaces, then the text right of the cursor
         ubyte nl = 0
         while nl < indent and nl < edoc.MAX_LEN {
@@ -2160,6 +2425,8 @@ main {
             24 -> op_cut()                  ; Ctrl+X  cut (selection or line)
             22, 138 -> op_paste()           ; Ctrl+V / F4  paste
             11 -> op_delete_line()          ; Ctrl+K  delete line
+            26 -> do_undo()                 ; Ctrl+Z  undo
+            21 -> do_redo()                 ; Ctrl+U  redo
             6, 139 -> act_find()            ; Ctrl+F / F6  find
             7, 134 -> act_find_next()       ; Ctrl+G / F3  find next
             18, 140 -> act_replace()        ; Ctrl+R / F8  replace

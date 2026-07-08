@@ -141,6 +141,24 @@ edoc {
         return slen
     }
 
+    ; ---- undo/redo snapshot access (by explicit far pointer, not the line table) ----
+    ; A snapshot is stored with store() (which sets r_bank/r_off); snap_load reads a
+    ; [len][chars] record back from an arbitrary far pointer into a main-RAM buffer.
+    sub snap_load(ubyte bank, uword off, uword dest) -> ubyte {
+        cx16.push_rambank(bank)
+        ubyte slen = @(off)
+        off++
+        ubyte i = 0
+        while i < slen {
+            @(dest) = @(off)
+            dest++
+            off++
+            i++
+        }
+        cx16.pop_rambank()
+        return slen
+    }
+
     ; ---- line-table operations ----
 
     sub commit(uword idx, uword src, ubyte slen) -> bool {
