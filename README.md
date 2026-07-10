@@ -135,7 +135,7 @@ A few things worth knowing about how it works:
 
 ## Syntax coloring
 
-For BASIC source, EDIT can highlight X16 BASIC **keywords**, **strings**, **numbers**, leading
+For BASLOAD source, (.BASL, .BL, .BAS.TXT ) EDIT can highlight X16 BASIC **keywords**, **strings**, **numbers**, leading
 **line numbers**, and `REM` **comments** (shown in green). Toggle it from the **Edit** menu
 (*Syntax Color*). Coloring is purely a display layer — it never changes the bytes on disk — and
 because BASIC lines are self-contained, only the rows actually on screen are re-colored, so it
