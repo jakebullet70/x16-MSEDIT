@@ -74,6 +74,7 @@ main {
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
     bool hl_on = false                  ; BASIC syntax colouring: default OFF, auto-on for BASIC
                                         ; files on open (has_basic_ext); toggle in the Edit menu
+    bool ww_on = false                  ; search "whole word only": default OFF, toggle in Search menu
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
     uword prev_cur_row                  ; doc row that currently shows the cursor highlight
@@ -112,8 +113,7 @@ main {
     ubyte[256] workbuf                  ; scratch for building a replaced line
     uword found_row                     ; result of the last find
     ubyte found_col
-    uword g_repl_count                  ; replacements committed in replace_all
-    ubyte g_line_repls                  ; replacements made in the current line
+    uword g_repl_count                  ; replacements committed in the last Replace run
 
     ; clipboard - holds either one whole line (clip_line=true, paste as a new line)
     ; or selected text (clip_line=false, paste inline; may contain $0D line breaks)
@@ -678,11 +678,33 @@ main {
         }
     }
 
-    sub prompt_str(str promptmsg, uword dest, ubyte maxlen, bool allow_empty) -> bool {
+    sub draw_ww_label(bool live) {
+        ; whole-word indicator on the right of the search bar.
+        ;  live=true  : the toggle shown on the Find/Replace INPUT prompts - always shows the
+        ;               On/Off state and highlights the W (Commodore+W flips it, top-menu style).
+        ;  live=false : a read-only reminder on the Replace? bar - drawn only when it's on.
+        if live {
+            ubyte c = SCR_W - 16            ; "Whole Word  Off" = 15 chars + a 1-col right margin
+            if ww_on
+                put_str_at(c, STATUS_ROW, "Whole Word  On ")
+            else
+                put_str_at(c, STATUS_ROW, "Whole Word  Off")
+            txt.setclr(c, STATUS_ROW, (CB_BAR & $f0) | ACCEL_FG)   ; highlight the W accelerator
+        } else {
+            if not ww_on
+                return
+            put_str_at(SCR_W - 11, STATUS_ROW, "Whole Word")       ; 10 chars + a 1-col right margin
+        }
+    }
+
+    sub prompt_str(str promptmsg, uword dest, ubyte maxlen, bool allow_empty, bool ww_hint) -> bool {
         ; modal text input on the status row. Enter -> true (false if empty and not
         ; allow_empty); Esc/Stop -> false. Pre-fills with whatever is already in dest.
+        ; ww_hint: show the whole-word toggle on the bar and let Commodore+W flip it live.
         bar_fill(STATUS_ROW, CB_BAR)
         put_str_at(1, STATUS_ROW, promptmsg)
+        if ww_hint
+            draw_ww_label(true)
         ubyte base = lsb(strings.length(promptmsg)) + 2
         ubyte n = 0                          ; pre-fill length: scan dest up to maxlen
         while n < maxlen and @(dest + n) != 0
@@ -714,6 +736,12 @@ main {
                     if n > 0 {
                         n--
                         txt.setchr(base + n, STATUS_ROW, SPACE_SC)
+                    }
+                }
+                179 -> {                         ; Commodore+W (ALT+W): toggle whole-word live
+                    if ww_hint {                 ; (search prompts only; 179 = alt_letter['w'])
+                        ww_on = not ww_on
+                        draw_ww_label(true)
                     }
                 }
                 else -> {
@@ -1299,7 +1327,7 @@ main {
     sub save_now() -> bool {
         if filename[0] == 0 {
             fnbuf[0] = 0
-            if not prompt_str("Save as:", &fnbuf, 38, false)
+            if not prompt_str("Save as:", &fnbuf, 38, false, false)
                 return false
             void strings.copy(fnbuf, filename)
         }
@@ -1308,7 +1336,7 @@ main {
 
     sub act_save_as() {
         fnbuf[0] = 0
-        if not prompt_str("Save as:", &fnbuf, 38, false)
+        if not prompt_str("Save as:", &fnbuf, 38, false, false)
             return
         void strings.copy(fnbuf, filename)
         void do_save(filename)
@@ -1470,6 +1498,15 @@ main {
         return b
     }
 
+    sub is_word_char(ubyte b) -> bool {
+        ; a "word" byte for whole-word search: a digit or a letter (either PETSCII case).
+        ; 0 (used as the "past the line edge" sentinel) folds to nothing -> not a word char.
+        if b >= '0' and b <= '9'
+            return true
+        ubyte f = fold(b)                   ; $C1-$DA -> $41-$5A, letters land in 'a'..'z'
+        return f >= 'a' and f <= 'z'
+    }
+
     sub ends_with_ci(uword name, uword suffix) -> bool {
         ; case-insensitive (PETSCII fold) test: does `name` end with `suffix`?
         ubyte nl = lsb(strings.length(name))
@@ -1508,8 +1545,20 @@ main {
             return 255
         ubyte i = from
         while i + tlen <= blen {
-            if line_match(buf, i, tlen)
-                return i
+            if line_match(buf, i, tlen) {
+                if not ww_on
+                    return i
+                ; whole-word: the match must be bounded by non-word bytes on both sides
+                ; (0 = past the line edge, treated as a boundary by is_word_char)
+                ubyte lc = 0
+                if i != 0
+                    lc = @(buf + i - 1)
+                ubyte rc = 0
+                if i + tlen != blen
+                    rc = @(buf + i + tlen)
+                if not is_word_char(lc) and not is_word_char(rc)
+                    return i
+            }
             i++
         }
         return 255
@@ -1536,6 +1585,16 @@ main {
         return false
     }
 
+    sub find_wrap(uword row, ubyte col) -> ubyte {
+        ; forward search from (row,col); if nothing there, wrap and search from the top.
+        ; returns 0 = not found, 1 = found ahead, 2 = found after wrapping to the top.
+        if find_from(row, col)
+            return 1
+        if find_from(0, 0)
+            return 2
+        return 0
+    }
+
     sub goto_found() {
         cur_row = found_row
         cur_col = found_col
@@ -1548,13 +1607,17 @@ main {
     }
 
     sub act_find() {
-        if not prompt_str("Find:", &find_term, 38, false)
+        if not prompt_str("Find:", &find_term, 38, false, true)
             return
         commit_editbuf()
-        if find_from(cur_row, cur_col)
-            goto_found()
-        else
+        ubyte res = find_wrap(cur_row, cur_col)
+        if res == 0 {
             notify("Not found")
+            return
+        }
+        goto_found()
+        if res == 2
+            notify("Wrapped to top")
     }
 
     sub act_find_next() {
@@ -1563,66 +1626,124 @@ main {
             return
         }
         commit_editbuf()
-        if find_from(cur_row, cur_col + 1)
-            goto_found()
-        else
+        ubyte res = find_wrap(cur_row, cur_col + 1)
+        if res == 0 {
             notify("Not found")
+            return
+        }
+        goto_found()
+        if res == 2
+            notify("Wrapped to top")
     }
 
-    sub replace_line(uword src, ubyte slen) -> ubyte {
-        ; build the replaced line into workbuf; return new length, or 255 on overflow.
-        ; counts replacements made into g_line_repls.
-        ubyte tlen = lsb(strings.length(find_term))
-        ubyte rlen = lsb(strings.length(repl_term))
-        g_line_repls = 0
-        ubyte o = 0
-        ubyte i = 0
-        while i < slen {
-            if i + tlen <= slen and line_match(src, i, tlen) {
-                ubyte k = 0
-                while k < rlen {
-                    if o >= edoc.MAX_LEN
-                        return 255
-                    workbuf[o] = repl_term[k]
-                    o++
-                    k++
-                }
-                i += tlen
-                g_line_repls++
-            } else {
-                if o >= edoc.MAX_LEN
-                    return 255
-                workbuf[o] = @(src + i)
-                o++
-                i++
+    sub prompt_replace() -> ubyte {
+        ; ask about the highlighted match; returns 'y', 'n', 'a' (all) or 27 (stop).
+        bar_fill(STATUS_ROW, CB_BAR)
+        put_str_at(1, STATUS_ROW, "Replace?  Yes  No  All  Esc")
+        ubyte hi = (CB_BAR & $f0) | ACCEL_FG    ; top-menu-style highlight for the trigger keys
+        txt.setclr(11, STATUS_ROW, hi)          ; Y(es)
+        txt.setclr(16, STATUS_ROW, hi)          ; N(o)
+        txt.setclr(20, STATUS_ROW, hi)          ; A(ll)
+        txt.setclr(25, STATUS_ROW, hi)          ; E \
+        txt.setclr(26, STATUS_ROW, hi)          ; s  Esc
+        txt.setclr(27, STATUS_ROW, hi)          ; c /
+        draw_ww_label(false)                    ; read-only "Whole Word" reminder when it's on
+        repeat {
+            ubyte k = wait_key()
+            if k >= $c1 and k <= $da
+                k -= $80
+            when k {
+                'y', ' ', 13 -> return 'y'
+                'n' -> return 'n'
+                'a' -> return 'a'
+                27, 3 -> return 27
             }
         }
-        return o
     }
 
     sub act_replace() {
-        if not prompt_str("Find:", &find_term, 38, false)
+        ; interactive find-and-replace: walk the whole document top-to-bottom, one match at a
+        ; time. For each match, highlight it and ask Y/N/All/Esc (A = replace the rest without
+        ; asking). The whole run is ONE undo group (a snapshot per touched line); if it changes
+        ; more lines than the ring holds it drops history (can't undo fully).
+        if not prompt_str("Find:", &find_term, 38, false, true)
             return
-        if not prompt_str("Replace with:", &repl_term, 38, true)    ; empty = delete
+        if not prompt_str("Replace with:", &repl_term, 38, true, true)    ; empty = delete
             return
         commit_editbuf()
-        undo_begin()                        ; one undo group for the whole replace-all
+        ubyte tlen = lsb(strings.length(find_term))
+        ubyte rlen = lsb(strings.length(repl_term))
         g_repl_count = 0
-        uword changed = 0                   ; lines actually modified (= undo records pushed)
-        uword r = 0
-        while r < edoc.line_count {
-            ubyte llen = edoc.load(r, &tmpbuf)
-            ubyte nl = replace_line(&tmpbuf, llen)
-            if nl != 255 and g_line_repls != 0 {
-                urec_replace(r, &tmpbuf, llen)      ; snapshot OLD content (still in tmpbuf)
-                void edoc.commit(r, &workbuf, nl)
-                g_repl_count += g_line_repls
-                changed++
+        uword records = 0                   ; undo records pushed (= lines touched)
+        uword last_snap = $ffff             ; last line we snapshotted (none yet)
+        bool grp = false                    ; undo group started lazily on the first real change
+        bool all = false
+        uword r = 0                         ; scan cursor (search from the very top)
+        ubyte c = 0
+        while find_from(r, c) {             ; sets found_row / found_col
+            bool do_repl = true
+            if not all {
+                ; highlight the match via the selection, scroll it into view, then ask
+                cur_row = found_row
+                cur_col = found_col + tlen
+                anc_row = found_row
+                anc_col = found_col
+                sel_active = true
+                void ensure_visible()
+                draw_all_text()
+                ubyte k = prompt_replace()
+                if k == 27
+                    break
+                if k == 'n'
+                    do_repl = false
+                if k == 'a'
+                    all = true
             }
-            r++
+            ubyte llen = edoc.load(found_row, &tmpbuf)      ; (re)load - rendering clobbered tmpbuf
+            if (llen as uword) - tlen + rlen > edoc.MAX_LEN  ; replacement won't fit -> skip
+                do_repl = false
+            if do_repl {
+                if not grp {                                ; start the undo group on 1st change only
+                    undo_begin()                            ; (so cancelling with no edits keeps redo)
+                    grp = true
+                }
+                if found_row != last_snap {                 ; snapshot the line's ORIGINAL once
+                    urec_replace(found_row, &tmpbuf, llen)
+                    last_snap = found_row
+                    records++
+                }
+                ; build prefix [0,found_col) + repl + suffix [found_col+tlen, llen) into workbuf
+                ubyte o = 0
+                ubyte j = 0
+                while j < found_col {
+                    workbuf[o] = tmpbuf[j]
+                    o++
+                    j++
+                }
+                j = 0
+                while j < rlen {
+                    workbuf[o] = repl_term[j]
+                    o++
+                    j++
+                }
+                j = found_col + tlen
+                while j < llen {
+                    workbuf[o] = tmpbuf[j]
+                    o++
+                    j++
+                }
+                void edoc.commit(found_row, &workbuf, o)
+                g_repl_count++
+                r = found_row
+                c = found_col + rlen                        ; continue after the inserted text
+            } else {
+                r = found_row
+                c = found_col + tlen                        ; skip this match
+            }
         }
-        if changed > UNDO_DEPTH             ; group bigger than the ring -> can't undo it fully
+        if records > UNDO_DEPTH             ; group bigger than the ring -> can't undo it fully
             undo_clear()
+        sel_active = false
         if cur_row >= edoc.line_count
             cur_row = edoc.line_count - 1
         cur_len = edoc.load(cur_row, &editbuf)
@@ -1640,7 +1761,7 @@ main {
     sub act_goto() {
         ; prompt for a line number and jump there
         fnbuf[0] = 0
-        if not prompt_str("Go to line:", &fnbuf, 5, false)
+        if not prompt_str("Go to line:", &fnbuf, 5, false, false)
             return
         uword n = 0
         ubyte i = 0

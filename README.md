@@ -82,8 +82,20 @@ highlighted red letter (e.g. `Alt`+`F` → File).
 | --- | --- |
 | Ctrl+F / F6 | Find |
 | Ctrl+G / F3 | Find next |
-| Ctrl+R / F8 | Replace |
+| Ctrl+R / F8 | Replace (interactive) |
 | Ctrl+J | Go to line |
+
+Search is case-insensitive. **Find** and **Find next** **wrap around** — when they reach the end
+of the document they continue from the top and show *"Wrapped to top."* **Replace** is
+**interactive**: after you enter the search and replacement text, EDIT highlights each match and
+asks **`Y`** (replace), **`N`** (skip), **`A`** (replace this and all the rest), or **Esc** (stop).
+The whole replace run is a single undo step.
+
+**Whole Word** — toggle it with **Cmdr+W** (the Commodore key + `W`) while the Find or Replace
+prompt is open; the search bar shows **Whole Word On/Off** on the right, and the trigger letter is
+highlighted just like a menu accelerator. When on, both Find and Replace match only when the term
+stands as its own word — bounded by non-alphanumeric characters — so searching `cat` skips the
+`cat` inside `cats` or `category`.
 
 ### Files & help
 
