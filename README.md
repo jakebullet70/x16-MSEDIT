@@ -109,14 +109,17 @@ A few things worth knowing about how it works:
 - **Per-line granularity.** History is tracked a line (or a structural change) at a time, not
   a keystroke at a time. One Ctrl+Z reverts everything you typed on a line as a single step,
   and it also unwinds structural edits — an Enter-split rejoins, a Backspace/Delete line-join
-  splits back apart, a deleted or pasted line comes back or goes away, and a multi-line
-  selection delete is restored in one step.
+  splits back apart, a deleted or pasted line comes back or goes away, a multi-line selection
+  delete is restored in one step, and a **Replace-all** or a **multi-line paste** is undone in
+  one step too.
+- **Undo survives a Save.** Saving no longer discards the history — you can save and still walk
+  your edits back afterward.
 - **Stored in banked RAM.** Snapshots live in the same banked-RAM arena as the document (up to
-  64 undo steps deep), so a deep history costs no scarce low RAM.
+  64 steps deep), so a deep history costs no scarce low RAM. A Replace-all or paste that changes
+  more than 64 lines at once is the one case that can't be fully tracked, so it clears history.
 - **A fresh edit clears the redo stack** — the usual editor behaviour.
-- **History is cleared by whole-document operations.** Saving, opening a file, starting a New
-  document, and Replace-all all reset the undo history (Save compacts the banked arena, which
-  reclaims old snapshots). After one of these, Ctrl+Z reports *"Nothing to undo."*
+- **History is cleared only when the whole document is replaced** — starting a **New** document
+  or **Opening** a file. After that, Ctrl+Z reports *"Nothing to undo."*
 
 ## Syntax coloring
 

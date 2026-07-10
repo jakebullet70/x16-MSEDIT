@@ -1287,14 +1287,11 @@ main {
             return false
         }
         modified = false
-        ; free compaction: write to disk, then reload into a fresh arena (clears undo history)
-        undo_clear()
-        if edoc.load_file(name) {
-            if cur_row >= edoc.line_count
-                cur_row = edoc.line_count - 1
-            cur_len = edoc.load(cur_row, &editbuf)
-            cur_dirty = false
-        }
+        ; NOTE: we deliberately do NOT reload/compact here. The old code reset the arena after
+        ; saving to reclaim leaked line slots, but that invalidated every undo snapshot. Keeping
+        ; the arena intact lets undo/redo survive a Save (standard editor behaviour). The document
+        ; is already correct in memory, so nothing needs reloading; leaked slots are still
+        ; reclaimed the next time the document is replaced (New / Open both reset the arena).
         notify("Saved")                     ; static confirmation (the blink ran on "Saving...")
         return true
     }
@@ -1609,18 +1606,23 @@ main {
         if not prompt_str("Replace with:", &repl_term, 38, true)    ; empty = delete
             return
         commit_editbuf()
-        undo_clear()                        ; replace-all touches many lines; not tracked in v1
+        undo_begin()                        ; one undo group for the whole replace-all
         g_repl_count = 0
+        uword changed = 0                   ; lines actually modified (= undo records pushed)
         uword r = 0
         while r < edoc.line_count {
             ubyte llen = edoc.load(r, &tmpbuf)
             ubyte nl = replace_line(&tmpbuf, llen)
             if nl != 255 and g_line_repls != 0 {
+                urec_replace(r, &tmpbuf, llen)      ; snapshot OLD content (still in tmpbuf)
                 void edoc.commit(r, &workbuf, nl)
                 g_repl_count += g_line_repls
+                changed++
             }
             r++
         }
+        if changed > UNDO_DEPTH             ; group bigger than the ring -> can't undo it fully
+            undo_clear()
         if cur_row >= edoc.line_count
             cur_row = edoc.line_count - 1
         cur_len = edoc.load(cur_row, &editbuf)
@@ -1875,22 +1877,25 @@ main {
             cur_len = edoc.load(cur_row, &editbuf)
             cur_dirty = false
         } else {
-            ; undo: a single-line inline paste is one REPLACE; a multi-line one (splits the
-            ; line) isn't tracked in v1, so drop history to stay safe.
-            if clip_has_newline()
-                undo_clear()
-            else {
-                undo_begin()
-                urec_replace(cur_row, &editbuf, cur_len)
-            }
-            ; selection clipboard: insert inline at the cursor, splitting on $0D
+            ; selection clipboard: insert inline at the cursor, splitting on $0D. Undo = one
+            ; group: REPLACE the start line + one ADDLINE per line the $0D splits insert (so a
+            ; single-line inline paste is just the REPLACE - same as before, and a multi-line
+            ; one is now fully undoable too).
+            undo_begin()
+            urec_replace(cur_row, &editbuf, cur_len)
+            ubyte nsplits = 0
+            bool ok = true
             uword pi = 0
             while pi < clip_len {
                 ubyte ch = @(clipbuf + pi)
                 pi++
                 if ch == 13 {
-                    if not do_split()
+                    if not do_split() {
+                        ok = false
                         break
+                    }
+                    urec_addline(cur_row)       ; do_split inserted this line (now the cursor line)
+                    nsplits++
                 } else if cur_len < edoc.MAX_LEN {
                     ubyte j = cur_len
                     while j > cur_col {
@@ -1903,6 +1908,8 @@ main {
                 }
             }
             cur_dirty = true
+            if not ok or nsplits >= UNDO_DEPTH  ; OOM mid-paste, or more lines than the ring -> drop
+                undo_clear()
         }
         modified = true
         void ensure_visible()
@@ -2103,16 +2110,6 @@ main {
             apply_rec(d_op[d_sp], d_row[d_sp], d_bnk[d_sp], d_off[d_sp], false)
         }
         after_undo_redo(focus)
-    }
-
-    sub clip_has_newline() -> bool {
-        uword i = 0
-        while i < clip_len {
-            if @(clipbuf + i) == 13
-                return true
-            i++
-        }
-        return false
     }
 
     sub goto_row(uword nr) {
