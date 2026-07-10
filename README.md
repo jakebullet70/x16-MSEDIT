@@ -41,6 +41,8 @@ operator and the model. If you're curious what it looks like to steer an LLM thr
   numbers, line numbers, and green `REM` comments), toggled from the Edit menu. It's
   display-only and stateless per line, so it never touches what's saved and keeps scrolling
   fast.
+- **Line numbers** — an optional left-hand gutter that numbers each line, toggled from the Edit
+  menu. Display-only, and the number for the line you're on is highlighted.
 - **Plain ASCII on disk** — text is edited in PETSCII internally but saved and loaded as
   plain ASCII, so files interchange cleanly with other tools.
 - **Restores your environment on exit** — screen mode, charset, text colour, and the case
@@ -145,6 +147,13 @@ stays out of the way while you scroll.
 you open a BASIC-source file — any name ending in **`.bas`**, **`.basl`**, **`.bl`**, or
 **`.bas.txt`** (case-insensitive). Opening anything else switches it back off. You can always
 override with the Edit-menu toggle.
+
+## Line numbers
+
+An optional left-hand **gutter** that shows each line's number. Toggle it from the **Edit** menu
+(*Line Numbers*, default off). The numbers are display-only — they never touch the saved bytes —
+and the gutter widens automatically as the document grows past 999 lines. The number of the line
+the cursor is on is highlighted, and the text simply shifts right to make room.
 
 ## Building
 

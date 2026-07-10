@@ -44,6 +44,8 @@ main {
     const ubyte CB_CUR  = $10           ; text cursor cell:           black on white
     const ubyte CB_MARK = $e1           ; selected text:              white on light blue
     const ubyte CB_SHADOW = $00         ; drop shadow:                black on black
+    const ubyte CB_GUTTER = $b1         ; line-number gutter:         white on dark grey
+    const ubyte CB_GUTTER_CUR = $b7     ; gutter, cursor's line:      yellow on dark grey
     const ubyte MOD_SHIFT = $01         ; kbdbuf_get_modifiers shift bit
     const ubyte MOD_CTRL  = $04         ; kbdbuf_get_modifiers ctrl bit
 
@@ -75,6 +77,8 @@ main {
     bool hl_on = false                  ; BASIC syntax colouring: default OFF, auto-on for BASIC
                                         ; files on open (has_basic_ext); toggle in the Edit menu
     bool ww_on = false                  ; search "whole word only": default OFF, toggle in Search menu
+    bool ln_on = false                  ; line-number gutter: default OFF, toggle in the Edit menu
+    ubyte gutter_w = 0                  ; current gutter width in columns (0 = off); text starts here
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
     uword prev_cur_row                  ; doc row that currently shows the cursor highlight
@@ -178,7 +182,7 @@ main {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
-            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   's' -> return 6 }
+            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   's' -> return 6   'l' -> return 7 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
@@ -360,8 +364,51 @@ main {
 
     ; ---------- text-area rendering ----------
 
+    sub recompute_gutter() {
+        ; set gutter_w from the line count: min 3 digits so 1-999 lines get a roomy gutter,
+        ; widening past 999, plus one separator column. 0 when the feature is off.
+        if not ln_on {
+            gutter_w = 0
+            return
+        }
+        ubyte digits = 3
+        uword t = edoc.line_count
+        while t >= 1000 {
+            digits++
+            t /= 10
+        }
+        gutter_w = digits + 1
+    }
+
+    sub draw_gutter(ubyte r) {
+        ; paint the line-number strip for screen text-row r (does nothing when the gutter is off)
+        if gutter_w == 0
+            return
+        ubyte sy = TEXT_TOP + r
+        uword idx = top_line + r
+        ubyte gcol = CB_GUTTER
+        if idx == cur_row
+            gcol = CB_GUTTER_CUR
+        ubyte c
+        for c in 0 to gutter_w - 1 {                 ; dark-grey strip; last col is the separator
+            txt.setchr(c, sy, SPACE_SC)
+            txt.setclr(c, sy, gcol)
+        }
+        if idx >= edoc.line_count
+            return                                   ; past end-of-document -> blank gutter
+        uword n = idx + 1                            ; 1-based line number, right-aligned
+        ubyte pos = gutter_w - 2                     ; rightmost digit (gutter_w-1 = separator)
+        repeat {
+            txt.setchr(pos, sy, txt.petscii2scr('0' + lsb(n % 10)))
+            n /= 10
+            if n == 0 or pos == 0
+                break
+            pos--
+        }
+    }
+
     sub draw_text_row(ubyte r) {
-        ; paint one screen row: characters, body colour, selection highlight, cursor cell
+        ; paint one screen row: line-number gutter, characters, body colour, selection, cursor
         ubyte sy = TEXT_TOP + r
         uword idx = top_line + r
         ; resolve this row's source line once (the cursor row uses the live editbuf)
@@ -380,9 +427,11 @@ main {
         ; column), then the cell loop reads it. Display-only; selection/cursor still override.
         if hl_on and blen != 0
             syntax.classify(bufptr, blen, &hlcol)
-        ; single pass: each cell gets its char (or a blank past end-of-line) + its colour
+        draw_gutter(r)                          ; line-number strip in cols [0, gutter_w)
+        ; single pass: each text cell (screen col gutter_w+c) gets its char + colour
+        ubyte textw = SCR_W - gutter_w
         ubyte c
-        for c in 0 to SCR_W - 1 {
+        for c in 0 to textw - 1 {
             uword srcidx = (left_col as uword) + c
             ubyte ch = SPACE_SC
             ubyte col = CB_BODY
@@ -391,8 +440,8 @@ main {
                 if hl_on
                     col = hlcol[lsb(srcidx)]        ; srcidx < blen <= 250, fits a byte index
             }
-            txt.setchr(c, sy, ch)
-            txt.setclr(c, sy, col)
+            txt.setchr(gutter_w + c, sy, ch)
+            txt.setclr(gutter_w + c, sy, col)
         }
         ; selection highlight: cells whose doc column is in [c0, c1) on this row
         if sel_active {
@@ -405,13 +454,13 @@ main {
                 if idx == e_row
                     c1 = e_col
                 ubyte sccol = 0
-                while sccol < SCR_W {
+                while sccol < textw {
                     uword dcol = left_col
                     dcol += sccol
                     if dcol >= c1
                         break
                     if dcol >= c0
-                        txt.setclr(sccol, sy, CB_MARK)
+                        txt.setclr(gutter_w + sccol, sy, CB_MARK)
                     sccol++
                 }
             }
@@ -419,16 +468,27 @@ main {
         ; cursor cell
         if idx == cur_row and cur_col >= left_col {
             ubyte ccol = cur_col - left_col
-            if ccol < SCR_W
-                txt.setclr(ccol, sy, CB_CUR)
+            if ccol < textw
+                txt.setclr(gutter_w + ccol, sy, CB_CUR)
         }
     }
 
     sub draw_all_text() {
+        recompute_gutter()              ; pick up a toggle or a line-count digit-width change
         ubyte r
         for r in 0 to TEXT_ROWS - 1
             draw_text_row(r)
         prev_cur_row = cur_row          ; a full repaint freshly draws the cursor at cur_row
+    }
+
+    sub draw_gutter_all() {
+        ; refresh every visible row's line number - used after a VRAM vertical scroll, which
+        ; shifts the text correctly but carries the old (now wrong) gutter numbers along with it
+        if gutter_w == 0
+            return
+        ubyte r
+        for r in 0 to TEXT_ROWS - 1
+            draw_gutter(r)
     }
 
     sub vram_copy_row(ubyte src_sy, ubyte dst_sy) {
@@ -485,11 +545,12 @@ main {
             top_line = cur_row - TEXT_ROWS + 1
             s = true
         }
+        ubyte textw = SCR_W - gutter_w          ; usable text width (gutter eats the left edge)
         if cur_col < left_col {
             left_col = cur_col
             s = true
-        } else if cur_col >= left_col + SCR_W {
-            left_col = cur_col - SCR_W + 1
+        } else if cur_col >= left_col + textw {
+            left_col = cur_col - textw + 1
             s = true
         }
         return s
@@ -544,6 +605,7 @@ main {
         } else {
             draw_all_text()
         }
+        draw_gutter_all()               ; the VRAM shift carried stale line numbers; refresh them
         prev_cur_row = cur_row
         draw_status()
     }
@@ -755,8 +817,12 @@ main {
     }
 
     sub confirm_save() -> ubyte {
-        ; 0 = don't save, 1 = save, 2 = cancel
-        bar_fill(STATUS_ROW, CB_BAR)
+        ; 0 = don't save, 1 = save, 2 = cancel. Flash the prompt once (bright red) so it isn't
+        ; missed on the status row - users overlooked the silent bar and thought Open did nothing.
+        bar_fill(STATUS_ROW, $21)                       ; red bg, white fg - the attention flash
+        put_str_at(1, STATUS_ROW, "Save changes? Y/N  (Esc=Cancel)")
+        sys.wait(18)                                    ; ~0.3s
+        bar_fill(STATUS_ROW, CB_BAR)                    ; settle to the normal bar, stays readable
         put_str_at(1, STATUS_ROW, "Save changes? Y/N  (Esc=Cancel)")
         repeat {
             ubyte k = wait_key()
@@ -829,11 +895,17 @@ main {
                     3 -> put_str_at(col, row, "Copy         Ctrl+C")
                     4 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
                     5 -> put_str_at(col, row, "Delete Line  Ctrl+K")
-                    else -> {
+                    6 -> {
                         if hl_on
                             put_str_at(col, row, "Syntax Color On ")
                         else
                             put_str_at(col, row, "Syntax Color Off")
+                    }
+                    else -> {
+                        if ln_on
+                            put_str_at(col, row, "Line Numbers On ")
+                        else
+                            put_str_at(col, row, "Line Numbers Off")
                     }
                 }
             }
@@ -883,7 +955,7 @@ main {
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
-            1 -> { n = 7  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
+            1 -> { n = 8  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
         }
         ubyte x0 = menu_col[active] - 1
@@ -944,7 +1016,8 @@ main {
                     3 -> op_copy()
                     4 -> op_paste()
                     5 -> op_delete_line()
-                    else -> hl_on = not hl_on   ; toggle syntax colouring (menu_mode_loop repaints)
+                    6 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
+                    else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
                 }
             }
             2 -> {                          ; Search
@@ -1276,6 +1349,7 @@ main {
         if edoc.load_file(fnbuf) {
             void strings.copy(fnbuf, filename)
             hl_on = has_basic_ext(fnbuf)    ; auto-colour BASIC source (.basl/.bl/.bas.txt), else off
+            ln_on = hl_on                   ; and show line numbers for BASIC source too
             cur_row = 0
             cur_col = 0
             top_line = 0
@@ -1289,6 +1363,7 @@ main {
             ; a later Save prompts for a new name instead of overwriting the big original.
             filename[0] = 0
             hl_on = has_basic_ext(fnbuf)    ; still colour by the picked name's extension
+            ln_on = hl_on                   ; and show line numbers to match
             cur_row = 0
             cur_col = 0
             top_line = 0
