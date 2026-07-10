@@ -11,42 +11,49 @@
 ; literals are folded to a canonical range, so PRINT / print / Print all match, and the
 ; match is robust to either PETSCII letter convention.
 ;
-; Colours keep the blue background nibble ($6x) so the editor's selection (CB_MARK) and
-; cursor (CB_CUR) passes, which run AFTER this in draw_text_row, still override cleanly.
+; Colours all keep the black background nibble ($0x) - a dark IDE look - so the editor's
+; selection (CB_MARK) and cursor (CB_CUR) passes, which run AFTER this in draw_text_row,
+; still override cleanly.
 
 syntax {
     %option ignore_unused
 
-    ; setclr colour bytes: high nibble = bg, low nibble = fg. Background is dark grey (b)
-    ; to match the editor's CB_BODY (XFMGR default palette); only the fg varies per token.
-    const ubyte C_DEFAULT = $b1         ; white     - normal text / variables / operators
-    const ubyte C_KEYWORD = $b7         ; yellow    - BASIC keywords (XFMGR accent)
-    const ubyte C_STRING  = $b3         ; cyan      - "quoted strings"
-    const ubyte C_NUMBER  = $ba         ; lt red    - numeric constants / line numbers
-    const ubyte C_COMMENT = $bd         ; lt green  - REM ... to end of line
+    ; setclr colour bytes: high nibble = bg, low nibble = fg. Background is black (0) to match
+    ; the editor's CB_BODY; only the fg varies per token (a VS-Code-style dark palette on the
+    ; X16 16-colour set): keywords blue, functions yellow, strings orange, numbers pale green,
+    ; comments green, everything else light grey.
+    const ubyte C_DEFAULT  = $0f        ; light grey  - normal text / variables / operators
+    const ubyte C_KEYWORD  = $0e        ; light blue  - BASIC statement keywords
+    const ubyte C_FUNCTION = $07        ; yellow      - BASIC built-in functions
+    const ubyte C_STRING   = $08        ; orange      - "quoted strings"
+    const ubyte C_NUMBER   = $0d        ; light green - numeric constants / line numbers
+    const ubyte C_COMMENT  = $05        ; green       - REM ... to end of line
 
-    ; REM is matched specially (it comments the rest of the line), so it's kept out of kw.
+    ; REM is matched specially (it comments the rest of the line), so it's kept out of the tables.
     str rem_kw = "REM"
 
-    ; X16 BASIC keyword set: Commodore BASIC V2 + the Commander X16 additions. Stored as
-    ; PETSCII string literals; matched case-insensitively. String-function forms keep their
-    ; trailing '$' because the tokenizer includes a trailing '$' in an identifier token.
-    uword[] kw = [
+    ; X16 BASIC keyword set: Commodore BASIC V2 + the Commander X16 additions. Split into
+    ; statements (coloured as keywords) and value-returning functions (coloured yellow, like
+    ; the sub/function names in a typical IDE theme). Stored as PETSCII string literals, matched
+    ; case-insensitively. Function forms keep any trailing '$' (the tokenizer includes it).
+    uword[] kw_stmt = [
         ; --- CBM BASIC V2 statements ---
         "END", "FOR", "NEXT", "DATA", "INPUT", "DIM", "READ", "LET", "GOTO", "RUN",
         "IF", "RESTORE", "GOSUB", "RETURN", "STOP", "ON", "WAIT", "LOAD", "SAVE",
         "VERIFY", "DEF", "POKE", "PRINT", "CONT", "LIST", "CLR", "CMD", "SYS", "OPEN",
-        "CLOSE", "GET", "NEW", "TAB", "TO", "FN", "SPC", "THEN", "NOT", "STEP", "AND",
-        "OR", "GO", "ELSE",
+        "CLOSE", "GET", "NEW", "TO", "THEN", "NOT", "STEP", "AND", "OR", "GO", "ELSE",
+        ; --- Commander X16 statement additions ---
+        "VPOKE", "SCREEN", "PSET", "LINE", "FRAME", "RECT", "CIRCLE", "CHAR", "MOUSE",
+        "COLOR", "LOCATE", "CLS", "DOS", "OLD", "MON", "VLOAD", "BLOAD", "BSAVE",
+        "BVERIFY", "BOOT", "RESET", "KEY", "BANK", "MENU", "FONT"
+    ]
+    uword[] kw_func = [
         ; --- CBM BASIC V2 functions ---
         "SGN", "INT", "ABS", "USR", "FRE", "POS", "SQR", "RND", "LOG", "EXP", "COS",
-        "SIN", "TAN", "ATN", "PEEK", "LEN", "VAL", "ASC",
+        "SIN", "TAN", "ATN", "PEEK", "LEN", "VAL", "ASC", "TAB", "SPC", "FN",
         "STR$", "CHR$", "LEFT$", "RIGHT$", "MID$",
-        ; --- Commander X16 additions ---
-        "VPEEK", "VPOKE", "SCREEN", "PSET", "LINE", "FRAME", "RECT", "CIRCLE", "CHAR",
-        "MOUSE", "COLOR", "LOCATE", "CLS", "DOS", "OLD", "MON", "VLOAD", "BLOAD",
-        "BSAVE", "BVERIFY", "BOOT", "RESET", "KEY", "BANK", "HEX$", "MENU", "FONT",
-        "BIN$"
+        ; --- Commander X16 function additions ---
+        "VPEEK", "HEX$", "BIN$"
     ]
 
     sub fold(ubyte b) -> ubyte {
@@ -84,15 +91,23 @@ syntax {
     }
 
     sub lookup(uword tp, ubyte tlen) -> ubyte {
-        ; classify an identifier token: 2 = REM (comment), 1 = keyword, 0 = plain
+        ; classify an identifier token: 2 = REM (comment), 1 = statement keyword,
+        ; 3 = built-in function, 0 = plain. (s/k/n hoisted - prog8 has no block scope.)
         if tlen == 3 and eq(tp, rem_kw, 3)
             return 2
-        ubyte n = len(kw)
+        uword s
         ubyte k
+        ubyte n = len(kw_stmt)
         for k in 0 to n - 1 {
-            uword s = kw[k]
+            s = kw_stmt[k]
             if slen_of(s) == tlen and eq(tp, s, tlen)
                 return 1
+        }
+        n = len(kw_func)
+        for k in 0 to n - 1 {
+            s = kw_func[k]
+            if slen_of(s) == tlen and eq(tp, s, tlen)
+                return 3
         }
         return 0
     }
@@ -137,6 +152,8 @@ syntax {
                         ubyte col = C_DEFAULT
                         if kind == 1
                             col = C_KEYWORD
+                        if kind == 3
+                            col = C_FUNCTION
                         while ts < i {
                             @(dest + ts) = col
                             ts++

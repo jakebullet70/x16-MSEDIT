@@ -34,8 +34,8 @@ main {
     ; colour bytes for setclr (high nibble = bg, low nibble = fg). Palette follows XFMGR's
     ; default "Classic" scheme: 1=white 7=yellow 11=dark grey 14=light blue 0=black.
     const ubyte COL_FG  = 1             ; white     (clear_screen / chrout colour)
-    const ubyte COL_BG  = 11            ; dark grey (content field background)
-    const ubyte CB_BODY = $b1           ; edit area:                 white on dark grey
+    const ubyte COL_BG  = 0             ; black     (content field background - dark IDE look)
+    const ubyte CB_BODY = $0f           ; edit area:                 light grey on black
     const ubyte CB_BAR  = $e1           ; menu + status bars:        white on light blue
     const ubyte CB_BOX  = $b1           ; popup / dropdown interior:  white on dark grey
     const ubyte CB_BORDER = $be         ; popup frame lines + titles: light blue on dark grey
@@ -58,6 +58,8 @@ main {
 
     ; runtime screen geometry (queried after the mode switch)
     ubyte SCR_W, SCR_H, TEXT_ROWS, STATUS_ROW
+    ubyte md_boxbot                     ; bottom screen row of the last-drawn menu dropdown, so
+                                        ; closing/switching a menu can repaint just that band
     ubyte saved_mode                    ; screen mode to restore on exit
     ubyte saved_charset                 ; pre-launch charset (1=ISO 2=upper/gfx 3=lower); restored on exit
     ubyte saved_color                   ; pre-launch text colour; restored on exit
@@ -70,7 +72,8 @@ main {
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
-    bool hl_on = true                   ; BASIC syntax colouring on (toggle in the Edit menu)
+    bool hl_on = false                  ; BASIC syntax colouring: default OFF, auto-on for BASIC
+                                        ; files on open (has_basic_ext); toggle in the Edit menu
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
     uword prev_cur_row                  ; doc row that currently shows the cursor highlight
@@ -864,6 +867,7 @@ main {
             x1 = SCR_W - 1
         }
         ubyte y1 = y0 + n + 1
+        md_boxbot = y1                      ; remember the box extent so it can be erased cheaply
         ubyte sel = 0
         repeat {
             draw_dropdown(active, x0, y0, x1, y1, n, sel)
@@ -932,14 +936,34 @@ main {
         }
     }
 
+    sub erase_dropdown(ubyte active) {
+        ; erase the last-drawn dropdown by repainting ONLY the menu bar (row 0) and the text
+        ; rows the box covered (screen rows TEXT_TOP..md_boxbot) - far cheaper than full_redraw's
+        ; clear + 28-row repaint. `active` = the title to highlight (255 = none, i.e. menu closed).
+        draw_menubar(active)
+        ubyte last = md_boxbot
+        if last > STATUS_ROW - 1                ; never touch the status bar
+            last = STATUS_ROW - 1
+        ubyte sy = TEXT_TOP
+        while sy <= last {
+            draw_text_row(sy - TEXT_TOP)
+            sy++
+        }
+    }
+
     sub menu_mode_loop(ubyte active) {
+        bool first = true
         repeat {
-            full_redraw()               ; erase any previously-open dropdown (chars + colour)
-            draw_menubar(active)
+            if first {
+                draw_menubar(active)    ; first open: draw over the current screen - no clear
+                first = false
+            } else {
+                erase_dropdown(active)  ; switching menus: wipe the old dropdown, highlight the new
+            }
             ubyte choice = run_dropdown(active)
             when choice {
                 255 -> {
-                    full_redraw()
+                    erase_dropdown(255) ; close: wipe the dropdown + un-highlight the menu bar
                     return
                 }
                 254 -> {
@@ -954,9 +978,9 @@ main {
                         active = 0
                 }
                 else -> {
-                    full_redraw()
+                    erase_dropdown(255)         ; wipe the dropdown before running the action
                     menu_dispatch(active, choice)
-                    full_redraw()
+                    full_redraw()               ; the action may have drawn a dialog/prompt - restore
                     return
                 }
             }
@@ -1115,7 +1139,9 @@ main {
         if x1 + 1 < SCR_W and y1 + 1 < SCR_H
             draw_box_shadow(x0, y0, x1, y1)
         put_str_at(x0 + (w - 10) / 2, y0, " Open File ")
+        set_color_run(x0 + (w - 10) / 2, x0 + (w - 10) / 2 + 10, y0, CB_BOX)    ; title in white
         put_str_at(x0 + (w - 11) / 2, y1, " Esc to exit ")
+        set_color_run(x0 + (w - 11) / 2, x0 + (w - 11) / 2 + 12, y1, CB_BOX)    ; footer in white
         repeat {
             if cursor < top
                 top = cursor
@@ -1221,6 +1247,7 @@ main {
         undo_clear()                        ; fresh document -> old snapshots are invalid
         if edoc.load_file(fnbuf) {
             void strings.copy(fnbuf, filename)
+            hl_on = has_basic_ext(fnbuf)    ; auto-colour BASIC source (.basl/.bl/.bas.txt), else off
             cur_row = 0
             cur_col = 0
             top_line = 0
@@ -1233,6 +1260,7 @@ main {
             ; sets oom). Show the lines that fit, but DON'T adopt the filename - that way
             ; a later Save prompts for a new name instead of overwriting the big original.
             filename[0] = 0
+            hl_on = has_basic_ext(fnbuf)    ; still colour by the picked name's extension
             cur_row = 0
             cur_col = 0
             top_line = 0
@@ -1443,6 +1471,27 @@ main {
         if b >= $c1 and b <= $da
             return b - $80
         return b
+    }
+
+    sub ends_with_ci(uword name, uword suffix) -> bool {
+        ; case-insensitive (PETSCII fold) test: does `name` end with `suffix`?
+        ubyte nl = lsb(strings.length(name))
+        ubyte sl = lsb(strings.length(suffix))
+        if sl > nl
+            return false
+        uword np = name + nl - sl
+        ubyte i = 0
+        while i < sl {
+            if fold(@(np + i)) != fold(@(suffix + i))
+                return false
+            i++
+        }
+        return true
+    }
+
+    sub has_basic_ext(uword name) -> bool {
+        ; the BASIC source extensions that should auto-enable syntax colouring on load
+        return ends_with_ci(name, ".bas") or ends_with_ci(name, ".basl") or ends_with_ci(name, ".bl") or ends_with_ci(name, ".bas.txt")
     }
 
     sub line_match(uword src, ubyte at, ubyte tlen) -> bool {
