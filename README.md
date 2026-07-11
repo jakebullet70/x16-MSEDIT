@@ -48,7 +48,7 @@ operator and the model. If you're curious what it looks like to steer an LLM thr
   rows you see.
 - **Run through BASLOAD** — press **F5** to save the current file, hand it to the ROM
   [BASLOAD](https://github.com/stefan-b-jakobsson/basload-rom) tool (which tokenizes plain-text
-  BASIC source into a runnable program) and run it. EDIT arms **SHIFT+RUN** so one keypress brings
+  BASIC source into a runnable program) and run it. EDIT arms **F8** so one keypress brings
   you back to the editor at the same file and line (see [Run through BASLOAD](#run-through-basload)).
 - **Plain ASCII on disk** — text is edited in PETSCII internally but saved and loaded as
   plain ASCII, so files interchange cleanly with other tools.
@@ -195,11 +195,12 @@ into a runnable BASIC program. EDIT can drive the whole edit → run → return 
 1. **Save** the current file (prompting for a name if it's still untitled).
 2. **Hand off** to BASLOAD — it prints `BASLOAD"yourfile"` and feeds `RUN` to BASIC, so the program
    tokenizes and runs. When it ends you're at the BASIC `READY.` prompt.
-3. **Arm SHIFT+RUN** to reload EDIT. Because the X16's function-key macros are limited to 10 bytes
-   (and F12 can't be reprogrammed at all), the return uses the **DOS wedge**: SHIFT+RUN is set to
-   `↑/ED`, which loads and runs a tiny root launcher named **`ED`** (`10 LOAD"EDIT.PRG"`).
+3. **Arm F8** to reload EDIT. The return uses the **DOS wedge**: F8's KERNAL macro is set to `↑/ED`,
+   which loads and runs a tiny root launcher named **`ED`** (`10 LOAD"EDIT.PRG"`). (The `pfkey` API
+   can only reprogram F1–F8 and SHIFT+RUN; F8 is used because RUN/STOP is an awkward key to press —
+   the emulator maps it to the host Pause key, which most keyboards block.)
 
-**Press SHIFT+RUN** at the `READY.` prompt and EDIT restarts, **reopening the same file at the same
+**Press F8** at the `READY.` prompt and EDIT restarts, **reopening the same file at the same
 cursor line** — it leaves a small `ed.run` note at the root on the way out and consumes it on return
 (so nothing lingers, and cold-booting the machine is unaffected).
 

@@ -75,7 +75,7 @@ main {
     str untitled = "untitled"
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
-    ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; SHIFT+RUN macro: up-arrow "/ED" + CR -> reloads EDIT
+    ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
@@ -1783,17 +1783,19 @@ main {
                 return
         }
         write_run_state()                       ; remember doc + cursor line for the return trip
-        arm_return_key()                        ; SHIFT+RUN -> reload EDIT via the DOS wedge
+        arm_return_key()                        ; F8 -> reload EDIT via the DOS wedge
         run_basload = true
         g_running = false                       ; leave the main loop; start()'s tail hands off
     }
 
     sub arm_return_key() {
-        ; reprogram SHIFT+RUN (KERNAL pfkey key 9) to the DOS-wedge command that reloads EDIT.
+        ; reprogram F8 (KERNAL pfkey key 8) to the DOS-wedge command that reloads EDIT.
         ; macro `retkey` = up-arrow "/ED" + CR; persists in the KERNAL editor across the run.
+        ; (F8, not SHIFT+RUN: RUN/STOP is an awkward key to press -- the emulator maps it to
+        ;  host Pause, which most keyboards block. pfkey only programs F1-F8 and SHIFT+RUN.)
         cx16.r0 = &retkey
         %asm {{
-            ldx  #9                 ; key number 9 = SHIFT+RUN
+            ldx  #8                 ; key number 8 = F8
             ldy  #5                 ; macro length (bytes)
             lda  #7                 ; EXTAPI_pfkey
             jsr  cx16.extapi
