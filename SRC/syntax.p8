@@ -32,29 +32,15 @@ syntax {
     ; REM is matched specially (it comments the rest of the line), so it's kept out of the tables.
     str rem_kw = "REM"
 
-    ; X16 BASIC keyword set: Commodore BASIC V2 + the Commander X16 additions. Split into
-    ; statements (coloured as keywords) and value-returning functions (coloured yellow, like
-    ; the sub/function names in a typical IDE theme). Stored as PETSCII string literals, matched
-    ; case-insensitively. Function forms keep any trailing '$' (the tokenizer includes it).
-    uword[] kw_stmt = [
-        ; --- CBM BASIC V2 statements ---
-        "END", "FOR", "NEXT", "DATA", "INPUT", "DIM", "READ", "LET", "GOTO", "RUN",
-        "IF", "RESTORE", "GOSUB", "RETURN", "STOP", "ON", "WAIT", "LOAD", "SAVE",
-        "VERIFY", "DEF", "POKE", "PRINT", "CONT", "LIST", "CLR", "CMD", "SYS", "OPEN",
-        "CLOSE", "GET", "NEW", "TO", "THEN", "NOT", "STEP", "AND", "OR", "GO", "ELSE",
-        ; --- Commander X16 statement additions ---
-        "VPOKE", "SCREEN", "PSET", "LINE", "FRAME", "RECT", "CIRCLE", "CHAR", "MOUSE",
-        "COLOR", "LOCATE", "CLS", "DOS", "OLD", "MON", "VLOAD", "BLOAD", "BSAVE",
-        "BVERIFY", "BOOT", "RESET", "KEY", "BANK", "MENU", "FONT"
-    ]
-    uword[] kw_func = [
-        ; --- CBM BASIC V2 functions ---
-        "SGN", "INT", "ABS", "USR", "FRE", "POS", "SQR", "RND", "LOG", "EXP", "COS",
-        "SIN", "TAN", "ATN", "PEEK", "LEN", "VAL", "ASC", "TAB", "SPC", "FN",
-        "STR$", "CHR$", "LEFT$", "RIGHT$", "MID$",
-        ; --- Commander X16 function additions ---
-        "VPEEK", "HEX$", "BIN$"
-    ]
+    ; X16 BASIC keyword sets: Commodore BASIC V2 + the Commander X16 additions. Statements are
+    ; coloured as keywords; value-returning functions are coloured yellow (like sub names in an
+    ; IDE theme). Stored as space-delimited PETSCII blobs, matched case-insensitively (fold/eq).
+    ; This replaced the old uword[] arrays, which cost 188 bytes of lsb/msb pointer tables on top
+    ; of the same string bytes. Function forms keep any trailing '$'. Statements are split CBM/X16
+    ; only to keep each str well under the 256-byte limit; both classify as keywords.
+    str kw_stmt  = "END FOR NEXT DATA INPUT DIM READ LET GOTO RUN IF RESTORE GOSUB RETURN STOP ON WAIT LOAD SAVE VERIFY DEF POKE PRINT CONT LIST CLR CMD SYS OPEN CLOSE GET NEW TO THEN NOT STEP AND OR GO ELSE"
+    str kw_stmtx = "VPOKE SCREEN PSET LINE FRAME RECT CIRCLE CHAR MOUSE COLOR LOCATE CLS DOS OLD MON VLOAD BLOAD BSAVE BVERIFY BOOT RESET KEY BANK MENU FONT"
+    str kw_func  = "SGN INT ABS USR FRE POS SQR RND LOG EXP COS SIN TAN ATN PEEK LEN VAL ASC TAB SPC FN STR$ CHR$ LEFT$ RIGHT$ MID$ VPEEK HEX$ BIN$"
 
     sub fold(ubyte b) -> ubyte {
         ; letters -> a single canonical range so either PETSCII case matches; else self.
@@ -73,13 +59,6 @@ syntax {
         return b >= $30 and b <= $39
     }
 
-    sub slen_of(uword s) -> ubyte {
-        ubyte n = 0
-        while @(s + n) != 0
-            n++
-        return n
-    }
-
     sub eq(uword a, uword b, ubyte n) -> bool {
         ; compare n bytes case-insensitively (letters folded; '$' etc. literal)
         ubyte i
@@ -90,25 +69,34 @@ syntax {
         return true
     }
 
+    sub in_blob(uword blob, uword tp, ubyte tlen) -> bool {
+        ; true if token tp[0..tlen) matches a whole space-delimited word in blob (folded).
+        ; (s hoisted - prog8 vars are function-scoped, no block scope.)
+        ubyte i = 0
+        ubyte s
+        while @(blob + i) != 0 {
+            s = i                                   ; word start
+            while @(blob + i) != 0 and @(blob + i) != $20
+                i++
+            if (i - s) == tlen and eq(blob + s, tp, tlen)
+                return true
+            while @(blob + i) == $20                ; skip the separator(s)
+                i++
+        }
+        return false
+    }
+
     sub lookup(uword tp, ubyte tlen) -> ubyte {
         ; classify an identifier token: 2 = REM (comment), 1 = statement keyword,
-        ; 3 = built-in function, 0 = plain. (s/k/n hoisted - prog8 has no block scope.)
+        ; 3 = built-in function, 0 = plain.
         if tlen == 3 and eq(tp, rem_kw, 3)
             return 2
-        uword s
-        ubyte k
-        ubyte n = len(kw_stmt)
-        for k in 0 to n - 1 {
-            s = kw_stmt[k]
-            if slen_of(s) == tlen and eq(tp, s, tlen)
-                return 1
-        }
-        n = len(kw_func)
-        for k in 0 to n - 1 {
-            s = kw_func[k]
-            if slen_of(s) == tlen and eq(tp, s, tlen)
-                return 3
-        }
+        if in_blob(kw_stmt, tp, tlen)
+            return 1
+        if in_blob(kw_stmtx, tp, tlen)
+            return 1
+        if in_blob(kw_func, tp, tlen)
+            return 3
         return 0
     }
 
