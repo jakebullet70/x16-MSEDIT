@@ -76,6 +76,7 @@ main {
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
+    ubyte[4] f8def  = [$44, $4f, $53, $22]       ; F8's factory KERNAL macro (DOS") -- restored on exit
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
@@ -254,10 +255,12 @@ main {
         cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
         restore_machine_state()                 ; re-apply the user's charset + text colour (CINT reset them)
         txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
-        if run_basload
-            chain_to_basload(filename)          ; hand off to BASLOAD instead of quitting to READY
-        else
+        if run_basload {
+            chain_to_basload(filename)          ; hand off to BASLOAD; F8 stays armed for the return
+        } else {
+            reset_return_key()                  ; un-hijack F8 (restore its DOS" default) on real exit
             txt.print("bye!\n")
+        }
     }
 
     sub snapshot_machine_state() {
@@ -1797,6 +1800,18 @@ main {
         %asm {{
             ldx  #8                 ; key number 8 = F8
             ldy  #5                 ; macro length (bytes)
+            lda  #7                 ; EXTAPI_pfkey
+            jsr  cx16.extapi
+        }}
+    }
+
+    sub reset_return_key() {
+        ; restore F8 to its factory KERNAL macro (DOS") so the return-key hijack doesn't linger at
+        ; the BASIC prompt after EDIT quits normally. (pfkey macros otherwise persist until power-cycle.)
+        cx16.r0 = &f8def
+        %asm {{
+            ldx  #8                 ; key number 8 = F8
+            ldy  #4                 ; macro length (bytes)
             lda  #7                 ; EXTAPI_pfkey
             jsr  cx16.extapi
         }}
