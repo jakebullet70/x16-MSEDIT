@@ -57,6 +57,8 @@ main {
     const ubyte SC_BR = sc:'┘'
     const ubyte SC_H  = sc:'─'
     const ubyte SC_V  = sc:'│'
+    const ubyte SC_VR = sc:'├'          ; left tee  - divider junction on the box's left edge
+    const ubyte SC_VL = sc:'┤'          ; right tee - divider junction on the box's right edge
 
     ; runtime screen geometry (queried after the mode switch)
     ubyte SCR_W, SCR_H, TEXT_ROWS, STATUS_ROW
@@ -349,6 +351,16 @@ main {
             txt.setclr(x0, r, CB_BORDER)
             txt.setclr(x1, r, CB_BORDER)
         }
+    }
+
+    sub draw_menu_sep(ubyte x0, ubyte x1, ubyte row) {
+        ; a horizontal divider row across a dropdown's interior, tee'd into both side rails.
+        ubyte c
+        for c in x0 + 1 to x1 - 1
+            txt.setchr(c, row, SC_H)
+        txt.setchr(x0, row, SC_VR)
+        txt.setchr(x1, row, SC_VL)
+        set_color_run(x0, x1, row, CB_BAR)      ; match the recoloured frame glyphs
     }
 
     sub draw_box_shadow(ubyte x0, ubyte y0, ubyte x1, ubyte y1) {
@@ -1243,6 +1255,8 @@ main {
         ubyte i
         for i in 0 to n - 1 {
             ubyte row = y0 + 1 + i
+            if active == 1 and i >= 9            ; Edit: items below the Move Down divider shift down a row
+                row++
             ubyte base = CB_BAR
             set_color_run(x0 + 1, x1 - 1, row, CB_BAR)
             draw_item(active, i, x0 + 2, row)
@@ -1253,6 +1267,8 @@ main {
             ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
             ; survives the selection fill
             txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | ACCEL_FG)
+            if active == 1 and i == 8            ; Edit: divider between Move Down and the display toggles
+                draw_menu_sep(x0, x1, row + 1)
         }
     }
 
@@ -1274,6 +1290,8 @@ main {
             x1 = SCR_W - 1
         }
         ubyte y1 = y0 + n + 1
+        if active == 1                      ; Edit dropdown has one divider row (after Move Down)
+            y1++
         md_boxbot = y1                      ; remember the box extent so it can be erased cheaply
         ubyte sel = 0
         repeat {
