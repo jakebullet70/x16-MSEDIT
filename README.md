@@ -46,6 +46,10 @@ operator and the model. If you're curious what it looks like to steer an LLM thr
 - **Soft word wrap** — an optional display-only wrap (Edit menu) that folds long lines at word
   boundaries across screen rows without ever changing the file; arrow keys move by the wrapped
   rows you see.
+- **Run through BASLOAD** — press **F5** to save the current file, hand it to the ROM
+  [BASLOAD](https://github.com/stefan-b-jakobsson/basload-rom) tool (which tokenizes plain-text
+  BASIC source into a runnable program) and run it. EDIT arms **SHIFT+RUN** so one keypress brings
+  you back to the editor at the same file and line (see [Run through BASLOAD](#run-through-basload)).
 - **Plain ASCII on disk** — text is edited in PETSCII internally but saved and loaded as
   plain ASCII, so files interchange cleanly with other tools.
 - **Restores your environment on exit** — screen mode, charset, text colour, and the case
@@ -114,6 +118,7 @@ stands as its own word — bounded by non-alphanumeric characters — so searchi
 | Ctrl+N | New |
 | Ctrl+O | Open (file picker) |
 | F2 | Save |
+| F5 | Run through BASLOAD |
 | F1 | About |
 
 **Save As** asks before overwriting an existing file. Prompts that appear on the status bar
@@ -178,6 +183,34 @@ disk is never changed (no newlines are inserted). Instead of scrolling sideways,
 line stacked. Arrow keys move by the **visual** rows you see, so Up/Down step through a wrapped
 line's pieces, and the current line's highlight band covers all of its wrapped rows. Turn it off to
 go back to single-row lines with horizontal scrolling.
+
+## Run through BASLOAD
+
+[BASLOAD](https://github.com/stefan-b-jakobsson/basload-rom) is the X16's ROM-resident tool that
+turns plain-text BASIC source (label-based, no line numbers — files like `.BASL` / `.BAS` / `.BL`)
+into a runnable BASIC program. EDIT can drive the whole edit → run → return loop from a single key.
+
+**Press F5** (or **File ▸ Run BASLOAD**) and EDIT will:
+
+1. **Save** the current file (prompting for a name if it's still untitled).
+2. **Hand off** to BASLOAD — it prints `BASLOAD"yourfile"` and feeds `RUN` to BASIC, so the program
+   tokenizes and runs. When it ends you're at the BASIC `READY.` prompt.
+3. **Arm SHIFT+RUN** to reload EDIT. Because the X16's function-key macros are limited to 10 bytes
+   (and F12 can't be reprogrammed at all), the return uses the **DOS wedge**: SHIFT+RUN is set to
+   `↑/ED`, which loads and runs a tiny root launcher named **`ED`** (`10 LOAD"EDIT.PRG"`).
+
+**Press SHIFT+RUN** at the `READY.` prompt and EDIT restarts, **reopening the same file at the same
+cursor line** — it leaves a small `ed.run` note at the root on the way out and consumes it on return
+(so nothing lingers, and cold-booting the machine is unaffected).
+
+Notes and requirements:
+
+- Needs a **ROM with BASLOAD and the `pfkey` API (R47+)** and the DOS wedge (both stock on the X16).
+- The `ED` launcher is a fixed ~20-byte file at the SD/filesystem root, modeled on XFMGR's `/XT`.
+  `run.bat` writes it automatically into `run/` if it's missing; on real hardware, place an `ED`
+  launcher that `LOAD`s your `EDIT.PRG` at the root (delete it to have `run.bat` regenerate it).
+- The current version assumes your source file and `EDIT.PRG` are in the directory EDIT started in
+  (the normal case). A ready-to-run example, `HELLO.BASL`, is included in `run/`.
 
 ## Building
 

@@ -73,6 +73,9 @@ main {
     str fnbuf    = "?" * 42             ; input scratch for prompts
     str savebuf  = "?" * 44             ; "@:" + filename for overwrite
     str untitled = "untitled"
+    bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
+    str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
+    ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; SHIFT+RUN macro: up-arrow "/ED" + CR -> reloads EDIT
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
@@ -186,7 +189,7 @@ main {
     sub item_accel(ubyte active, ubyte key) -> ubyte {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
+            0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'r' -> return 4   'x' -> return 5 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   's' -> return 9   'l' -> return 10   'w' -> return 11 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
@@ -197,7 +200,7 @@ main {
     sub accel_off(ubyte active, ubyte i) -> ubyte {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
-            0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1
+            0 -> when i { 3 -> return 5   5 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1 (Run 'R'@0 default)
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
         }
@@ -236,7 +239,8 @@ main {
         cx16.r1 = diskio.curdir()
         if cx16.r1 != 0
             void strings.copy(cx16.r1, startdir)
-        new_document()
+        if not restore_run_state()      ; returning from a BASLOAD run? reopen the doc + line
+            new_document()
         full_redraw()
         g_running = true
         while g_running {
@@ -250,7 +254,10 @@ main {
         cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
         restore_machine_state()                 ; re-apply the user's charset + text colour (CINT reset them)
         txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
-        txt.print("bye!\n")
+        if run_basload
+            chain_to_basload(filename)          ; hand off to BASLOAD instead of quitting to READY
+        else
+            txt.print("bye!\n")
     }
 
     sub snapshot_machine_state() {
@@ -1194,6 +1201,7 @@ main {
                     1 -> put_str_at(col, row, "Open...    Ctrl+O")
                     2 -> put_str_at(col, row, "Save       F2")
                     3 -> put_str_at(col, row, "Save As...")
+                    4 -> put_str_at(col, row, "Run BASLOAD  F5")
                     else -> put_str_at(col, row, "Exit")
                 }
             }
@@ -1277,7 +1285,7 @@ main {
         ubyte n = 2
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
-            0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
+            0 -> { n = 6  boxw = 17 }       ; File ("Run BASLOAD  F5" / "Open...    Ctrl+O")
             1 -> { n = 12  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
         }
@@ -1330,6 +1338,7 @@ main {
                     1 -> act_open()
                     2 -> void save_now()
                     3 -> act_save_as()
+                    4 -> act_run_basload()
                     else -> act_exit()
                 }
             }
@@ -1765,6 +1774,102 @@ main {
             }
         }
         g_running = false
+    }
+
+    sub act_run_basload() {
+        ; save the document, then hand off to the ROM BASLOAD tool (arming SHIFT+RUN to reload EDIT).
+        if filename[0] == 0 or modified {
+            if not save_now()                   ; BASLOAD reads the source from disk
+                return
+        }
+        write_run_state()                       ; remember doc + cursor line for the return trip
+        arm_return_key()                        ; SHIFT+RUN -> reload EDIT via the DOS wedge
+        run_basload = true
+        g_running = false                       ; leave the main loop; start()'s tail hands off
+    }
+
+    sub arm_return_key() {
+        ; reprogram SHIFT+RUN (KERNAL pfkey key 9) to the DOS-wedge command that reloads EDIT.
+        ; macro `retkey` = up-arrow "/ED" + CR; persists in the KERNAL editor across the run.
+        cx16.r0 = &retkey
+        %asm {{
+            ldx  #9                 ; key number 9 = SHIFT+RUN
+            ldy  #5                 ; macro length (bytes)
+            lda  #7                 ; EXTAPI_pfkey
+            jsr  cx16.extapi
+        }}
+    }
+
+    sub chain_to_basload(str name) {
+        ; print `BASLOAD"name"` on screen, then feed CR + RUN + CR through the 10-byte keyboard
+        ; queue so BASIC re-reads the line and runs the tokenized program (see XFMGR chain_run).
+        txt.chrout($93)                         ; clear screen, cursor home
+        txt.nl()
+        txt.print("basload")
+        txt.chrout($22)                         ; "
+        txt.print(name)
+        txt.chrout($22)
+        txt.chrout($91)                         ; cursor up x2 -> back onto the BASLOAD line
+        txt.chrout($91)
+        cx16.kbdbuf_clear()
+        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen BASLOAD line
+        cx16.kbdbuf_put('r')
+        cx16.kbdbuf_put('u')
+        cx16.kbdbuf_put('n')
+        cx16.kbdbuf_put($0d)                    ; RUN + CR
+    }
+
+    sub write_run_state() {
+        ; file = document name + CR + cursor row (2 bytes lo/hi). Read back by restore_run_state.
+        if not diskio.f_open_w(runstate)
+            return
+        void diskio.f_write(filename, strings.length(filename))
+        tmpbuf[0] = 13                          ; CR separator
+        tmpbuf[1] = lsb(cur_row)
+        tmpbuf[2] = msb(cur_row)
+        void diskio.f_write(&tmpbuf, 3)
+        diskio.f_close_w()
+    }
+
+    sub restore_run_state() -> bool {
+        ; if the restart-state file exists (from a BASLOAD hand-off), reopen that document at the
+        ; saved cursor line and consume the file. Returns true if it reopened a document.
+        if not diskio.f_open(runstate)
+            return false
+        uword n = diskio.f_read(&tmpbuf, 255)
+        diskio.f_close()
+        diskio.delete(runstate)                 ; one-shot
+        if n < 3
+            return false
+        ubyte i = 0
+        while i < n and tmpbuf[i] != 13         ; filename runs up to the CR separator
+            i++
+        if i == 0 or i + 2 >= n                 ; no name, or the 2 line bytes are missing
+            return false
+        ubyte j = 0
+        while j < i {                           ; copy the name into fnbuf, NUL-terminated
+            fnbuf[j] = tmpbuf[j]
+            j++
+        }
+        fnbuf[i] = 0
+        uword line = mkword(tmpbuf[i+2], tmpbuf[i+1])   ; hi, lo
+        if not edoc.load_file(fnbuf)
+            return false
+        void strings.copy(fnbuf, filename)
+        hl_on = has_basic_ext(fnbuf)            ; BASIC source -> colour + line numbers, like Open
+        ln_on = hl_on
+        if line >= edoc.line_count
+            line = edoc.line_count - 1
+        cur_row = line
+        cur_col = 0
+        left_col = 0
+        top_line = 0
+        if cur_row >= TEXT_ROWS                 ; scroll so the cursor line is on screen
+            top_line = cur_row - TEXT_ROWS + 1
+        cur_len = edoc.load(cur_row, &editbuf)
+        cur_dirty = false
+        modified = false
+        return true
     }
 
     sub act_about() {
@@ -3080,6 +3185,7 @@ main {
             14 -> act_new()                 ; Ctrl+N  new
             15 -> act_open()                ; Ctrl+O  open
             137 -> void save_now()          ; F2  save
+            135 -> act_run_basload()        ; F5  save + run through BASLOAD
             133 -> act_about()              ; F1  help
             else -> {
                 if (k >= 32 and k <= 126) or (k >= 160) {

@@ -18,6 +18,12 @@ SET RUNDIR=%~dp0run
 IF NOT EXIST "%RUNDIR%" MKDIR "%RUNDIR%"
 COPY /Y "%~dp0edit.prg" "%RUNDIR%\edit.prg" >NUL
 
+REM 2b) write the /ED root launcher (a 20-byte tokenized `10 LOAD"EDIT.PRG"`), if absent.
+REM     After File>Run BASLOAD (F5), EDIT arms SHIFT+RUN to the DOS-wedge command ^/ED, which
+REM     runs this launcher to reload EDIT. Modeled on XFMGR's /XT. Edit the path inside if
+REM     edit.prg lives in a subfolder. Delete the file to have it regenerated.
+IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,17,8,10,0,147,34,69,68,73,84,46,80,82,71,34,0,0,0))"
+
 REM 3) launch with the run folder as the host filesystem root, so the emulator
 REM    boots straight into edit.prg.
 CALL "%~dp0LOCAL.BAT"
