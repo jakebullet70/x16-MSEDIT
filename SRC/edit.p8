@@ -30,6 +30,9 @@ main {
     const ubyte NMENU      = 4
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
+    const uword BUILD_NUM  = 29         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+                                        ; build.bat's build-sync step keeps README's "Version 0.9.N"
+                                        ; level with this - bump either one and the next build propagates.
 
     ; colour bytes for setclr (high nibble = bg, low nibble = fg). Palette follows XFMGR's
     ; default "Classic" scheme: 1=white 7=yellow 11=dark grey 14=light blue 0=black.
@@ -2067,7 +2070,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             put_str_at(tx, 13, "Running on:  Emulator")
         else
             put_str_at(tx, 13, "Running on:  Hardware")
-        put_str_at(tx, 15,     "(c)sadLogic 2026 V0.9.0")
+        put_str_at(tx, 15,     "(c)sadLogic 2026 v0.9.")         ; version = v0.9.<BUILD_NUM>
+        void put_uw_at(tx + 22, 15, BUILD_NUM)                   ; 22 = len("(c)sadLogic 2026 v0.9.")
         put_str_at(tx, 16,     "Open Source! play, have fun!")
         ubyte fcol = x0 + (w - 13) / 2
         put_str_at(fcol, 18, " Press any key ")               ; hint on the bottom frame

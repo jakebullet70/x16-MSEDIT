@@ -7,7 +7,7 @@ the whole document held in **banked RAM**.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.0** · © sadLogic 2026 · Open source
+> **Version 0.9.29** · © sadLogic 2026 · Open source
 
 ---
 
