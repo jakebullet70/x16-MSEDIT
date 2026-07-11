@@ -140,8 +140,8 @@ A few things worth knowing about how it works:
 - **Undo survives a Save.** Saving no longer discards the history — you can save and still walk
   your edits back afterward.
 - **Stored in banked RAM.** Snapshots live in the same banked-RAM arena as the document (up to
-  64 steps deep), so a deep history costs no scarce low RAM. A Replace-all or paste that changes
-  more than 64 lines at once is the one case that can't be fully tracked, so it clears history.
+  32 steps deep), so a deep history costs no scarce low RAM. A Replace-all or paste that changes
+  more than 32 lines at once is the one case that can't be fully tracked, so it clears history.
 - **A fresh edit clears the redo stack** — the usual editor behaviour.
 - **History is cleared only when the whole document is replaced** — starting a **New** document
   or **Opening** a file. After that, Ctrl+Z reports *"Nothing to undo."*

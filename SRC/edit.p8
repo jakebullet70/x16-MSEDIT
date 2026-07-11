@@ -130,7 +130,7 @@ main {
     bool clip_line
 
     ; ---------- undo / redo (per-line snapshots kept in banked RAM) ----------
-    const ubyte UNDO_DEPTH = 64
+    const ubyte UNDO_DEPTH = 32
     const ubyte OP_REPLACE = 1          ; line content changed; snapshot = old content
     const ubyte OP_ADDLINE = 2          ; a line was inserted; apply => delete it (no snapshot)
     const ubyte OP_DELLINE = 3          ; a line was deleted; snapshot = its old content
