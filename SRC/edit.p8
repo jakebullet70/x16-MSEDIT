@@ -76,7 +76,7 @@ main {
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
-    ubyte[4] f8def  = [$44, $4f, $53, $22]       ; F8's factory KERNAL macro (DOS") -- restored on exit
+    ubyte[99] fksnap                             ; snapshot of all 9 KERNAL fkey macros, restored verbatim on exit
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
@@ -240,8 +240,10 @@ main {
         cx16.r1 = diskio.curdir()
         if cx16.r1 != 0
             void strings.copy(cx16.r1, startdir)
-        if not restore_run_state()      ; returning from a BASLOAD run? reopen the doc + line
+        if not restore_run_state() {    ; fresh launch (no BASLOAD reload pending):
+            snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
             new_document()
+        }                               ; (on reload, restore_run_state loaded the snapshot from ed.run)
         full_redraw()
         g_running = true
         while g_running {
@@ -258,7 +260,7 @@ main {
         if run_basload {
             chain_to_basload(filename)          ; hand off to BASLOAD; F8 stays armed for the return
         } else {
-            reset_return_key()                  ; un-hijack F8 (restore its DOS" default) on real exit
+            restore_fkeys()                     ; put all fkeys back as the user had them (un-hijacks F8)
             txt.print("bye!\n")
         }
     }
@@ -1805,15 +1807,48 @@ main {
         }}
     }
 
-    sub reset_return_key() {
-        ; restore F8 to its factory KERNAL macro (DOS") so the return-key hijack doesn't linger at
-        ; the BASIC prompt after EDIT quits normally. (pfkey macros otherwise persist until power-cycle.)
-        cx16.r0 = &f8def
+    sub snapshot_fkeys() {
+        ; capture all 9 KERNAL fkey macros (fkeytb = 99 bytes at $A80E, RAM bank 0 / KVARS) so a
+        ; normal exit can put them back exactly as the user had them. pfkey only writes one slot, so
+        ; we read the table directly. See SRC/fktest.p8 and docs/x16/kernal-r49/cbm/editor.s.
+        cx16.r0 = &fksnap
         %asm {{
-            ldx  #8                 ; key number 8 = F8
-            ldy  #4                 ; macro length (bytes)
-            lda  #7                 ; EXTAPI_pfkey
-            jsr  cx16.extapi
+            php
+            sei
+            lda  $00                ; save the current RAM bank
+            pha
+            stz  $00                ; select RAM bank 0 (KVARS)
+            ldy  #0
+_snl:       lda  $a80e,y            ; fkeytb -> fksnap
+            sta  (cx16.r0),y
+            iny
+            cpy  #99
+            bne  _snl
+            pla
+            sta  $00                ; restore the RAM bank
+            plp
+        }}
+    }
+
+    sub restore_fkeys() {
+        ; write the snapshot back into fkeytb -- un-hijacks F8 and restores any custom macros the
+        ; user had, verbatim (not just F8's default). The pfkey hijack otherwise persists to power-cycle.
+        cx16.r0 = &fksnap
+        %asm {{
+            php
+            sei
+            lda  $00
+            pha
+            stz  $00                ; RAM bank 0 (KVARS)
+            ldy  #0
+_rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
+            sta  $a80e,y
+            iny
+            cpy  #99
+            bne  _rsl
+            pla
+            sta  $00
+            plp
         }}
     }
 
@@ -1837,7 +1872,9 @@ main {
     }
 
     sub write_run_state() {
-        ; file = document name + CR + cursor row (2 bytes lo/hi). Read back by restore_run_state.
+        ; file = document name + CR + cursor row (lo/hi) + the 99-byte fkey snapshot. The snapshot
+        ; rides along so the *original* (pre-hijack) fkeys survive the BASLOAD reload; restore_run_state
+        ; reads it back into fksnap on the next launch. Read back by restore_run_state.
         if not diskio.f_open_w(runstate)
             return
         void diskio.f_write(filename, strings.length(filename))
@@ -1845,6 +1882,7 @@ main {
         tmpbuf[1] = lsb(cur_row)
         tmpbuf[2] = msb(cur_row)
         void diskio.f_write(&tmpbuf, 3)
+        void diskio.f_write(&fksnap, 99)        ; carry the fkey snapshot across the reload
         diskio.f_close_w()
     }
 
@@ -1870,6 +1908,16 @@ main {
         }
         fnbuf[i] = 0
         uword line = mkword(tmpbuf[i+2], tmpbuf[i+1])   ; hi, lo
+        ubyte fk = i + 3                        ; the fkey snapshot follows the lo/hi line bytes
+        if fk + 99 <= n {                       ; new-format state file carries all 9 fkey macros
+            ubyte f = 0
+            while f < 99 {
+                fksnap[f] = tmpbuf[fk + f]
+                f++
+            }
+        } else {
+            snapshot_fkeys()                    ; old/short file: fall back to the live table
+        }
         if not edoc.load_file(fnbuf)
             return false
         void strings.copy(fnbuf, filename)
