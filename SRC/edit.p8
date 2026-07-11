@@ -74,11 +74,14 @@ main {
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
+    uword g_wbuf                        ; scratch: pointer to the line buffer last resolved for wrap math
     bool hl_on = false                  ; BASIC syntax colouring: default OFF, auto-on for BASIC
                                         ; files on open (has_basic_ext); toggle in the Edit menu
     bool ww_on = false                  ; search "whole word only": default OFF, toggle in Search menu
     bool ln_on = false                  ; line-number gutter: default OFF, toggle in the Edit menu
     ubyte gutter_w = 0                  ; current gutter width in columns (0 = off); text starts here
+    bool wrap_on = false                ; soft word-wrap (display only): default OFF, Edit-menu toggle
+    ubyte top_seg = 0                   ; column where the top visible visual-row starts within top_line
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
     uword prev_cur_row                  ; doc row that currently shows the cursor highlight
@@ -182,7 +185,7 @@ main {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
-            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   's' -> return 6   'l' -> return 7 }
+            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   's' -> return 9   'l' -> return 10   'w' -> return 11 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
@@ -193,7 +196,7 @@ main {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
             0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1
-            1 -> when i { 2 -> return 2 }                       ; Cut 'T'@2 (Undo/Redo accel @0)
+            1 -> when i { 2 -> return 2   6 -> return 4 }       ; Cut 'T'@2, Duplicate 'i'@4
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
         }
         return 0
@@ -381,11 +384,15 @@ main {
     }
 
     sub draw_gutter(ubyte r) {
-        ; paint the line-number strip for screen text-row r (does nothing when the gutter is off)
+        draw_gutter_dl(r, top_line + r, true)
+    }
+
+    sub draw_gutter_dl(ubyte r, uword idx, bool shownum) {
+        ; paint the gutter strip for screen row r showing doc line `idx`. shownum=false blanks the
+        ; number (used for soft-wrap continuation rows, which share the line above's number).
         if gutter_w == 0
             return
         ubyte sy = TEXT_TOP + r
-        uword idx = top_line + r
         ubyte gcol = CB_GUTTER
         if idx == cur_row
             gcol = CB_GUTTER_CUR
@@ -394,8 +401,8 @@ main {
             txt.setchr(c, sy, SPACE_SC)
             txt.setclr(c, sy, gcol)
         }
-        if idx >= edoc.line_count
-            return                                   ; past end-of-document -> blank gutter
+        if not shownum or idx >= edoc.line_count
+            return                                   ; continuation row / past EOF -> blank gutter
         uword n = idx + 1                            ; 1-based line number, right-aligned
         ubyte pos = gutter_w - 2                     ; rightmost digit (gutter_w-1 = separator)
         repeat {
@@ -404,6 +411,53 @@ main {
             if n == 0 or pos == 0
                 break
             pos--
+        }
+    }
+
+    sub wrap_next(uword buf, ubyte llen, ubyte start, ubyte w) -> ubyte {
+        ; soft-wrap: given the segment beginning at column `start`, return where it ends / the next
+        ; segment begins. Segment = buf[start .. result). result==llen means it's the last segment.
+        if w == 0 or start + w >= llen
+            return llen                              ; the rest fits on one visual row
+        ubyte i = start + w                          ; hard-break point (exclusive)
+        while i > start {
+            i--
+            if @(buf + i) == ' '
+                return i + 1                         ; break after the last space in the window
+        }
+        return start + w                            ; a single word wider than the row -> hard break
+    }
+
+    sub seg_start_of(uword buf, ubyte llen, ubyte col, ubyte w) -> ubyte {
+        ; column where the wrap-segment CONTAINING `col` begins (col may equal llen = at end)
+        ubyte s = 0
+        repeat {
+            ubyte e = wrap_next(buf, llen, s, w)
+            if col < e or e >= llen
+                return s
+            s = e
+        }
+    }
+
+    sub seg_last_start(uword buf, ubyte llen, ubyte w) -> ubyte {
+        ; column where the final wrap-segment of the line begins
+        ubyte s = 0
+        repeat {
+            ubyte e = wrap_next(buf, llen, s, w)
+            if e >= llen
+                return s
+            s = e
+        }
+    }
+
+    sub seg_prev_start(uword buf, ubyte llen, ubyte segstart, ubyte w) -> ubyte {
+        ; column where the wrap-segment immediately BEFORE the one at `segstart` begins
+        ubyte s = 0
+        repeat {
+            ubyte e = wrap_next(buf, llen, s, w)
+            if e >= segstart
+                return s
+            s = e
         }
     }
 
@@ -440,6 +494,8 @@ main {
                 if hl_on
                     col = hlcol[lsb(srcidx)]        ; srcidx < blen <= 250, fits a byte index
             }
+            if idx == cur_row
+                col = (col & $0f) | $b0             ; current-line band: dark-grey bg, keep the fg
             txt.setchr(gutter_w + c, sy, ch)
             txt.setclr(gutter_w + c, sy, col)
         }
@@ -475,10 +531,112 @@ main {
 
     sub draw_all_text() {
         recompute_gutter()              ; pick up a toggle or a line-count digit-width change
+        if wrap_on {
+            draw_all_text_wrapped()
+            return
+        }
         ubyte r
         for r in 0 to TEXT_ROWS - 1
             draw_text_row(r)
         prev_cur_row = cur_row          ; a full repaint freshly draws the cursor at cur_row
+    }
+
+    sub draw_wrapped_row(ubyte r, uword dl, ubyte cstart, ubyte cend, bool shownum) {
+        ; draw doc line `dl`'s slice [cstart, cend) on screen row r (soft-wrap visual row)
+        ubyte sy = TEXT_TOP + r
+        ubyte blen = 0
+        uword bufptr = 0
+        if dl < edoc.line_count {
+            if dl == cur_row {
+                bufptr = &editbuf
+                blen = cur_len
+            } else {
+                blen = edoc.load(dl, &tmpbuf)
+                bufptr = &tmpbuf
+            }
+        }
+        if hl_on and blen != 0
+            syntax.classify(bufptr, blen, &hlcol)
+        draw_gutter_dl(r, dl, shownum)
+        ubyte textw = SCR_W - gutter_w
+        ubyte c
+        for c in 0 to textw - 1 {
+            ubyte srcidx = cstart + c
+            ubyte ch = SPACE_SC
+            ubyte col = CB_BODY
+            if srcidx < cend {
+                ch = txt.petscii2scr(@(bufptr + srcidx))
+                if hl_on
+                    col = hlcol[srcidx]
+            }
+            if dl == cur_row
+                col = (col & $0f) | $b0
+            txt.setchr(gutter_w + c, sy, ch)
+            txt.setclr(gutter_w + c, sy, col)
+        }
+        if sel_active {
+            sel_norm()
+            if dl >= s_row and dl <= e_row {
+                ubyte c0 = 0
+                if dl == s_row
+                    c0 = s_col
+                ubyte c1 = blen                     ; whole rest of line for non-end rows
+                if dl == e_row
+                    c1 = e_col
+                ubyte cc = 0
+                while cc < textw {
+                    ubyte dcol = cstart + cc
+                    if dcol >= cend or dcol >= c1
+                        break
+                    if dcol >= c0
+                        txt.setclr(gutter_w + cc, sy, CB_MARK)
+                    cc++
+                }
+            }
+        }
+        if dl == cur_row and cur_col >= cstart {
+            bool oncur = cur_col < cend
+            if cur_col == cend and cend >= blen
+                oncur = true                        ; cursor at the very end of the last segment
+            if oncur {
+                ubyte ccol = cur_col - cstart
+                if ccol < textw
+                    txt.setclr(gutter_w + ccol, sy, CB_CUR)
+            }
+        }
+    }
+
+    sub draw_all_text_wrapped() {
+        ubyte textw = SCR_W - gutter_w
+        ubyte r = 0
+        uword dl = top_line
+        ubyte seg = top_seg
+        while r < TEXT_ROWS {
+            if dl >= edoc.line_count {
+                draw_wrapped_row(r, dl, 0, 0, true)     ; blank row past end-of-document
+                r++
+            } else {
+                uword b
+                ubyte llen
+                if dl == cur_row {
+                    b = &editbuf
+                    llen = cur_len
+                } else {
+                    b = &tmpbuf
+                    llen = edoc.load(dl, &tmpbuf)
+                }
+                ubyte segend = wrap_next(b, llen, seg, textw)
+                draw_wrapped_row(r, dl, seg, segend, seg == 0)
+                r++
+                if segend >= llen {
+                    dl++
+                    seg = 0
+                } else {
+                    seg = segend
+                }
+            }
+        }
+        prev_cur_row = cur_row
     }
 
     sub draw_gutter_all() {
@@ -536,7 +694,116 @@ main {
         }
     }
 
+    sub line_buf_len(uword dl) -> ubyte {
+        ; resolve doc line dl for wrap math: cursor line -> live editbuf, else tmpbuf. sets g_wbuf.
+        if dl == cur_row {
+            g_wbuf = &editbuf
+            return cur_len
+        }
+        g_wbuf = &tmpbuf
+        return edoc.load(dl, &tmpbuf)
+    }
+
+    sub retreat_top() {
+        ; move (top_line, top_seg) back by one visual row
+        ubyte textw = SCR_W - gutter_w
+        ubyte llen
+        if top_seg != 0 {
+            llen = line_buf_len(top_line)
+            top_seg = seg_prev_start(g_wbuf, llen, top_seg, textw)
+        } else if top_line != 0 {
+            top_line--
+            llen = line_buf_len(top_line)
+            top_seg = seg_last_start(g_wbuf, llen, textw)
+        }
+    }
+
+    sub ensure_visible_wrap() {
+        ; keep the cursor's visual row on screen by moving (top_line, top_seg)
+        ubyte textw = SCR_W - gutter_w
+        ubyte cseg = seg_start_of(&editbuf, cur_len, cur_col, textw)   ; cursor line = editbuf
+        if cur_row < top_line or (cur_row == top_line and cseg < top_seg) {
+            top_line = cur_row                  ; cursor above the top -> pin it to the top row
+            top_seg = cseg
+            return
+        }
+        uword dl = top_line                     ; is it already within [top, top+TEXT_ROWS)?
+        ubyte seg = top_seg
+        ubyte rows = 0
+        while rows < TEXT_ROWS {
+            if dl == cur_row and seg == cseg
+                return                          ; visible
+            if dl >= edoc.line_count
+                break
+            ubyte llen = line_buf_len(dl)
+            ubyte e = wrap_next(g_wbuf, llen, seg, textw)
+            if e >= llen {
+                dl++
+                seg = 0
+            } else {
+                seg = e
+            }
+            rows++
+        }
+        top_line = cur_row                      ; below the bottom -> put cursor on the last row
+        top_seg = cseg
+        ubyte k = 0
+        while k < TEXT_ROWS - 1 {
+            retreat_top()
+            k++
+        }
+    }
+
+    sub set_col_in_seg(ubyte tstart, ubyte scol, uword buf, ubyte llen, ubyte w) {
+        ; place the cursor `scol` columns into the segment starting at `tstart`, clamped so it
+        ; stays on that visual row
+        ubyte tend = wrap_next(buf, llen, tstart, w)
+        ubyte maxc = tend - 1
+        if tend >= llen
+            maxc = llen                         ; last segment: cursor may sit at the very end
+        ubyte nc = tstart + scol
+        if nc > maxc
+            nc = maxc
+        cur_col = nc
+    }
+
+    sub ed_up_wrap() {
+        ubyte textw = SCR_W - gutter_w
+        ubyte cseg = seg_start_of(&editbuf, cur_len, cur_col, textw)
+        ubyte scol = cur_col - cseg
+        ubyte tstart
+        if cseg != 0 {
+            tstart = seg_prev_start(&editbuf, cur_len, cseg, textw)
+            set_col_in_seg(tstart, scol, &editbuf, cur_len, textw)
+            redraw_after_move()
+        } else if cur_row != 0 {
+            goto_row(cur_row - 1)               ; commits editbuf + loads the previous line
+            tstart = seg_last_start(&editbuf, cur_len, textw)
+            set_col_in_seg(tstart, scol, &editbuf, cur_len, textw)
+            redraw_after_move()
+        }
+    }
+
+    sub ed_down_wrap() {
+        ubyte textw = SCR_W - gutter_w
+        ubyte cseg = seg_start_of(&editbuf, cur_len, cur_col, textw)
+        ubyte scol = cur_col - cseg
+        ubyte cend = wrap_next(&editbuf, cur_len, cseg, textw)
+        if cend < cur_len {
+            set_col_in_seg(cend, scol, &editbuf, cur_len, textw)
+            redraw_after_move()
+        } else if cur_row + 1 < edoc.line_count {
+            goto_row(cur_row + 1)
+            set_col_in_seg(0, scol, &editbuf, cur_len, textw)
+            redraw_after_move()
+        }
+    }
+
     sub ensure_visible() -> bool {
+        if wrap_on {
+            ensure_visible_wrap()               ; wrap: adjust the visual top and force a full repaint
+            return true
+        }
         bool s = false
         if cur_row < top_line {
             top_line = cur_row
@@ -567,6 +834,12 @@ main {
         ;   * no scroll                -> repaint only the old + new cursor rows
         ;   * scrolled by exactly 1    -> shift the text window in VRAM, repaint 1-2 rows
         ;   * scrolled further (PgUp/Dn)-> full repaint
+        if wrap_on {
+            ensure_visible_wrap()               ; soft-wrap forces a full repaint (segments shift)
+            draw_all_text()
+            draw_status()
+            return
+        }
         uword old_top = top_line
         ubyte old_left = left_col
         bool scrolled = ensure_visible()
@@ -763,6 +1036,7 @@ main {
         ; modal text input on the status row. Enter -> true (false if empty and not
         ; allow_empty); Esc/Stop -> false. Pre-fills with whatever is already in dest.
         ; ww_hint: show the whole-word toggle on the bar and let Commodore+W flip it live.
+        flash_status(promptmsg)                 ; one red flash so the prompt draws the eye
         bar_fill(STATUS_ROW, CB_BAR)
         put_str_at(1, STATUS_ROW, promptmsg)
         if ww_hint
@@ -816,12 +1090,18 @@ main {
         }
     }
 
-    sub confirm_save() -> ubyte {
-        ; 0 = don't save, 1 = save, 2 = cancel. Flash the prompt once (bright red) so it isn't
-        ; missed on the status row - users overlooked the silent bar and thought Open did nothing.
-        bar_fill(STATUS_ROW, $21)                       ; red bg, white fg - the attention flash
-        put_str_at(1, STATUS_ROW, "Save changes? Y/N  (Esc=Cancel)")
+    sub flash_status(str m) {
+        ; one bright-red attention flash of a status-row prompt, so it isn't missed on the thin
+        ; bottom bar; the caller then draws it normally (CB_BAR) and it stays readable.
+        bar_fill(STATUS_ROW, $21)                       ; red bg, white fg
+        put_str_at(1, STATUS_ROW, m)
         sys.wait(18)                                    ; ~0.3s
+    }
+
+    sub confirm_save() -> ubyte {
+        ; 0 = don't save, 1 = save, 2 = cancel. Flash the prompt so it isn't missed on the status
+        ; row - users overlooked the silent bar and thought Open did nothing.
+        flash_status("Save changes? Y/N  (Esc=Cancel)")
         bar_fill(STATUS_ROW, CB_BAR)                    ; settle to the normal bar, stays readable
         put_str_at(1, STATUS_ROW, "Save changes? Y/N  (Esc=Cancel)")
         repeat {
@@ -832,6 +1112,24 @@ main {
                 'y' -> return 1
                 'n' -> return 0
                 27, 3 -> return 2
+            }
+        }
+    }
+
+    sub confirm_overwrite(str name) -> bool {
+        ; true = OK to write. If the file already exists, flash a prompt and require Y to proceed.
+        if not diskio.exists(name)
+            return true
+        flash_status("Overwrite existing file? Y/N")
+        bar_fill(STATUS_ROW, CB_BAR)
+        put_str_at(1, STATUS_ROW, "Overwrite existing file? Y/N")
+        repeat {
+            ubyte k = wait_key()
+            if k >= $c1 and k <= $da
+                k -= $80
+            when k {
+                'y' -> return true
+                'n', 27, 3 -> return false
             }
         }
     }
@@ -895,17 +1193,26 @@ main {
                     3 -> put_str_at(col, row, "Copy         Ctrl+C")
                     4 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
                     5 -> put_str_at(col, row, "Delete Line  Ctrl+K")
-                    6 -> {
+                    6 -> put_str_at(col, row, "Duplicate Line")
+                    7 -> put_str_at(col, row, "Move Up      Ctrl+Up")
+                    8 -> put_str_at(col, row, "Move Down    Ctrl+Dn")
+                    9 -> {
                         if hl_on
                             put_str_at(col, row, "Syntax Color On ")
                         else
                             put_str_at(col, row, "Syntax Color Off")
                     }
-                    else -> {
+                    10 -> {
                         if ln_on
                             put_str_at(col, row, "Line Numbers On ")
                         else
                             put_str_at(col, row, "Line Numbers Off")
+                    }
+                    else -> {
+                        if wrap_on
+                            put_str_at(col, row, "Word Wrap    On ")
+                        else
+                            put_str_at(col, row, "Word Wrap    Off")
                     }
                 }
             }
@@ -955,7 +1262,7 @@ main {
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
-            1 -> { n = 8  boxw = 22 }       ; Edit ("Paste        Ctrl+V/F4")
+            1 -> { n = 12  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
         }
         ubyte x0 = menu_col[active] - 1
@@ -1016,8 +1323,16 @@ main {
                     3 -> op_copy()
                     4 -> op_paste()
                     5 -> op_delete_line()
-                    6 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
-                    else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
+                    6 -> op_dup_line()
+                    7 -> op_move_line(false)
+                    8 -> op_move_line(true)
+                    9 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
+                    10 -> ln_on = not ln_on     ; toggle the line-number gutter (repaints on close)
+                    else -> {                   ; toggle soft word-wrap
+                        wrap_on = not wrap_on
+                        left_col = 0            ; wrap ignores horizontal scroll
+                        top_seg = 0             ; start the top line at its first segment
+                    }
                 }
             }
             2 -> {                          ; Search
@@ -1404,6 +1719,8 @@ main {
             fnbuf[0] = 0
             if not prompt_str("Save as:", &fnbuf, 38, false, false)
                 return false
+            if not confirm_overwrite(fnbuf)     ; new name -> guard against clobbering a file
+                return false
             void strings.copy(fnbuf, filename)
         }
         return do_save(filename)
@@ -1412,6 +1729,8 @@ main {
     sub act_save_as() {
         fnbuf[0] = 0
         if not prompt_str("Save as:", &fnbuf, 38, false, false)
+            return
+        if not confirm_overwrite(fnbuf)         ; guard against clobbering an existing file
             return
         void strings.copy(fnbuf, filename)
         void do_save(filename)
@@ -1492,6 +1811,7 @@ main {
         km_row(12, "Ctrl+C / Ctrl+X", "Copy / Cut")
         km_row(13, "Ctrl+V / F4",     "Paste")
         km_row(14, "Ctrl+K",          "Delete line")
+        km_row(15, "Ctrl+Up / Dn",    "Move line up/down")
         km_row(16, "Ctrl+F / F6",     "Find")
         km_row(17, "Ctrl+G / F3",     "Find next")
         km_row(18, "Ctrl+R / F8",     "Replace")
@@ -2030,6 +2350,55 @@ main {
         draw_status()
     }
 
+    sub op_dup_line() {
+        ; duplicate the current line, placing the copy below and moving the cursor onto it
+        commit_editbuf()
+        if not edoc.insert_line(cur_row + 1) {
+            notify("Document full - save now")
+            return
+        }
+        undo_begin()
+        urec_addline(cur_row + 1)                    ; undo = delete the duplicated line
+        void edoc.commit(cur_row + 1, &editbuf, cur_len)
+        cur_row++
+        cur_len = edoc.load(cur_row, &editbuf)
+        cur_dirty = false
+        sel_active = false
+        modified = true
+        void ensure_visible()
+        draw_all_text()
+        draw_status()
+    }
+
+    sub op_move_line(bool down) {
+        ; swap the current line with its neighbour above/below; the cursor follows the line
+        if down {
+            if cur_row + 1 >= edoc.line_count
+                return
+        } else if cur_row == 0 {
+            return
+        }
+        commit_editbuf()
+        uword other = cur_row - 1
+        if down
+            other = cur_row + 1
+        ubyte olen = edoc.load(other, &tmpbuf)       ; neighbour's content
+        undo_begin()
+        urec_replace(cur_row, &editbuf, cur_len)     ; snapshot both lines -> one undo step
+        urec_replace(other, &tmpbuf, olen)
+        void edoc.commit(other, &editbuf, cur_len)   ; current line moves into the neighbour slot
+        void edoc.commit(cur_row, &tmpbuf, olen)     ; neighbour fills the vacated slot
+        cur_row = other
+        cur_len = edoc.load(cur_row, &editbuf)
+        cur_dirty = false
+        sel_active = false
+        clamp_col()
+        modified = true
+        void ensure_visible()
+        draw_all_text()
+        draw_status()
+    }
+
     sub do_split() -> bool {
         ; split the current line at the cursor (like Enter, but no redraw); cursor
         ; moves to the start of the new (right-hand) line
@@ -2323,6 +2692,10 @@ main {
     ; ---------- navigation ----------
 
     sub ed_up() {
+        if wrap_on {
+            ed_up_wrap()
+            return
+        }
         if cur_row > 0 {
             goto_row(cur_row - 1)
             clamp_col()
@@ -2331,6 +2704,10 @@ main {
     }
 
     sub ed_down() {
+        if wrap_on {
+            ed_down_wrap()
+            return
+        }
         if cur_row + 1 < edoc.line_count {
             goto_row(cur_row + 1)
             clamp_col()
@@ -2630,8 +3007,18 @@ main {
                 else
                     ed_backspace()
             }
-            17 -> ed_down()
-            145 -> ed_up()
+            17 -> {                          ; Down arrow (Ctrl = move the line down)
+                if (g_mod & MOD_CTRL) != 0
+                    op_move_line(true)
+                else
+                    ed_down()
+            }
+            145 -> {                         ; Up arrow (Ctrl = move the line up)
+                if (g_mod & MOD_CTRL) != 0
+                    op_move_line(false)
+                else
+                    ed_up()
+            }
             29 -> {                          ; Right arrow (Ctrl = jump word right)
                 if (g_mod & MOD_CTRL) != 0
                     ed_word_right()

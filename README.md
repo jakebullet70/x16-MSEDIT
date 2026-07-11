@@ -43,6 +43,9 @@ operator and the model. If you're curious what it looks like to steer an LLM thr
   fast.
 - **Line numbers** — an optional left-hand gutter that numbers each line, toggled from the Edit
   menu. Display-only, and the number for the line you're on is highlighted.
+- **Soft word wrap** — an optional display-only wrap (Edit menu) that folds long lines at word
+  boundaries across screen rows without ever changing the file; arrow keys move by the wrapped
+  rows you see.
 - **Plain ASCII on disk** — text is edited in PETSCII internally but saved and loaded as
   plain ASCII, so files interchange cleanly with other tools.
 - **Restores your environment on exit** — screen mode, charset, text colour, and the case
@@ -75,8 +78,13 @@ highlighted red letter (e.g. `Alt`+`F` → File).
 | Ctrl+X | Cut line |
 | Ctrl+V / F4 | Paste |
 | Ctrl+K | Delete line |
+| Ctrl+↑ / Ctrl+↓ | Move line up / down |
 | Ctrl+Z | Undo |
 | Ctrl+U | Redo |
+
+**Enter auto-indents** — a new line starts with the same leading spaces as the line you left.
+**Duplicate Line** and **Move Line Up/Down** are on the **Edit** menu (Move also has the Ctrl+↑/↓
+keys above). The line the cursor is on is shown with a subtle highlight band.
 
 ### Search
 
@@ -107,6 +115,9 @@ stands as its own word — bounded by non-alphanumeric characters — so searchi
 | Ctrl+O | Open (file picker) |
 | F2 | Save |
 | F1 | About |
+
+**Save As** asks before overwriting an existing file. Prompts that appear on the status bar
+(Save-changes, Find, Replace, Go-to) flash once so they're easy to notice.
 
 > **Note for emulator users:** `x16emu` intercepts a few Ctrl chords before they reach the
 > program — `Ctrl+F` (fullscreen), `Ctrl+V` (host paste) and `Ctrl+R` (reset). EDIT provides
@@ -154,6 +165,19 @@ An optional left-hand **gutter** that shows each line's number. Toggle it from t
 (*Line Numbers*, default off). The numbers are display-only — they never touch the saved bytes —
 and the gutter widens automatically as the document grows past 999 lines. The number of the line
 the cursor is on is highlighted, and the text simply shifts right to make room.
+
+Like syntax coloring, line numbers **switch on automatically when you open a BASIC-source file**
+(`.bas` / `.basl` / `.bl` / `.bas.txt`) and off for anything else — so opening BASIC gives you both
+colors and numbers at once. Either can still be toggled by hand afterward from the Edit menu.
+
+## Word wrap
+
+An optional **soft word wrap** (Edit menu → *Word Wrap*, default off). When on, a line that's wider
+than the screen is folded at word boundaries across several screen rows for display — the file on
+disk is never changed (no newlines are inserted). Instead of scrolling sideways, you see the whole
+line stacked. Arrow keys move by the **visual** rows you see, so Up/Down step through a wrapped
+line's pieces, and the current line's highlight band covers all of its wrapped rows. Turn it off to
+go back to single-row lines with horizontal scrolling.
 
 ## Building
 
