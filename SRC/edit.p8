@@ -185,7 +185,7 @@ main {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
-            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   's' -> return 9   'l' -> return 10   'w' -> return 11 }
+            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   's' -> return 9   'l' -> return 10   'w' -> return 11 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             else -> when key { 'k' -> return 0   'a' -> return 1 }
         }
@@ -196,7 +196,7 @@ main {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
             0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1
-            1 -> when i { 2 -> return 2   6 -> return 4 }       ; Cut 'T'@2, Duplicate 'i'@4
+            1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
         }
         return 0
