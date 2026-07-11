@@ -152,9 +152,9 @@ main {
 
     ; file-picker popup: directory entries copied verbatim from diskio's listing into
     ; a flat slab (FNREC bytes per record, NUL-terminated name) for the Open dialog.
-    const ubyte FILE_CAP = 128          ; max entries shown
+    const ubyte FILE_CAP = 96           ; max entries shown
     const ubyte FNREC    = 32           ; bytes per record (name up to 31 + NUL)
-    uword filelist = memory("flist", 4096, 0)   ; FILE_CAP * FNREC
+    uword filelist = memory("flist", 3072, 0)   ; FILE_CAP * FNREC = 96 * 32
     ubyte file_count
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
