@@ -75,6 +75,7 @@ main {
     str untitled = "untitled"
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
+    uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ubyte[99] fksnap                             ; snapshot of all 9 KERNAL fkey macros, restored verbatim on exit
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
@@ -129,8 +130,13 @@ main {
     uword g_repl_count                  ; replacements committed in the last Replace run
 
     ; clipboard - holds either one whole line (clip_line=true, paste as a new line)
-    ; or selected text (clip_line=false, paste inline; may contain $0D line breaks)
-    uword clipbuf = memory("clip", 1024, 0)
+    ; or selected text (clip_line=false, paste inline; may contain $0D line breaks).
+    ; OVERLAY: clipbuf lives in its own banked-RAM bank (CLIP_BANK), not scarce low RAM. It
+    ; is modal (only copy/paste touch it) and fits one 8KB window. Every access maps the bank
+    ; first (cx16.push_rambank .. pop_rambank); edoc.load/commit calls nested inside stay
+    ; correct because push/pop is a CPU-stack LIFO that restores CLIP_BANK when they return.
+    const ubyte CLIP_BANK = edoc.ARENA_FIRST_BANK + 1       ; overlay bank 7 for the 1KB clipboard
+    const uword clipbuf   = xarena.WIN_START                ; $A000 within CLIP_BANK
     uword clip_len
     bool clip_has
     bool clip_line
@@ -157,10 +163,16 @@ main {
     uword g_group                       ; monotonically increasing action-group id
 
     ; file-picker popup: directory entries copied verbatim from diskio's listing into
-    ; a flat slab (FNREC bytes per record, NUL-terminated name) for the Open dialog.
+    ; a fixed-stride record array (FNREC bytes per record, NUL-terminated name) for Open.
+    ; OVERLAY: filelist lives in its own banked-RAM bank (FLIST_BANK), not low RAM - it is
+    ; modal (only the Open picker touches it) and FILE_CAP*FNREC (4992) fits one 8KB window.
+    ; Access maps the bank first; see the CLIP_BANK note above for why nested edoc calls stay safe.
     const ubyte FILE_CAP = 96           ; max entries shown
-    const ubyte FNREC    = 32           ; bytes per record (name up to 31 + NUL)
-    uword filelist = memory("flist", 3072, 0)   ; FILE_CAP * FNREC = 96 * 32
+    const ubyte FNREC    = 52           ; bytes/record: [type][name up to 49 + NUL][blocks]; matches
+                                        ; diskio's ~49-char names so long files open (no truncate-on-open).
+                                        ; Costs banked RAM only now: 96*52=4992 < 8192 (one bank).
+    const ubyte FLIST_BANK = edoc.ARENA_FIRST_BANK          ; overlay bank 6 for the picker list
+    const uword filelist   = xarena.WIN_START               ; $A000 within FLIST_BANK
     ubyte file_count
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
@@ -210,6 +222,8 @@ main {
 
     sub start() {
         saved_mode, cx16.r0L, cx16.r0H = cx16.get_screen_mode()
+        scan_basload_error(cx16.r0L, cx16.r0H)  ; read the still-intact boot screen (X=width,Y=height) for a
+                                                ; BASLOAD error line BEFORE the mode switch below wipes it
         snapshot_machine_state()                ; capture charset + text colour while still in the booted mode
         ; adopt the column width the machine booted in: 40-col -> 40x30, else 80x30.
         ; both normalize to a 30-row layout; the UI lays itself out from SCR_W/SCR_H below.
@@ -230,7 +244,7 @@ main {
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
-        xarena.first_bank = edoc.ARENA_FIRST_BANK   ; reserve the low banks for edoc's line table
+        xarena.first_bank = edoc.ARENA_FIRST_BANK + 2   ; +2 past the filelist/clip overlay banks (6,7)
         find_term[0] = 0                ; the "?"*N buffers start non-empty; clear them
         repl_term[0] = 0
         clip_has = false
@@ -240,11 +254,14 @@ main {
         cx16.r1 = diskio.curdir()
         if cx16.r1 != 0
             void strings.copy(cx16.r1, startdir)
-        if not restore_run_state() {    ; fresh launch (no BASLOAD reload pending):
+        bool reloaded = restore_run_state()
+        if not reloaded {               ; fresh launch (no BASLOAD reload pending):
             snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
             new_document()
         }                               ; (on reload, restore_run_state loaded the snapshot from ed.run)
         full_redraw()
+        if reloaded and basload_err_line != 0   ; the Run BASLOAD came back with an error; flag it and
+            show_basload_error()                ; the cursor is already parked on the offending line
         g_running = true
         while g_running {
             ubyte k = get_editor_key()
@@ -1475,6 +1492,7 @@ main {
         if file_count >= FILE_CAP
             return
         uword rec = filelist + (file_count as uword) * FNREC
+        cx16.push_rambank(FLIST_BANK)           ; the record lives in the overlay bank (nameptr is low RAM)
         @(rec) = etype
         ubyte i = 0
         while i < FNREC - 3 and @(nameptr + i) != 0 {   ; reserve the last byte for blocks
@@ -1486,12 +1504,15 @@ main {
         if blocks < 256
             bb = lsb(blocks)
         @(rec + FNREC - 1) = bb
+        cx16.pop_rambank()
         file_count++
     }
 
     sub copy_rec_slot(uword src, uword dst) {
         ; copy one FNREC-byte record (non-overlapping slots) - hand-rolled to avoid the
-        ; sys.memcopy overlap hazard, though here the slots never overlap
+        ; sys.memcopy overlap hazard, though here the slots never overlap. Assumes the caller
+        ; has already mapped FLIST_BANK (only sort_dirs_first calls this); a record or &tmpbuf
+        ; may be either operand - tmpbuf is low RAM so it reads/writes fine with the bank mapped.
         ubyte i
         for i in 0 to FNREC - 1
             @(dst + i) = @(src + i)
@@ -1499,9 +1520,10 @@ main {
 
     sub sort_dirs_first() {
         ; stable insertion sort so directory records sort before files; ".." (the first
-        ; dir, index 0) therefore stays at the very top. Sorts the slab records in place.
+        ; dir, index 0) therefore stays at the very top. Sorts the records in place.
         if file_count < 2
             return
+        cx16.push_rambank(FLIST_BANK)           ; all record reads/copies below hit the overlay bank
         ubyte i
         for i in 1 to file_count - 1 {
             uword reci = filelist + (i as uword) * FNREC
@@ -1522,10 +1544,11 @@ main {
             }
             copy_rec_slot(&tmpbuf, filelist + (j as uword) * FNREC)
         }
+        cx16.pop_rambank()
     }
 
     sub scan_files() {
-        ; fill the filelist slab with the current directory's entries: a ".." (go up)
+        ; fill the filelist records with the current directory's entries: a ".." (go up)
         ; entry first, then sub-directories and files. '.'-prefixed entries from the
         ; listing (incl. its own . / ..) are skipped; we synthesize our own "..".
         file_count = 0
@@ -1581,6 +1604,8 @@ main {
         ubyte nav_depth = 0                  ; sub-dirs descended below the start dir
         uword rec
         ubyte i
+        ubyte is_dir                         ; type + size pulled out of the chosen record on Enter
+        ubyte blk
         ; draw the static frame, title and footer ONCE - only the file list below is
         ; repainted as the cursor moves (redrawing the title each key caused header flicker)
         draw_box_frame(x0, y0, x1, y1)
@@ -1596,6 +1621,7 @@ main {
             if cursor >= top + rows
                 top = cursor - rows + 1
             ubyte r
+            cx16.push_rambank(FLIST_BANK)               ; records read below live in the overlay bank
             for r in 0 to rows - 1 {
                 ubyte rr = y0 + 1 + r
                 set_color_run(x0 + 1, x1 - 1, rr, CB_BOX)   ; clear the row (colour + chars)
@@ -1612,6 +1638,7 @@ main {
                         set_color_run(x0 + 1, x1 - 1, rr, CB_SEL)
                 }
             }
+            cx16.pop_rambank()
             if top != 0
                 txt.setchr(x1 - 1, y0 + 1, sc:'^')
             if top + rows < file_count
@@ -1641,13 +1668,17 @@ main {
                 4 -> cursor = file_count - 1    ; End
                 13 -> {                         ; Enter: open file, or enter directory
                     rec = filelist + (cursor as uword) * FNREC
-                    i = 0
-                    while @(rec + 1 + i) != 0 {  ; copy the name out (dest = scratch)
+                    cx16.push_rambank(FLIST_BANK)   ; pull the whole record out of the overlay bank,
+                    i = 0                           ; then drop the mapping before any diskio/scan
+                    while @(rec + 1 + i) != 0 {  ; copy the name out (dest = low-RAM scratch)
                         @(dest + i) = @(rec + 1 + i)
                         i++
                     }
                     @(dest + i) = 0
-                    if @(rec) != 0 {            ; directory -> chdir + rescan, stay open
+                    is_dir = @(rec)
+                    blk = @(rec + FNREC - 1)     ; size hint for the load blink
+                    cx16.pop_rambank()
+                    if is_dir != 0 {           ; directory -> chdir + rescan, stay open
                         diskio.chdir(dest)
                         ; track depth so a later cancel can restore the start dir. ".."
                         ; goes up (one less deep, floored at 0); a named dir goes down.
@@ -1661,7 +1692,7 @@ main {
                         cursor = 0
                         top = 0
                     } else {
-                        pick_blocks = @(rec + FNREC - 1)   ; size hint for the load blink
+                        pick_blocks = blk
                         return true             ; file -> dest holds the chosen name
                                                 ; (caller shows "Loading..." on the status bar)
                     }
@@ -1923,6 +1954,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         void strings.copy(fnbuf, filename)
         hl_on = has_basic_ext(fnbuf)            ; BASIC source -> colour + line numbers, like Open
         ln_on = hl_on
+        if basload_err_line != 0                ; a BASLOAD error scraped off the boot screen wins over the
+            line = basload_err_line - 1         ; saved cursor: jump to it. BASLOAD line#s are 1-based.
         if line >= edoc.line_count
             line = edoc.line_count - 1
         cur_row = line
@@ -1935,6 +1968,87 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         cur_dirty = false
         modified = false
         return true
+    }
+
+    ; ---- BASLOAD error read-back: scrape the failing source line off the boot screen ----
+    ; After File>Run BASLOAD (F5) hands off and BASLOAD prints e.g.
+    ;   ERROR: LABEL NOT FOUND IN DIR.BASL:19
+    ; the F8 reload comes straight back into start() with that text still on the (not-yet-
+    ; cleared) screen. We read the screen one row at a time, only the first 5 columns, for
+    ; "ERROR"; on a hit we pull the line number off the END of that row and let
+    ; restore_run_state park the cursor on it. (Proven standalone in SRC/errscan.p8.)
+    ;
+    ; The match is done in SCREEN-CODE space, NOT against a "ERROR" string literal: getchr()
+    ; returns raw VERA screen codes, and prog8 encodes a string literal in PETSCII (uppercase
+    ; A-Z -> $C1..$DA), so "ERROR"[0] would be $C5=197 while the screen cell holds screen code
+    ; 5 - they never compare equal. Screen codes for a letter are its 1-based position (E=5,
+    ; R=18, O=15) and are identical in the upper/gfx and lowercase PETSCII charsets, so ERRSC
+    ; matches "ERROR" or "error" either way. (This was the actual bug: see the emu dump.)
+    ubyte[5] ERRSC = [5, 18, 18, 15, 18]        ; screen codes for E R R O R (== e r r o r)
+
+    sub scan_basload_error(ubyte width, ubyte height) {
+        ; sets basload_err_line to the number BASLOAD reported, or 0 if no error is on screen.
+        ; Must run before start() switches screen mode (which clears the screen).
+        basload_err_line = 0
+        ubyte row
+        for row in 0 to height - 1 {
+            if row_is_error(row) {
+                basload_err_line = trailing_number(row, width)
+                return                          ; stop at the first ERROR line (BASLOAD prints one)
+            }
+        }
+    }
+
+    sub row_is_error(ubyte row) -> bool {
+        ; true if the first 5 columns of `row` are the screen codes for ERROR (case insensitive)
+        ubyte c
+        for c in 0 to 4 {
+            if txt.getchr(c, row) != ERRSC[c]
+                return false
+        }
+        return true
+    }
+
+    sub trailing_number(ubyte row, ubyte width) -> uword {
+        ; the number trails the LAST ':' on the row (BASLOAD prints "...<file>:<line>", and an
+        ; earlier ':' follows "ERROR"). Digits '0'..'9' and ':' sit at their ASCII codes in the
+        ; screen-code table too, so getchr() values compare directly.
+        ubyte last_colon = 255
+        ubyte c
+        for c in 0 to width - 1 {
+            if txt.getchr(c, row) == ':'
+                last_colon = c
+        }
+        if last_colon == 255
+            return 0                            ; no colon -> no line number
+        uword num = 0
+        bool any = false
+        c = last_colon + 1
+        while c < width {
+            ubyte d = txt.getchr(c, row)
+            if d < '0' or d > '9'
+                break
+            num = num * 10 + (d - '0')
+            any = true
+            c++
+        }
+        if not any
+            return 0
+        return num
+    }
+
+    sub show_basload_error() {
+        ; one red attention flash + a message that BASLOAD flagged a line (the cursor is already
+        ; parked there). Flashed, not silent - a quiet status line gets missed (see edit notes).
+        show_err_bar($21)                       ; red bg, white fg
+        sys.wait(30)                            ; ~0.5s
+        show_err_bar(CB_BAR)                     ; settle to the normal bar; the message stays readable
+    }
+
+    sub show_err_bar(ubyte color) {
+        bar_fill(STATUS_ROW, color)
+        put_str_at(1, STATUS_ROW, "BASLOAD error on line ")
+        void put_uw_at(23, STATUS_ROW, basload_err_line)    ; col 1 + len("BASLOAD error on line ")=22
     }
 
     sub act_about() {
@@ -2435,7 +2549,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         ; copy the selected text into the clipboard (with $0D between lines)
         commit_editbuf()
         sel_norm()
-        uword o = 0
+        cx16.push_rambank(CLIP_BANK)            ; clipbuf is banked; the edoc.load calls below nest
+        uword o = 0                             ; and restore CLIP_BANK on return (tmpbuf is low RAM)
         ubyte i
         if s_row == e_row {
             ubyte llen = edoc.load(s_row, &tmpbuf)
@@ -2476,17 +2591,20 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
                 k2++
             }
         }
+        cx16.pop_rambank()
         clip_len = o
         clip_has = true
         clip_line = false
     }
 
     sub copy_current_line() {
-         ubyte i = 0
+        ubyte i = 0
+        cx16.push_rambank(CLIP_BANK)            ; clipbuf is banked; editbuf is low RAM
         while i < cur_len {
             @(clipbuf + i) = editbuf[i]
             i++
         }
+        cx16.pop_rambank()
         clip_len = cur_len
         clip_has = true
         clip_line = true
@@ -2620,10 +2738,12 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             undo_begin()
             urec_addline(cur_row + 1)           ; undo: delete the pasted line
             ubyte bi = 0
+            cx16.push_rambank(CLIP_BANK)        ; stage the banked clip line into low-RAM tmpbuf
             while bi < lsb(clip_len) {
                 tmpbuf[bi] = @(clipbuf + bi)
                 bi++
             }
+            cx16.pop_rambank()
             void edoc.commit(cur_row + 1, &tmpbuf, lsb(clip_len))
             cur_row++
             cur_col = 0
@@ -2639,6 +2759,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             ubyte nsplits = 0
             bool ok = true
             uword pi = 0
+            cx16.push_rambank(CLIP_BANK)        ; clip reads below; do_split's edoc calls nest and restore
             while pi < clip_len {
                 ubyte ch = @(clipbuf + pi)
                 pi++
@@ -2660,6 +2781,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
                     cur_col++
                 }
             }
+            cx16.pop_rambank()
             cur_dirty = true
             if not ok or nsplits >= UNDO_DEPTH  ; OOM mid-paste, or more lines than the ring -> drop
                 undo_clear()
