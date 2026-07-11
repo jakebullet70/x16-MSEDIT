@@ -206,8 +206,9 @@ cursor line** — it leaves a small `ed.run` note at the root on the way out and
 
 Notes and requirements:
 
-- Quitting EDIT normally (**File ▸ Exit**) restores F8 to its factory `DOS"` macro, so the return-key
-  hijack never lingers at the BASIC prompt. (The macro only stays armed after an F5 hand-off, which is
+- EDIT snapshots all the KERNAL function-key macros when it starts and restores them **verbatim** when
+  you quit normally (**File ▸ Exit**), so the F8 return-key hijack never lingers at the BASIC prompt and
+  any F-keys you'd customized are put back exactly. (F8 only stays armed after an F5 hand-off, which is
   exactly when you want it.)
 - Needs a **ROM with BASLOAD and the `pfkey` API (R47+)** and the DOS wedge (both stock on the X16).
 - The `ED` launcher is a fixed ~20-byte file at the SD/filesystem root, modeled on XFMGR's `/XT`.
