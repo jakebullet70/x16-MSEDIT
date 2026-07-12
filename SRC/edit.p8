@@ -30,7 +30,7 @@ main {
     const ubyte NMENU      = 4
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 44         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 51         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -1923,8 +1923,11 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         ; print `BASLOAD"name"` on screen, then feed CR + RUN + CR through the 10-byte keyboard
         ; queue so BASIC re-reads the line and runs the tokenized program (see XFMGR chain_run).
         txt.chrout($93)                         ; clear screen, cursor home
+        txt.plot(0, 12)                         ; BASIC's REPL owns the top rows (it echoes the command and
+        txt.print("f8 to return to edit")       ; overwrites row 0 with READY.), so drop the reminder BELOW
+        txt.plot(0, 0)                          ; the BASLOAD/RUN output, then home for the unchanged dance
         txt.nl()
-        txt.print("basload")
+        txt.print("basload")                    ; on row 1, exactly as before - inject re-reads this line
         txt.chrout($22)                         ; "
         txt.print(name)
         txt.chrout($22)
