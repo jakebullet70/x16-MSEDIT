@@ -22,9 +22,9 @@ IF "%SRC%"=="" SET SRC=edit.p8
 REM the .prg is named after the source (edit.p8 -> edit.prg), written to the root
 FOR %%F IN ("%SRC%") DO SET PRGFILE=%~dp0%%~nF.prg
 
-REM --- sync the build number across SRC\edit.p8 (BUILD_NUM) and README.md ("Version 0.9.N"), leveling
-REM     every one UP to the largest value found. Runs BEFORE the compile so this build's binary shows
-REM     the result. Bump the number in EITHER file and the next build propagates it. Full builds only.
+REM --- auto-increment the build number in SRC\edit.p8 (BUILD_NUM) and README.md ("Version 0.9.N")
+REM     by 1 on every compile. Runs BEFORE the compile so this build's binary shows the bumped number.
+REM     Full builds of edit.p8 only.
 IF /I "%SRC%"=="edit.p8" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0syncbuild.ps1" -Src "%SRCDIR%\edit.p8" -Readme "%~dp0README.md"
 
 SET BUILDLOG=%TEMP%\edit_build.txt

@@ -1,7 +1,7 @@
-# Sync the EDIT build number across every place it appears, always leveling UP to the LARGEST value
-# found. Bump the number in ANY one file and the next build propagates it to the rest - no manual
-# multi-file edits, no drift. build.bat calls this BEFORE the compile, so THIS build's binary shows
-# the resulting number. (Modeled on the sibling XFMGR2 project's syncbuild.ps1.)
+# Auto-increment the EDIT build number on EVERY compile: find the largest value across the files,
+# add 1, and write it back to ALL of them (so they stay in sync AND advance by one each build).
+# build.bat calls this BEFORE the compile, so THIS build's binary shows the freshly bumped number.
+# (Modeled on the sibling XFMGR2 project's syncbuild.ps1, but that one only levels; this one bumps.)
 #
 #   -Src     SRC\edit.p8   const uword BUILD_NUM = N   (compiled -> "v0.9.N" on the About screen)
 #   -Readme  README.md     "Version 0.9.N" marker
@@ -42,24 +42,16 @@ if ($max -lt 0) {
     return
 }
 
-# --- pass 2: level every file UP to the max (rewriting only the ones that are behind) ---
-$changed = 0
+# --- pass 2: bump to max+1 and write it to every file (all of them advance, staying in sync) ---
+$next = $max + 1
 foreach ($t in $targets) {
     if ($null -eq $t.num) {
         Write-Host ("  build-sync: {0,-11} no marker - left as-is" -f $t.name) -ForegroundColor Yellow
     }
-    elseif ($t.num -eq $max) {
-        Write-Host ("  build-sync: {0,-11} build {1}" -f $t.name, $t.num) -ForegroundColor DarkGray
-    }
     else {
-        $new = [regex]::Replace($t.text, $t.pat, ('${1}' + $max), $opts)   # ${1} = the prefix, then the max
+        $new = [regex]::Replace($t.text, $t.pat, ('${1}' + $next), $opts)   # ${1} = the prefix, then max+1
         [System.IO.File]::WriteAllBytes($t.path, $enc.GetBytes($new))
-        Write-Host ("  build-sync: {0,-11} build {1} -> {2}" -f $t.name, $t.num, $max) -ForegroundColor Green
-        $changed++
+        Write-Host ("  build-sync: {0,-11} build {1} -> {2}" -f $t.name, $t.num, $next) -ForegroundColor Green
     }
 }
-if ($changed -gt 0) {
-    Write-Host ("  build-sync: leveled {0} file(s) up to build {1}." -f $changed, $max) -ForegroundColor Cyan
-} else {
-    Write-Host ("  build-sync: all in sync at build {0}." -f $max) -ForegroundColor Cyan
-}
+Write-Host ("  build-sync: bumped to build {0}." -f $next) -ForegroundColor Cyan

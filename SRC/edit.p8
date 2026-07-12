@@ -30,9 +30,9 @@ main {
     const ubyte NMENU      = 4
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 29         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
-                                        ; build.bat's build-sync step keeps README's "Version 0.9.N"
-                                        ; level with this - bump either one and the next build propagates.
+    const uword BUILD_NUM  = 44         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+                                        ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
+                                        ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
     ; colour bytes for setclr (high nibble = bg, low nibble = fg). Palette follows XFMGR's
     ; default "Classic" scheme: 1=white 7=yellow 11=dark grey 14=light blue 0=black.
@@ -46,7 +46,7 @@ main {
     const ubyte CB_MENUSEL = $1e        ; active menu-bar title:      light blue on white
     const ubyte CB_CUR  = $10           ; text cursor cell:           black on white
     const ubyte CB_MARK = $e1           ; selected text:              white on light blue
-    const ubyte CB_SHADOW = $00         ; drop shadow:                black on black
+    const ubyte CB_SHADOW = $cc         ; drop shadow: solid medium-grey fill (distinct from the box's dark grey + the black bg)
     const ubyte CB_GUTTER = $b1         ; line-number gutter:         white on dark grey
     const ubyte CB_GUTTER_CUR = $b7     ; gutter, cursor's line:      yellow on dark grey
     const ubyte MOD_SHIFT = $01         ; kbdbuf_get_modifiers shift bit
@@ -79,6 +79,8 @@ main {
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
+    ubyte[80] berr                      ; the full BASLOAD error line (screen codes) scraped off the boot screen
+    ubyte berr_len = 0                  ; length of berr (0 = no error captured)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ubyte[99] fksnap                             ; snapshot of all 9 KERNAL fkey macros, restored verbatim on exit
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
@@ -100,6 +102,7 @@ main {
     bool modified                       ; document changed since last save
     bool ovr_mode                       ; false = insert (default), true = overwrite (Insert key)
     bool g_running
+    bool g_redrawn                      ; set by full_redraw(); lets the menu skip a redundant repaint
     bool alt_was                        ; ALT held on the previous poll (edge detect)
     ubyte g_mod                         ; modifier byte captured when the last key was read
     bool g_emu                          ; true if running under the x16emu emulator
@@ -263,8 +266,8 @@ main {
             new_document()
         }                               ; (on reload, restore_run_state loaded the snapshot from ed.run)
         full_redraw()
-        if reloaded and basload_err_line != 0   ; the Run BASLOAD came back with an error; flag it and
-            show_basload_error()                ; the cursor is already parked on the offending line
+        if reloaded and berr_len != 0           ; the Run BASLOAD came back with an error; show the full
+            show_basload_error()                ; error on the bar (cursor's already on the line it named)
         g_running = true
         while g_running {
             ubyte k = get_editor_key()
@@ -385,6 +388,19 @@ main {
         }
     }
 
+    sub draw_box_title(ubyte x0, ubyte x1, ubyte row, str title) {
+        ; XFMGR-style solid title bar: blank the top border row, centre the title, and colour the
+        ; whole span white-on-light-blue (CB_BAR) - a raised "title bar" instead of a title floating
+        ; on the frame line. The 3D look comes from the box's drop shadow (draw_box_shadow) beneath.
+        ; Mirrors XFMGR2's uiutil.do_box_header.
+        ubyte c
+        for c in x0 + 1 to x1 - 1
+            txt.setchr(c, row, SPACE_SC)
+        ubyte tlen = lsb(strings.length(title))
+        put_str_at(x0 + 1 + (x1 - x0 - 1 - tlen) / 2, row, title)
+        set_color_run(x0 + 1, x1 - 1, row, CB_BAR)
+    }
+
     sub draw_menu_sep(ubyte x0, ubyte x1, ubyte row) {
         ; a horizontal divider row across a dropdown's interior, tee'd into both side rails.
         ubyte c
@@ -395,9 +411,21 @@ main {
         set_color_run(x0, x1, row, CB_BAR)      ; match the recoloured frame glyphs
     }
 
+    sub draw_box_sep(ubyte x0, ubyte x1, ubyte row) {
+        ; a soft section rule inside a box: like draw_menu_sep but coloured in the frame colour
+        ; (thin light-blue line on the dark interior) instead of the bold white-on-blue bar.
+        ubyte c
+        for c in x0 + 1 to x1 - 1
+            txt.setchr(c, row, SC_H)
+        txt.setchr(x0, row, SC_VR)
+        txt.setchr(x1, row, SC_VL)
+        set_color_run(x0, x1, row, CB_BORDER)
+    }
+
     sub draw_box_shadow(ubyte x0, ubyte y0, ubyte x1, ubyte y1) {
-        ; classic drop shadow: darken the cells one row below and one column to
-        ; the right of the box (colour only - the glyphs behind go black-on-black)
+        ; drop shadow one row below and one column right of the box: just recolour those cells to a
+        ; soft solid grey (CB_SHADOW). The grey is in the *background* nibble, so the cell fills grey
+        ; with no glyph - visible against EDIT's black text area without a shade character.
         ubyte c
         ubyte r
         if y1 + 1 < SCR_H
@@ -1022,6 +1050,7 @@ main {
         draw_all_text()
         draw_status()
         place_cursor()
+        g_redrawn = true                ; tell menu_mode_loop the screen is already restored
     }
 
     ; ---------- input ----------
@@ -1447,8 +1476,10 @@ main {
                 }
                 else -> {
                     erase_dropdown(255)         ; wipe the dropdown before running the action
+                    g_redrawn = false
                     menu_dispatch(active, choice)
-                    full_redraw()               ; the action may have drawn a dialog/prompt - restore
+                    if not g_redrawn            ; skip if the action already did its own full_redraw
+                        full_redraw()           ; else restore (the action may have drawn a dialog/prompt)
                     return
                 }
             }
@@ -1813,6 +1844,7 @@ main {
             }
         }
         g_running = false
+        g_redrawn = true                ; we're quitting - skip the menu's post-action screen repaint
     }
 
     sub act_run_basload() {
@@ -1825,6 +1857,7 @@ main {
         arm_return_key()                        ; F8 -> reload EDIT via the DOS wedge
         run_basload = true
         g_running = false                       ; leave the main loop; start()'s tail hands off
+        g_redrawn = true                        ; skip the menu's redraw - chain_to_basload clears anyway
     }
 
     sub arm_return_key() {
@@ -1990,16 +2023,43 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     ubyte[5] ERRSC = [5, 18, 18, 15, 18]        ; screen codes for E R R O R (== e r r o r)
 
     sub scan_basload_error(ubyte width, ubyte height) {
-        ; sets basload_err_line to the number BASLOAD reported, or 0 if no error is on screen.
-        ; Must run before start() switches screen mode (which clears the screen).
+        ; sets basload_err_line to the number BASLOAD reported (0 if none), and captures the full
+        ; error line into berr[] for display. Must run before start() switches mode (which clears).
         basload_err_line = 0
+        berr_len = 0
         ubyte row
         for row in 0 to height - 1 {
             if row_is_error(row) {
                 basload_err_line = trailing_number(row, width)
+                capture_err_row(row, width)
                 return                          ; stop at the first ERROR line (BASLOAD prints one)
             }
         }
+    }
+
+    sub capture_err_row(ubyte row, ubyte width) {
+        ; copy the whole ERROR line (trailing spaces trimmed) into berr[] as screen codes, for later
+        ; display on the status bar. The boot screen is the upper/gfx charset, where letters are
+        ; codes 1..26; the editor runs the lowercase charset (txt.lowercase), where 1..26 are
+        ; lowercase - so shift letters into the 65..90 uppercase slots to keep the UPPERCASE look.
+        ubyte last = 0
+        ubyte c
+        for c in 0 to width - 1 {
+            if txt.getchr(c, row) != SPACE_SC
+                last = c                        ; remember the last non-blank column
+        }
+        ubyte n = last + 1
+        if n > len(berr)
+            n = len(berr)
+        c = 0
+        while c < n {
+            ubyte s = txt.getchr(c, row)
+            if s >= 1 and s <= 26
+                s += 64                         ; letter -> lowercase-charset uppercase slot
+            berr[c] = s
+            c++
+        }
+        berr_len = n
     }
 
     sub row_is_error(ubyte row) -> bool {
@@ -2041,8 +2101,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     }
 
     sub show_basload_error() {
-        ; one red attention flash + a message that BASLOAD flagged a line (the cursor is already
-        ; parked there). Flashed, not silent - a quiet status line gets missed (see edit notes).
+        ; one red attention flash + the FULL BASLOAD error line on the status bar (the cursor is
+        ; already parked on the line it named). Flashed, not silent - a quiet status line gets missed.
         show_err_bar($21)                       ; red bg, white fg
         sys.wait(30)                            ; ~0.5s
         show_err_bar(CB_BAR)                     ; settle to the normal bar; the message stays readable
@@ -2050,8 +2110,15 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
 
     sub show_err_bar(ubyte color) {
         bar_fill(STATUS_ROW, color)
-        put_str_at(1, STATUS_ROW, "BASLOAD error on line ")
-        void put_uw_at(23, STATUS_ROW, basload_err_line)    ; col 1 + len("BASLOAD error on line ")=22
+        ; blit the captured BASLOAD error line (screen codes) starting at col 1, clipped to the bar
+        ubyte n = berr_len
+        if n > SCR_W - 1
+            n = SCR_W - 1
+        ubyte c = 0
+        while c < n {
+            txt.setchr(1 + c, STATUS_ROW, berr[c])
+            c++
+        }
     }
 
     sub act_about() {
@@ -2061,9 +2128,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         ubyte tx = x0 + 3
         draw_box_frame(x0, 9, x1, 18)
         draw_box_shadow(x0, 9, x1, 18)
-        ubyte tcol = x0 + (w - 7) / 2
-        put_str_at(tcol, 9, " About ")                        ; title on the top frame
-        set_color_run(tcol, tcol + 6, 9, CB_BORDER)           ; light-blue title (XFMGR)
+        draw_box_title(x0, x1, 9, " About ")                  ; XFMGR-style solid title bar (white on blue)
         put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
         put_str_at(tx, 12, "Text stored in banked RAM")
         if g_emu
@@ -2075,61 +2140,96 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         put_str_at(tx, 16,     "Open Source! play, have fun!")
         ubyte fcol = x0 + (w - 13) / 2
         put_str_at(fcol, 18, " Press any key ")               ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, 18, CB_BORDER)         ; light-blue hint (XFMGR)
+        set_color_run(fcol, fcol + 14, 18, CB_BOX)            ; white hint on the dark-grey frame
         void wait_key()
         full_redraw()
     }
 
-    ubyte km_keyc                       ; key column (set by act_keymap per width)
-    ubyte km_desc                       ; description column
+    ubyte km_keyc                       ; left key column (set by act_keymap per width)
+    ubyte km_desc                       ; left description column
+    ubyte km_keyc2                      ; right key column   (80-col two-column layout)
+    ubyte km_desc2                      ; right description column
 
     sub km_row(ubyte row, str keys, str desc) {
         put_str_at(km_keyc, row, keys)
         put_str_at(km_desc, row, desc)
     }
 
+    sub km_row2(ubyte row, str keys, str desc) {
+        put_str_at(km_keyc2, row, keys)
+        put_str_at(km_desc2, row, desc)
+    }
+
     sub act_keymap() {
-        ; geometry: wide (80-col) box vs compact box that fits in 40 cols
-        ubyte x0, x1
+        ; wide 80-col box uses two columns of bindings; 40-col falls back to a single column.
+        ubyte x0, x1, y1, bw, fcol
         if SCR_W >= 80 {
-            x0 = 18  x1 = 61
-            km_keyc = x0 + 3
-            km_desc = x0 + 20
+            bw = 68
+            x0 = (SCR_W - bw) / 2       ; centred wide box, top at row 5
+            x1 = x0 + bw - 1
+            y1 = 23
+            km_keyc  = x0 + 3           ; left column: keys at +3, descriptions at +16
+            km_desc  = x0 + 16
+            km_keyc2 = x0 + 37          ; right column: keys at +37, descriptions at +50
+            km_desc2 = x0 + 50
+            draw_box_frame(x0, 5, x1, y1)
+            draw_box_shadow(x0, 5, x1, y1)
+            draw_box_title(x0, x1, 5, " Keyboard Map ")
+            km_row ( 7, "Arrows",       "Move cursor")
+            km_row ( 8, "Ctrl+Lt/Rt",   "Jump a word")
+            km_row ( 9, "Home / End",   "Start/end of line")
+            km_row (10, "PgUp / PgDn",  "Page up / down")
+            km_row (11, "Shift+arrows", "Select text")
+            km_row (12, "Tab",          "Insert 4 spaces")
+            km_row (13, "Ctrl+Up/Dn",   "Move line up/down")
+            km_row (14, "Ctrl+K",       "Delete line")
+            km_row2( 7, "Ctrl+C / X",   "Copy / Cut")
+            km_row2( 8, "Ctrl+V / F4",  "Paste")
+            km_row2( 9, "Ctrl+Z",       "Undo")
+            km_row2(10, "Ctrl+U",       "Redo")
+            km_row2(11, "Ctrl+F / F6",  "Find")
+            km_row2(12, "Ctrl+G / F3",  "Find next")
+            km_row2(13, "Ctrl+R / F8",  "Replace")
+            km_row2(14, "Ctrl+N / O",   "New / Open")
+            km_row2(15, "F2 / F1",      "Save / About")
+            draw_box_sep(x0, x1, 16)                           ; ---- Run a BASIC file via BASLOAD ----
+            km_row(18, "F5", "Save & run current file thru BASLOAD")
+            km_row(19, "F8", "After BASLOAD, at BASIC READY: return to EDITOR")
+            put_str_at(x0 + 3, 21, "Emulator eats Ctrl+F/R/V - use F6/F8/F4")
         } else {
-            x0 = (SCR_W - 38) / 2
-            x1 = x0 + 37
+            bw = 38
+            x0 = (SCR_W - bw) / 2
+            x1 = x0 + bw - 1
+            y1 = 29
             km_keyc = x0 + 2
-            km_desc = x0 + 18
+            km_desc = x0 + 17
+            draw_box_frame(x0, 3, x1, y1)                      ; shadow omitted: runs off the 40-col edge
+            draw_box_title(x0, x1, 3, " Keyboard Map ")
+            km_row ( 5, "Arrows",       "Move cursor")
+            km_row ( 6, "Ctrl+Lt/Rt",   "Jump a word")
+            km_row ( 7, "Home / End",   "Start/end line")
+            km_row ( 8, "PgUp / PgDn",  "Page up/down")
+            km_row ( 9, "Shift+arrows", "Select text")
+            km_row (10, "Tab",          "Insert 4 spaces")
+            km_row (11, "Ctrl+Up/Dn",   "Move line up/dn")
+            km_row (12, "Ctrl+K",       "Delete line")
+            km_row (13, "Ctrl+C / X",   "Copy / Cut")
+            km_row (14, "Ctrl+V / F4",  "Paste")
+            km_row (15, "Ctrl+Z",       "Undo")
+            km_row (16, "Ctrl+U",       "Redo")
+            km_row (17, "Ctrl+F / F6",  "Find")
+            km_row (18, "Ctrl+G / F3",  "Find next")
+            km_row (19, "Ctrl+R / F8",  "Replace")
+            km_row (20, "Ctrl+N / O",   "New / Open")
+            km_row (21, "F2 / F1",      "Save / About")
+            draw_box_sep(x0, x1, 23)                           ; ---- BASLOAD ----
+            km_row(24, "F5", "Run file thru BASLOAD")
+            km_row(25, "F8", "Return back to EDIT")
+            put_str_at(x0 + 2, 27, "Emu eats Ctrl+F/R/V")
         }
-        ubyte w = x1 - x0 + 1
-        draw_box_frame(x0, 3, x1, 25)
-        if SCR_W >= 80                  ; shadow would run off the right edge in 40-col
-            draw_box_shadow(x0, 3, x1, 25)
-        ubyte tcol = x0 + (w - 14) / 2
-        put_str_at(tcol, 3, " Keyboard Map ")                  ; title on the top frame
-        set_color_run(tcol, tcol + 13, 3, CB_BORDER)          ; light-blue title (XFMGR)
-        km_row( 5, "Arrows",          "Move cursor")
-        km_row( 6, "Ctrl + Lt/Rt",    "Jump a word")
-        km_row( 7, "Home / End",      "Start/end of line")
-        km_row( 8, "PgUp / PgDn",     "Page up / down")
-        km_row( 9, "Shift + arrows",  "Select text")
-        km_row(10, "Tab",             "Insert 4 spaces")
-        km_row(12, "Ctrl+C / Ctrl+X", "Copy / Cut")
-        km_row(13, "Ctrl+V / F4",     "Paste")
-        km_row(14, "Ctrl+K",          "Delete line")
-        km_row(15, "Ctrl+Up / Dn",    "Move line up/down")
-        km_row(16, "Ctrl+F / F6",     "Find")
-        km_row(17, "Ctrl+G / F3",     "Find next")
-        km_row(18, "Ctrl+R / F8",     "Replace")
-        km_row(20, "Ctrl+N / Ctrl+O", "New / Open")
-        km_row(21, "F2 / F1",         "Save / About")
-        if SCR_W >= 80
-            put_str_at(20, 23, "Emulator eats Ctrl+F/R/V - use F6/F8/F4")
-        else
-            put_str_at(km_keyc, 23, "Emu eats Ctrl+F/R/V")
-        ubyte fcol = x0 + (w - 15) / 2
-        put_str_at(fcol, 25, " Press any key ")                ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, 25, CB_BORDER)         ; light-blue hint (XFMGR)
+        fcol = x0 + (bw - 15) / 2
+        put_str_at(fcol, y1, " Press any key ")                ; hint on the bottom frame
+        set_color_run(fcol, fcol + 14, y1, CB_BOX)             ; white hint on the dark-grey frame
         void wait_key()
         full_redraw()
     }
