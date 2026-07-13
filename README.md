@@ -245,6 +245,39 @@ the editor. The emulator path comes from `LOCAL.BAT` — point `%x16%` at your `
 
 On hardware, copy `edit.prg` to your SD card and `LOAD"EDIT.PRG"` / `RUN`.
 
+## Debugging
+
+`dbg.bat` is the debug-mode twin of `run.bat`: it launches [Box16](https://github.com/indigodarkwolf/box16)
+instead of x16emu and hands it the `edit.vice-mon-list` that `prog8c` already emits beside the
+`.prg`. That is a VICE label file, so every prog8 symbol (`p8b_main:p8s_ed_pgdn`, …) shows up by
+name in Box16's disassembly, breakpoint and memory views — including the banked-RAM views, which
+is where the document arena, the filelist (bank 6) and the clipboard (bank 7) live.
+
+```bat
+dbg.bat              :: build, then launch under Box16 with symbols
+dbg.bat -n           :: skip the rebuild, launch the existing edit.prg
+dbg.bat -b ae1       :: break on startup at $0AE1 (main.start)
+```
+
+Point `%box16%` in `LOCAL.BAT` at your Box16 install. In the emulator: **F12** break into the
+debugger, **F9** breakpoint at the current position, **F11** step into, **F10** step over.
+
+Addresses for `-b` come from `edit.vice-mon-list`. Note that a *block* label there is the block's
+variable area, not its code — `.p8b_main` is `$825`, the same address as `p8v_filename`; the code
+entry is `.p8b_main:p8s_start` at `$0AE1`.
+
+A few Box16 quirks are worked around in `dbg.bat`, and each one makes working symbols look broken:
+
+- `-joy1` is accepted by x16emu but **rejected by Box16**, which exits immediately. Not passed.
+- `-stds` loads the ROM labels (`kernal.sym`, `basic.sym`, …) from the folder holding the `rom.bin`
+  in use, and Box16 ships none. `dbg.bat` therefore points `-rom` at the x16emu folder, which has
+  all 13 — and whose `rom.bin` is byte-identical to Box16's, so behaviour is unchanged.
+- `-scale` does *not* resize the window (it is a render setting). At Box16's default 658×558 the
+  CPU and stack panels are drawn on top of the disassembly listing, hiding the symbol column, so
+  `dbgwin.ps1` enlarges the window after launch. Arrange the panels once and Box16 saves the layout.
+- EDIT idles inside a KERNAL key-wait, so a bare **F12** usually stops in ROM rather than in our
+  code. Use `-b`, or type an EDIT address into the disassembler's address box.
+
 ## Project layout
 
 | Path | What it is |
@@ -255,6 +288,8 @@ On hardware, copy `edit.prg` to your SD card and `LOAD"EDIT.PRG"` / `RUN`.
 | `SRC/syntax.p8` | BASIC syntax highlighter (keyword table + per-line classifier) |
 | `build.bat` | Compile to `edit.prg` |
 | `run.bat` | Build + launch in the emulator |
+| `dbg.bat` | Build + launch under Box16 with prog8 symbols loaded |
+| `dbgwin.ps1` | Enlarges the Box16 window so its debugger panels are usable |
 | `docs/` | Prog8 and X16 reference material used while building |
 
 ## License
