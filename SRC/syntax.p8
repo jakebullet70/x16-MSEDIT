@@ -15,19 +15,10 @@
 ; selection (CB_MARK) and cursor (CB_CUR) passes, which run AFTER this in draw_text_row,
 ; still override cleanly.
 
+%import theme
+
 syntax {
     %option ignore_unused
-
-    ; setclr colour bytes: high nibble = bg, low nibble = fg. Background is black (0) to match
-    ; the editor's CB_BODY; only the fg varies per token (a VS-Code-style dark palette on the
-    ; X16 16-colour set): keywords blue, functions yellow, strings orange, numbers pale green,
-    ; comments green, everything else light grey.
-    const ubyte C_DEFAULT  = $0f        ; light grey  - normal text / variables / operators
-    const ubyte C_KEYWORD  = $0e        ; light blue  - BASIC statement keywords
-    const ubyte C_FUNCTION = $07        ; yellow      - BASIC built-in functions
-    const ubyte C_STRING   = $08        ; orange      - "quoted strings"
-    const ubyte C_NUMBER   = $0d        ; light green - numeric constants / line numbers
-    const ubyte C_COMMENT  = $05        ; green       - REM ... to end of line
 
     ; REM is matched specially (it comments the rest of the line), so it's kept out of the tables.
     str rem_kw = "REM"
@@ -107,11 +98,11 @@ syntax {
         while i < slen {
             ubyte c = @(src + i)
             if c == $22 {                       ; " -> string literal to closing quote or EOL
-                @(dest + i) = C_STRING
+                @(dest + i) = theme.C_STRING
                 i++
                 bool closed = false
                 while i < slen and not closed {
-                    @(dest + i) = C_STRING
+                    @(dest + i) = theme.C_STRING
                     if @(src + i) == $22
                         closed = true
                     i++
@@ -132,16 +123,16 @@ syntax {
                     ubyte kind = lookup(src + ts, i - ts)
                     if kind == 2 {              ; REM -> colour the rest of the line
                         while ts < slen {
-                            @(dest + ts) = C_COMMENT
+                            @(dest + ts) = theme.C_COMMENT
                             ts++
                         }
                         i = slen
                     } else {
-                        ubyte col = C_DEFAULT
+                        ubyte col = theme.C_DEFAULT
                         if kind == 1
-                            col = C_KEYWORD
+                            col = theme.C_KEYWORD
                         if kind == 3
-                            col = C_FUNCTION
+                            col = theme.C_FUNCTION
                         while ts < i {
                             @(dest + ts) = col
                             ts++
@@ -152,13 +143,13 @@ syntax {
                         while i < slen {
                             d = @(src + i)
                             if is_digit(d) or d == $2e {
-                                @(dest + i) = C_NUMBER
+                                @(dest + i) = theme.C_NUMBER
                                 i++
                             } else
                                 break
                         }
                     } else {                    ; operator / punctuation / space
-                        @(dest + i) = C_DEFAULT
+                        @(dest + i) = theme.C_DEFAULT
                         i++
                     }
                 }

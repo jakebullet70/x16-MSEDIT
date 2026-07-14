@@ -17,6 +17,7 @@
 %import xarena
 %import emudbg
 %import diskio                          ; directory listing for the Open file picker
+%import theme                           ; colour scheme (Classic / X16 / Light) + edit.cfg
 %import syntax                          ; BASIC syntax colouring (per-column colour classifier)
 %zeropage basicsafe
 ; skip prog8's system re-init (IOINIT/RESTOR/CINT) so the screen mode the machine booted
@@ -30,25 +31,10 @@ main {
     const ubyte NMENU      = 4
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 51         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 70         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
-    ; colour bytes for setclr (high nibble = bg, low nibble = fg). Palette follows XFMGR's
-    ; default "Classic" scheme: 1=white 7=yellow 11=dark grey 14=light blue 0=black.
-    const ubyte COL_FG  = 1             ; white     (clear_screen / chrout colour)
-    const ubyte COL_BG  = 0             ; black     (content field background - dark IDE look)
-    const ubyte CB_BODY = $0f           ; edit area:                 light grey on black
-    const ubyte CB_BAR  = $e1           ; menu + status bars:        white on light blue
-    const ubyte CB_BOX  = $b1           ; popup / dropdown interior:  white on dark grey
-    const ubyte CB_BORDER = $be         ; popup frame lines + titles: light blue on dark grey
-    const ubyte CB_SEL  = $e1           ; selected dropdown/picker item: white on light blue
-    const ubyte CB_MENUSEL = $1e        ; active menu-bar title:      light blue on white
-    const ubyte CB_CUR  = $10           ; text cursor cell:           black on white
-    const ubyte CB_MARK = $e1           ; selected text:              white on light blue
-    const ubyte CB_SHADOW = $cc         ; drop shadow: solid medium-grey fill (distinct from the box's dark grey + the black bg)
-    const ubyte CB_GUTTER = $b1         ; line-number gutter:         white on dark grey
-    const ubyte CB_GUTTER_CUR = $b7     ; gutter, cursor's line:      yellow on dark grey
     const ubyte MOD_SHIFT = $01         ; kbdbuf_get_modifiers shift bit
     const ubyte MOD_CTRL  = $04         ; kbdbuf_get_modifiers ctrl bit
 
@@ -77,6 +63,9 @@ main {
     str savebuf  = "?" * 44             ; "@:" + filename for overwrite
     str untitled = "untitled"
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
+    bool run_config = false             ; Help>Config armed the hand-off to the EDCFG settings program
+    str cfgprog = "edcfg.prg"           ; the settings program; theme.path_to() prefixes the
+                                        ; install folder (read out of the root ED launcher)
     str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     ubyte[80] berr                      ; the full BASLOAD error line (screen codes) scraped off the boot screen
@@ -186,7 +175,6 @@ main {
     ubyte[NMENU] menu_col = [2, 9, 16, 25]   ; start column of each top-menu title
     ubyte[NMENU] menu_len = [4, 4, 6, 4]     ; File, Edit, Search, Help
 
-    const ubyte ACCEL_FG = 0                 ; black - accelerator-letter highlight fg
     ; ALT is the Commodore key, so ALT+letter arrives as a graphics code $A1..$BF (161..191);
     ; this maps each (indexed by code-161) back to its base letter. 0 = not a letter.
     ; (verbatim from sibling XFMGR2; e.g. ALT+F=187, ALT+E=177, ALT+S=174, ALT+H=180)
@@ -211,7 +199,7 @@ main {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'r' -> return 4   'x' -> return 5 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   's' -> return 9   'l' -> return 10   'w' -> return 11 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-            else -> when key { 'k' -> return 0   'a' -> return 1 }
+            else -> when key { 'k' -> return 0   'c' -> return 1   'a' -> return 2 }
         }
         return 255
     }
@@ -260,6 +248,9 @@ main {
         cx16.r1 = diskio.curdir()
         if cx16.r1 != 0
             void strings.copy(cx16.r1, startdir)
+        theme.apply(theme.cfg_read())   ; colour scheme from the install folder's edit.cfg (missing -> Classic).
+                                        ; Read here, while the cwd is still the fsroot we launched in - theme's
+                                        ; paths are relative to it and it does no chdir of its own.
         bool reloaded = restore_run_state()
         if not reloaded {               ; fresh launch (no BASLOAD reload pending):
             snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
@@ -280,7 +271,9 @@ main {
         cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
         restore_machine_state()                 ; re-apply the user's charset + text colour (CINT reset them)
         txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
-        if run_basload {
+        if run_config {
+            chain_load(theme.path_to(cfgprog))  ; hand off to EDCFG; it reloads EDIT (and ed.run) on exit
+        } else if run_basload {
             chain_to_basload(filename)          ; hand off to BASLOAD; F8 stays armed for the return
         } else {
             restore_fkeys()                     ; put all fkeys back as the user had them (un-hijacks F8)
@@ -363,7 +356,7 @@ main {
         ubyte r
         ubyte c
         for r in y0 to y1 {
-            set_color_run(x0, x1, r, CB_BOX)    ; dark-grey interior
+            set_color_run(x0, x1, r, theme.CB_BOX)    ; dark-grey interior
             for c in x0 to x1                   ; blank interior so text behind doesn't bleed through
                 txt.setchr(c, r, SPACE_SC)
         }
@@ -380,17 +373,17 @@ main {
             txt.setchr(x1, r, SC_V)
         }
         ; recolour the frame perimeter light-blue (XFMGR box borders); interior stays dark grey
-        set_color_run(x0, x1, y0, CB_BORDER)
-        set_color_run(x0, x1, y1, CB_BORDER)
+        set_color_run(x0, x1, y0, theme.CB_BORDER)
+        set_color_run(x0, x1, y1, theme.CB_BORDER)
         for r in y0 + 1 to y1 - 1 {
-            txt.setclr(x0, r, CB_BORDER)
-            txt.setclr(x1, r, CB_BORDER)
+            txt.setclr(x0, r, theme.CB_BORDER)
+            txt.setclr(x1, r, theme.CB_BORDER)
         }
     }
 
     sub draw_box_title(ubyte x0, ubyte x1, ubyte row, str title) {
         ; XFMGR-style solid title bar: blank the top border row, centre the title, and colour the
-        ; whole span white-on-light-blue (CB_BAR) - a raised "title bar" instead of a title floating
+        ; whole span white-on-light-blue (theme.CB_BAR) - a raised "title bar" instead of a title floating
         ; on the frame line. The 3D look comes from the box's drop shadow (draw_box_shadow) beneath.
         ; Mirrors XFMGR2's uiutil.do_box_header.
         ubyte c
@@ -398,7 +391,7 @@ main {
             txt.setchr(c, row, SPACE_SC)
         ubyte tlen = lsb(strings.length(title))
         put_str_at(x0 + 1 + (x1 - x0 - 1 - tlen) / 2, row, title)
-        set_color_run(x0 + 1, x1 - 1, row, CB_BAR)
+        set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
     }
 
     sub draw_menu_sep(ubyte x0, ubyte x1, ubyte row) {
@@ -408,7 +401,7 @@ main {
             txt.setchr(c, row, SC_H)
         txt.setchr(x0, row, SC_VR)
         txt.setchr(x1, row, SC_VL)
-        set_color_run(x0, x1, row, CB_BAR)      ; match the recoloured frame glyphs
+        set_color_run(x0, x1, row, theme.CB_BAR)      ; match the recoloured frame glyphs
     }
 
     sub draw_box_sep(ubyte x0, ubyte x1, ubyte row) {
@@ -419,22 +412,22 @@ main {
             txt.setchr(c, row, SC_H)
         txt.setchr(x0, row, SC_VR)
         txt.setchr(x1, row, SC_VL)
-        set_color_run(x0, x1, row, CB_BORDER)
+        set_color_run(x0, x1, row, theme.CB_BORDER)
     }
 
     sub draw_box_shadow(ubyte x0, ubyte y0, ubyte x1, ubyte y1) {
         ; drop shadow one row below and one column right of the box: just recolour those cells to a
-        ; soft solid grey (CB_SHADOW). The grey is in the *background* nibble, so the cell fills grey
+        ; soft solid grey (theme.CB_SHADOW). The grey is in the *background* nibble, so the cell fills grey
         ; with no glyph - visible against EDIT's black text area without a shade character.
         ubyte c
         ubyte r
         if y1 + 1 < SCR_H
             for c in x0 + 1 to x1 + 1
                 if c < SCR_W
-                    txt.setclr(c, y1 + 1, CB_SHADOW)
+                    txt.setclr(c, y1 + 1, theme.CB_SHADOW)
         if x1 + 1 < SCR_W
             for r in y0 + 1 to y1
-                txt.setclr(x1 + 1, r, CB_SHADOW)
+                txt.setclr(x1 + 1, r, theme.CB_SHADOW)
     }
 
     ; ---------- text-area rendering ----------
@@ -465,9 +458,9 @@ main {
         if gutter_w == 0
             return
         ubyte sy = TEXT_TOP + r
-        ubyte gcol = CB_GUTTER
+        ubyte gcol = theme.CB_GUTTER
         if idx == cur_row
-            gcol = CB_GUTTER_CUR
+            gcol = theme.CB_GUTTER_CUR
         ubyte c
         for c in 0 to gutter_w - 1 {                 ; dark-grey strip; last col is the separator
             txt.setchr(c, sy, SPACE_SC)
@@ -560,14 +553,14 @@ main {
         for c in 0 to textw - 1 {
             uword srcidx = (left_col as uword) + c
             ubyte ch = SPACE_SC
-            ubyte col = CB_BODY
+            ubyte col = theme.CB_BODY
             if srcidx < blen {
                 ch = txt.petscii2scr(@(bufptr + srcidx))
                 if hl_on
                     col = hlcol[lsb(srcidx)]        ; srcidx < blen <= 250, fits a byte index
             }
             if idx == cur_row
-                col = (col & $0f) | $b0             ; current-line band: dark-grey bg, keep the fg
+                col = (col & $0f) | (theme.CB_BAND & $f0)   ; current-line band: theme bg, keep the fg
             txt.setchr(gutter_w + c, sy, ch)
             txt.setclr(gutter_w + c, sy, col)
         }
@@ -588,7 +581,7 @@ main {
                     if dcol >= c1
                         break
                     if dcol >= c0
-                        txt.setclr(gutter_w + sccol, sy, CB_MARK)
+                        txt.setclr(gutter_w + sccol, sy, theme.CB_MARK)
                     sccol++
                 }
             }
@@ -597,7 +590,7 @@ main {
         if idx == cur_row and cur_col >= left_col {
             ubyte ccol = cur_col - left_col
             if ccol < textw
-                txt.setclr(gutter_w + ccol, sy, CB_CUR)
+                txt.setclr(gutter_w + ccol, sy, theme.CB_CUR)
         }
     }
 
@@ -635,7 +628,7 @@ main {
         for c in 0 to textw - 1 {
             ubyte srcidx = cstart + c
             ubyte ch = SPACE_SC
-            ubyte col = CB_BODY
+            ubyte col = theme.CB_BODY
             if srcidx < cend {
                 ch = txt.petscii2scr(@(bufptr + srcidx))
                 if hl_on
@@ -661,7 +654,7 @@ main {
                     if dcol >= cend or dcol >= c1
                         break
                     if dcol >= c0
-                        txt.setclr(gutter_w + cc, sy, CB_MARK)
+                        txt.setclr(gutter_w + cc, sy, theme.CB_MARK)
                     cc++
                 }
             }
@@ -673,7 +666,7 @@ main {
             if oncur {
                 ubyte ccol = cur_col - cstart
                 if ccol < textw
-                    txt.setclr(gutter_w + ccol, sy, CB_CUR)
+                    txt.setclr(gutter_w + ccol, sy, theme.CB_CUR)
             }
         }
     }
@@ -978,7 +971,7 @@ main {
     }
 
     sub draw_menubar(ubyte active) {
-        bar_fill(0, CB_BAR)
+        bar_fill(0, theme.CB_BAR)
         put_str_at(menu_col[0], 0, "File")
         put_str_at(menu_col[1], 0, "Edit")
         put_str_at(menu_col[2], 0, "Search")
@@ -987,20 +980,20 @@ main {
         if active != 255 {
             ubyte x
             for x in menu_col[active] to menu_col[active] + menu_len[active] - 1
-                txt.setclr(x, 0, CB_MENUSEL)
+                txt.setclr(x, 0, theme.CB_MENUSEL)
         }
         ; highlight each title's accelerator letter (F/E/S/H, always the first char)
         ubyte mi
         for mi in 0 to NMENU - 1 {
-            ubyte base = CB_BAR
+            ubyte base = theme.CB_BAR
             if mi == active
-                base = CB_MENUSEL
-            txt.setclr(menu_col[mi], 0, (base & $f0) | ACCEL_FG)
+                base = theme.CB_MENUSEL
+            txt.setclr(menu_col[mi], 0, (base & $f0) | theme.ACCEL_FG)
         }
     }
 
     sub draw_status() {
-        bar_fill(STATUS_ROW, CB_BAR)
+        bar_fill(STATUS_ROW, theme.CB_BAR)
         ubyte col = 1
         put_str_at(col, STATUS_ROW, "Line ")
         col += 5
@@ -1044,7 +1037,7 @@ main {
     }
 
     sub full_redraw() {
-        txt.color2(COL_FG, COL_BG)
+        txt.color2(theme.COL_FG, theme.COL_BG)
         txt.clear_screen()
         draw_menubar(255)
         draw_all_text()
@@ -1097,7 +1090,7 @@ main {
                 put_str_at(c, STATUS_ROW, "Whole Word  On ")
             else
                 put_str_at(c, STATUS_ROW, "Whole Word  Off")
-            txt.setclr(c, STATUS_ROW, (CB_BAR & $f0) | ACCEL_FG)   ; highlight the W accelerator
+            txt.setclr(c, STATUS_ROW, (theme.CB_BAR & $f0) | theme.ACCEL_FG)   ; highlight the W accelerator
         } else {
             if not ww_on
                 return
@@ -1110,7 +1103,7 @@ main {
         ; allow_empty); Esc/Stop -> false. Pre-fills with whatever is already in dest.
         ; ww_hint: show the whole-word toggle on the bar and let Commodore+W flip it live.
         flash_status(promptmsg)                 ; one red flash so the prompt draws the eye
-        bar_fill(STATUS_ROW, CB_BAR)
+        bar_fill(STATUS_ROW, theme.CB_BAR)
         put_str_at(1, STATUS_ROW, promptmsg)
         if ww_hint
             draw_ww_label(true)
@@ -1127,9 +1120,9 @@ main {
                 i++
             }
             txt.setchr(c, STATUS_ROW, SPACE_SC)
-            txt.setclr(c, STATUS_ROW, CB_CUR)
+            txt.setclr(c, STATUS_ROW, theme.CB_CUR)
             ubyte k = wait_key()
-            txt.setclr(c, STATUS_ROW, CB_BAR)
+            txt.setclr(c, STATUS_ROW, theme.CB_BAR)
             when k {
                 13 -> {
                     @(dest + n) = 0
@@ -1165,7 +1158,7 @@ main {
 
     sub flash_status(str m) {
         ; one bright-red attention flash of a status-row prompt, so it isn't missed on the thin
-        ; bottom bar; the caller then draws it normally (CB_BAR) and it stays readable.
+        ; bottom bar; the caller then draws it normally (theme.CB_BAR) and it stays readable.
         bar_fill(STATUS_ROW, $21)                       ; red bg, white fg
         put_str_at(1, STATUS_ROW, m)
         sys.wait(18)                                    ; ~0.3s
@@ -1175,7 +1168,7 @@ main {
         ; 0 = don't save, 1 = save, 2 = cancel. Flash the prompt so it isn't missed on the status
         ; row - users overlooked the silent bar and thought Open did nothing.
         flash_status("Save changes? Y/N  (Esc=Cancel)")
-        bar_fill(STATUS_ROW, CB_BAR)                    ; settle to the normal bar, stays readable
+        bar_fill(STATUS_ROW, theme.CB_BAR)                    ; settle to the normal bar, stays readable
         put_str_at(1, STATUS_ROW, "Save changes? Y/N  (Esc=Cancel)")
         repeat {
             ubyte k = wait_key()
@@ -1194,7 +1187,7 @@ main {
         if not diskio.exists(name)
             return true
         flash_status("Overwrite existing file? Y/N")
-        bar_fill(STATUS_ROW, CB_BAR)
+        bar_fill(STATUS_ROW, theme.CB_BAR)
         put_str_at(1, STATUS_ROW, "Overwrite existing file? Y/N")
         repeat {
             ubyte k = wait_key()
@@ -1210,7 +1203,7 @@ main {
     sub status_msg(str m) {
         ; paint a transient message on the status bar with NO delay - used for progress
         ; hints ("Saving..."/"Loading...") right before a slow operation that will repaint
-        bar_fill(STATUS_ROW, CB_BAR)
+        bar_fill(STATUS_ROW, theme.CB_BAR)
         put_str_at(1, STATUS_ROW, m)
     }
 
@@ -1301,6 +1294,7 @@ main {
             else -> {                       ; Help
                 when i {
                     0 -> put_str_at(col, row, "Keyboard...")
+                    1 -> put_str_at(col, row, "Config...")
                     else -> put_str_at(col, row, "About      F1")
                 }
             }
@@ -1313,22 +1307,22 @@ main {
         ; the frame glyphs become white on light blue and items match the menu bar.
         ubyte fr
         for fr in y0 to y1
-            set_color_run(x0, x1, fr, CB_BAR)
+            set_color_run(x0, x1, fr, theme.CB_BAR)
         ubyte i
         for i in 0 to n - 1 {
             ubyte row = y0 + 1 + i
             if active == 1 and i >= 9            ; Edit: items below the Move Down divider shift down a row
                 row++
-            ubyte base = CB_BAR
-            set_color_run(x0 + 1, x1 - 1, row, CB_BAR)
+            ubyte base = theme.CB_BAR
+            set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
             draw_item(active, i, x0 + 2, row)
             if i == sel {
-                set_color_run(x0 + 1, x1 - 1, row, CB_MENUSEL)   ; selected row: reverse (white) so it pops on light blue
-                base = CB_MENUSEL
+                set_color_run(x0 + 1, x1 - 1, row, theme.CB_MENUSEL)   ; selected row: reverse (white) so it pops on light blue
+                base = theme.CB_MENUSEL
             }
             ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
             ; survives the selection fill
-            txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | ACCEL_FG)
+            txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | theme.ACCEL_FG)
             if active == 1 and i == 8            ; Edit: divider between Move Down and the display toggles
                 draw_menu_sep(x0, x1, row + 1)
         }
@@ -1336,7 +1330,7 @@ main {
 
     sub run_dropdown(ubyte active) -> ubyte {
         ; returns the chosen item index, or 255=esc, 254=prev menu, 253=next menu
-        ubyte n = 2
+        ubyte n = 3
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 6  boxw = 17 }       ; File ("Run BASLOAD  F5" / "Open...    Ctrl+O")
@@ -1427,6 +1421,7 @@ main {
             else -> {                       ; Help
                 when choice {
                     0 -> act_keymap()
+                    1 -> act_config()
                     else -> act_about()
                 }
             }
@@ -1646,9 +1641,9 @@ main {
         if x1 + 1 < SCR_W and y1 + 1 < SCR_H
             draw_box_shadow(x0, y0, x1, y1)
         put_str_at(x0 + (w - 10) / 2, y0, " Open File ")
-        set_color_run(x0 + (w - 10) / 2, x0 + (w - 10) / 2 + 10, y0, CB_BOX)    ; title in white
+        set_color_run(x0 + (w - 10) / 2, x0 + (w - 10) / 2 + 10, y0, theme.CB_BOX)    ; title in white
         put_str_at(x0 + (w - 11) / 2, y1, " Esc to exit ")
-        set_color_run(x0 + (w - 11) / 2, x0 + (w - 11) / 2 + 12, y1, CB_BOX)    ; footer in white
+        set_color_run(x0 + (w - 11) / 2, x0 + (w - 11) / 2 + 12, y1, theme.CB_BOX)    ; footer in white
         repeat {
             if cursor < top
                 top = cursor
@@ -1658,7 +1653,7 @@ main {
             cx16.push_rambank(FLIST_BANK)               ; records read below live in the overlay bank
             for r in 0 to rows - 1 {
                 ubyte rr = y0 + 1 + r
-                set_color_run(x0 + 1, x1 - 1, rr, CB_BOX)   ; clear the row (colour + chars)
+                set_color_run(x0 + 1, x1 - 1, rr, theme.CB_BOX)   ; clear the row (colour + chars)
                 ubyte cc
                 for cc in x0 + 1 to x1 - 1
                     txt.setchr(cc, rr, SPACE_SC)
@@ -1669,7 +1664,7 @@ main {
                         txt.setchr(x0 + 2, rr, sc:'/')
                     put_mem_trunc(x0 + 3, rr, rec + 1, namew)
                     if idx == cursor
-                        set_color_run(x0 + 1, x1 - 1, rr, CB_SEL)
+                        set_color_run(x0 + 1, x1 - 1, rr, theme.CB_SEL)
                 }
             }
             cx16.pop_rambank()
@@ -1858,6 +1853,56 @@ main {
         run_basload = true
         g_running = false                       ; leave the main loop; start()'s tail hands off
         g_redrawn = true                        ; skip the menu's redraw - chain_to_basload clears anyway
+    }
+
+    sub act_config() {
+        ; Help>Config: hand off to the separate settings program (MSEDIT/EDCFG.PRG). Same trip as
+        ; Run BASLOAD: the document is saved and its name + cursor line go into ed.run, EDCFG writes
+        ; the settings and then chain-loads EDIT again, which restores the document from ed.run with
+        ; the new settings applied. Settings live OUTSIDE edit.prg so they can grow without eating
+        ; EDIT's scarce low RAM.
+        ; The trip through EDCFG reloads EDIT, so the document survives only via disk + ed.run. Ask
+        ; rather than silently saving: Y saves and comes back to it, N goes to the settings and drops
+        ; the unsaved edits, Esc stays in the editor. A fresh untitled document with no edits has
+        ; nothing to preserve, so it just goes straight through.
+        bool keep = filename[0] != 0            ; a named file is worth restoring even if unmodified
+        if modified {
+            ubyte r = confirm_save()
+            if r == 2
+                return                          ; cancelled -> stay in the editor
+            if r == 1 {
+                if not save_now()
+                    return                      ; the save itself was cancelled (Save As, overwrite...)
+                keep = true
+            } else {
+                keep = false                    ; discarding the edits: don't reopen a stale document
+            }
+        }
+        if keep
+            write_run_state()                   ; document + cursor line for the return trip
+        run_config = true
+        g_running = false                       ; leave the main loop; start()'s tail chains out
+        g_redrawn = true
+    }
+
+    sub chain_load(str prog) {
+        ; LOAD + RUN a .prg from BASIC's REPL: print the LOAD line on screen, then feed CR + RUN + CR
+        ; through the keyboard queue so BASIC re-reads the printed line. Same dance as chain_to_basload
+        ; (and the same one the /ED launcher performs), just for an arbitrary program.
+        txt.chrout($93)                         ; clear screen, cursor home
+        txt.nl()
+        txt.print("load")
+        txt.chrout($22)                         ; "
+        txt.print(prog)
+        txt.chrout($22)
+        txt.chrout($91)                         ; cursor up x2 -> back onto the LOAD line
+        txt.chrout($91)
+        cx16.kbdbuf_clear()
+        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen LOAD line
+        cx16.kbdbuf_put('r')
+        cx16.kbdbuf_put('u')
+        cx16.kbdbuf_put('n')
+        cx16.kbdbuf_put($0d)                    ; RUN + CR
     }
 
     sub arm_return_key() {
@@ -2108,7 +2153,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         ; already parked on the line it named). Flashed, not silent - a quiet status line gets missed.
         show_err_bar($21)                       ; red bg, white fg
         sys.wait(30)                            ; ~0.5s
-        show_err_bar(CB_BAR)                     ; settle to the normal bar; the message stays readable
+        show_err_bar(theme.CB_BAR)                     ; settle to the normal bar; the message stays readable
     }
 
     sub show_err_bar(ubyte color) {
@@ -2143,7 +2188,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         put_str_at(tx, 16,     "Open Source! play, have fun!")
         ubyte fcol = x0 + (w - 13) / 2
         put_str_at(fcol, 18, " Press any key ")               ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, 18, CB_BOX)            ; white hint on the dark-grey frame
+        set_color_run(fcol, fcol + 14, 18, theme.CB_BOX)            ; white hint on the dark-grey frame
         void wait_key()
         full_redraw()
     }
@@ -2232,7 +2277,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         }
         fcol = x0 + (bw - 15) / 2
         put_str_at(fcol, y1, " Press any key ")                ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, y1, CB_BOX)             ; white hint on the dark-grey frame
+        set_color_run(fcol, fcol + 14, y1, theme.CB_BOX)             ; white hint on the dark-grey frame
         void wait_key()
         full_redraw()
     }
@@ -2442,9 +2487,9 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
 
     sub prompt_replace() -> ubyte {
         ; ask about the highlighted match; returns 'y', 'n', 'a' (all) or 27 (stop).
-        bar_fill(STATUS_ROW, CB_BAR)
+        bar_fill(STATUS_ROW, theme.CB_BAR)
         put_str_at(1, STATUS_ROW, "Replace?  Yes  No  All  Esc")
-        ubyte hi = (CB_BAR & $f0) | ACCEL_FG    ; top-menu-style highlight for the trigger keys
+        ubyte hi = (theme.CB_BAR & $f0) | theme.ACCEL_FG    ; top-menu-style highlight for the trigger keys
         txt.setclr(11, STATUS_ROW, hi)          ; Y(es)
         txt.setclr(16, STATUS_ROW, hi)          ; N(o)
         txt.setclr(20, STATUS_ROW, hi)          ; A(ll)
@@ -2556,7 +2601,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         if g_repl_count != 0
             modified = true
         full_redraw()
-        bar_fill(STATUS_ROW, CB_BAR)
+        bar_fill(STATUS_ROW, theme.CB_BAR)
         put_str_at(1, STATUS_ROW, "Replaced ")
         void put_uw_at(10, STATUS_ROW, g_repl_count)
         sys.wait(80)

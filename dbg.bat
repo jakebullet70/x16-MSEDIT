@@ -52,13 +52,16 @@ IF NOT EXIST "%PRGFILE%" (
   GOTO :EOF
 )
 
-REM 2) stage the .prg into the run folder (the host fs root the editor sees)
+REM 2) stage the .prg into run\MSEDIT (the program folder; run\ stays the host fs root
+REM    the editor sees, holding the documents and ed.run)
 SET RUNDIR=%~dp0run
-IF NOT EXIST "%RUNDIR%" MKDIR "%RUNDIR%"
-COPY /Y "%PRGFILE%" "%RUNDIR%\%NAME%.prg" >NUL
+SET PROGDIR=%RUNDIR%\MSEDIT
+IF NOT EXIST "%PROGDIR%" MKDIR "%PROGDIR%"
+COPY /Y "%PRGFILE%" "%PROGDIR%\%NAME%.prg" >NUL
+IF EXIST "%~dp0edcfg.prg" COPY /Y "%~dp0edcfg.prg" "%PROGDIR%\edcfg.prg" >NUL
 
 REM 2b) the /ED root launcher, same as run.bat (SHIFT+RUN after F5 BASLOAD reloads EDIT)
-IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,17,8,10,0,147,34,69,68,73,84,46,80,82,71,34,0,0,0))"
+IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,24,8,10,0,147,34,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"
 
 CALL "%~dp0LOCAL.BAT"
 IF NOT EXIST "%box16%" (
@@ -87,6 +90,6 @@ REM    INSIDE the emulator window; at Box16's default 658x558 they overlap and t
 REM    Disassembler's symbol column is clipped, so symbols look like they never loaded.
 REM    -scale does NOT change the window size (it is a render setting - measured
 REM    identical at 1, 2 and 3), so dbgwin.ps1 resizes the OS window instead.
-START "" /D "%RUNDIR%" "%box16%" -prg "%NAME%.prg" -run -rtc %ROMARG% %SYMARG% %BRKARG%
+START "" /D "%RUNDIR%" "%box16%" -prg "%PROGDIR%\%NAME%.prg" -run -rtc %ROMARG% %SYMARG% %BRKARG%
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dbgwin.ps1"
 ENDLOCAL & EXIT /B 0
