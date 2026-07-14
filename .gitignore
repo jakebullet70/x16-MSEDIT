@@ -4,5 +4,8 @@
 *.OLD
 *.vice-mon-list
 *.asm
+*.prg
+*.ovl
+build/
 .vscode/settings.json
 run/*

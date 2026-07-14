@@ -8,7 +8,7 @@ REM
 REM Usage:  dbg.bat [-n] [-b addr] [source.p8]
 REM           -n        no rebuild - launch the existing .prg
 REM           -b addr   break at a HEX address on startup, e.g. -b ae1 (main.start).
-REM                     Look the address up in <name>.vice-mon-list.
+REM                     Look the address up in build\<name>.vice-mon-list.
 REM           source    defaults to edit.p8
 REM
 REM In the emulator:  F12 breaks into the debugger, F9 sets a breakpoint at the
@@ -39,14 +39,15 @@ SET SRC=%1
 IF "%SRC%"=="" SET SRC=edit.p8
 FOR %%F IN ("%SRC%") DO SET NAME=%%~nF
 
-REM 1) compile (build.bat writes <name>.prg and <name>.vice-mon-list to the project root)
+REM 1) compile (build.bat writes the .prg, the .ovl and the .vice-mon-list into build\)
 IF NOT DEFINED NOBUILD (
   CALL "%~dp0build.bat" %SRC%
   IF ERRORLEVEL 1 GOTO :EOF
 )
 
-SET PRGFILE=%~dp0%NAME%.prg
-SET SYMFILE=%~dp0%NAME%.vice-mon-list
+SET BUILDDIR=%~dp0build
+SET PRGFILE=%BUILDDIR%\%NAME%.prg
+SET SYMFILE=%BUILDDIR%\%NAME%.vice-mon-list
 IF NOT EXIST "%PRGFILE%" (
   ECHO dbg: %PRGFILE% not found - build it first ^(drop the -n flag^).
   GOTO :EOF
@@ -58,7 +59,8 @@ SET RUNDIR=%~dp0run
 SET PROGDIR=%RUNDIR%\MSEDIT
 IF NOT EXIST "%PROGDIR%" MKDIR "%PROGDIR%"
 COPY /Y "%PRGFILE%" "%PROGDIR%\%NAME%.prg" >NUL
-IF EXIST "%~dp0edcfg.prg" COPY /Y "%~dp0edcfg.prg" "%PROGDIR%\edcfg.prg" >NUL
+IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\edcfg.prg" >NUL
+IF EXIST "%BUILDDIR%\help.ovl"  COPY /Y "%BUILDDIR%\help.ovl"  "%PROGDIR%\help.ovl"  >NUL
 
 REM 2b) the /ED root launcher, same as run.bat (SHIFT+RUN after F5 BASLOAD reloads EDIT)
 IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,24,8,10,0,147,34,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"
@@ -69,10 +71,10 @@ IF NOT EXIST "%box16%" (
   GOTO :EOF
 )
 
-REM 3) our program symbols
+REM 3) our program symbols (build\<name>.vice-mon-list, written by the compiler)
 SET SYMARG=
 IF EXIST "%SYMFILE%" SET SYMARG=-sym "%SYMFILE%"
-IF NOT EXIST "%SYMFILE%" ECHO dbg: no %NAME%.vice-mon-list - launching without program symbols.
+IF NOT EXIST "%SYMFILE%" ECHO dbg: no build\%NAME%.vice-mon-list - launching without program symbols.
 
 REM 4) ROM symbols: use the x16emu rom.bin so -stds finds the .sym files beside it
 SET ROMARG=

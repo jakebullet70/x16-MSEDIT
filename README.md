@@ -7,7 +7,7 @@ the whole document held in **banked RAM**.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.70** · © sadLogic 2026 · Open source
+> **Version 0.9.75** · © sadLogic 2026 · Open source
 
 ---
 
@@ -225,9 +225,17 @@ Requirements:
 - The [64tass](https://sourceforge.net/projects/tass64/) assembler
 
 ```bat
-build.bat            :: compiles SRC\edit.p8 -> edit.prg
-build.bat edit.p8    :: same, explicit source
+build.bat                 :: compiles SRC\edit.p8 (+ the help.ovl overlay) -> edit.prg
+build.bat edcfg.p8        :: the settings program
+build.bat install.p8      :: the self-installer
+build.bat tools\fktest.p8 :: a one-off diagnostic (stays in build\, never published)
 ```
+
+Everything the compiler emits — the `.prg`, the `help.ovl` overlay, the `.asm` listing and the
+`.vice-mon-list` symbol file — goes into `build\`, which is gitignored. The project root stays
+source-only: no binaries are kept or committed there (the build number auto-increments, so a
+tracked `.prg` would churn on every compile). `run.bat`, `dbg.bat` and `dist.bat` all stage
+straight out of `build\`.
 
 Paths to Java and 64tass are set near the top of `build.bat`; adjust them for your machine.
 After a successful build it prints a memory-usage summary (image / variables / slabs and the
@@ -239,19 +247,25 @@ free low-RAM headroom below the I/O area).
 run.bat              :: build, stage into run\, and launch x16emu
 ```
 
-`run.bat` copies the fresh `edit.prg` into the `run\` folder (which becomes the emulator's
-host filesystem root, so sample files there are visible to Open/Save) and boots straight into
-the editor. The emulator path comes from `LOCAL.BAT` — point `%x16%` at your `x16emu` install.
+`run.bat` builds, then stages the fresh `edit.prg`, the settings program `edcfg.prg` and the
+Help-screens overlay `help.ovl` from `build\` into `run\MSEDIT\`, while `run\` itself becomes the
+emulator's host filesystem root (so sample files there are visible to Open/Save), and boots
+straight into the editor. The emulator path comes from `LOCAL.BAT` — point `%x16%` at your
+`x16emu` install.
 
-On hardware, copy `edit.prg` to your SD card and `LOAD"EDIT.PRG"` / `RUN`.
+On hardware, run `dist.bat` and copy the four files it stages (`install.prg`, `edit.prg`,
+`edcfg.prg`, `help.ovl`) into one folder on the SD card, then `CD` into it and `^INSTALL`. The
+installer creates `/MSEDIT`, copies the programs in and writes the `/ED` launcher, so the editor
+starts from anywhere with `^/ED`.
 
 ## Debugging
 
 `dbg.bat` is the debug-mode twin of `run.bat`: it launches [Box16](https://github.com/indigodarkwolf/box16)
-instead of x16emu and hands it the `edit.vice-mon-list` that `prog8c` already emits beside the
-`.prg`. That is a VICE label file, so every prog8 symbol (`p8b_main:p8s_ed_pgdn`, …) shows up by
+instead of x16emu and hands it the `build\edit.vice-mon-list` that `prog8c` emits alongside the
+compiled program. That is a VICE label file, so every prog8 symbol (`p8b_main:p8s_ed_pgdn`, …) shows up by
 name in Box16's disassembly, breakpoint and memory views — including the banked-RAM views, which
-is where the document arena, the filelist (bank 6) and the clipboard (bank 7) live.
+is where the document arena, the filelist (bank 6), the clipboard (bank 7) and the `help.ovl` code
+overlay (bank 8) live.
 
 ```bat
 dbg.bat              :: build, then launch under Box16 with symbols
@@ -262,7 +276,7 @@ dbg.bat -b ae1       :: break on startup at $0AE1 (main.start)
 Point `%box16%` in `LOCAL.BAT` at your Box16 install. In the emulator: **F12** break into the
 debugger, **F9** breakpoint at the current position, **F11** step into, **F10** step over.
 
-Addresses for `-b` come from `edit.vice-mon-list`. Note that a *block* label there is the block's
+Addresses for `-b` come from `build\edit.vice-mon-list`. Note that a *block* label there is the block's
 variable area, not its code — `.p8b_main` is `$825`, the same address as `p8v_filename`; the code
 entry is `.p8b_main:p8s_start` at `$0AE1`.
 

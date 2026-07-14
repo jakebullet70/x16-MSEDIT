@@ -3,7 +3,7 @@ REM Build the release files and stage them as an unpacked release folder, then b
 REM the INSTALLER can be exercised exactly the way a user would run it.
 REM
 REM Layout it produces (run\ is the emulator's filesystem root):
-REM   run\DIST\install.prg  edit.prg  edcfg.prg     <- the "unpacked release" the user copies to their SD
+REM   run\DIST\install.prg  edit.prg  edcfg.prg  help.ovl   <- the "unpacked release" copied to the SD
 REM
 REM In the emulator, at the BASIC READY prompt:
 REM     CD"DIST"        (enter the release folder - the installer copies FROM the folder it runs in)
@@ -24,12 +24,14 @@ IF ERRORLEVEL 1 GOTO :EOF
 CALL "%~dp0build.bat" install.p8
 IF ERRORLEVEL 1 GOTO :EOF
 
+SET BUILDDIR=%~dp0build
 SET RUNDIR=%~dp0run
 SET DISTDIR=%RUNDIR%\DIST
 IF NOT EXIST "%DISTDIR%" MKDIR "%DISTDIR%"
-COPY /Y "%~dp0edit.prg"    "%DISTDIR%\edit.prg"    >NUL
-COPY /Y "%~dp0edcfg.prg"   "%DISTDIR%\edcfg.prg"   >NUL
-COPY /Y "%~dp0install.prg" "%DISTDIR%\install.prg" >NUL
+COPY /Y "%BUILDDIR%\edit.prg"    "%DISTDIR%\edit.prg"    >NUL
+COPY /Y "%BUILDDIR%\edcfg.prg"   "%DISTDIR%\edcfg.prg"   >NUL
+COPY /Y "%BUILDDIR%\help.ovl"    "%DISTDIR%\help.ovl"    >NUL
+COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\install.prg" >NUL
 ECHO   staged release: %DISTDIR%
 
 CALL "%~dp0LOCAL.BAT"

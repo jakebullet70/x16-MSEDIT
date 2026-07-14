@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 4
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 70         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 75         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -168,6 +168,22 @@ main {
                                         ; Costs banked RAM only now: 96*52=4992 < 8192 (one bank).
     const ubyte FLIST_BANK = edoc.ARENA_FIRST_BANK          ; overlay bank 6 for the picker list
     const uword filelist   = xarena.WIN_START               ; $A000 within FLIST_BANK
+
+    ; CODE OVERLAY: the Keyboard Map and About screens live in help.ovl, loaded into HELP_BANK
+    ; (bank 8) at startup. They are cold (user-triggered) but bulky - ~850 bytes of literal text
+    ; plus their draw code - and low RAM is the scarce resource, so they run from banked RAM.
+    ; `extsub @bank 8` wraps each call in a JSRFAR that maps the bank around it. $A000 is the
+    ; library init; the entries follow at 3-byte intervals (help.p8's %jmptable).
+    ;
+    ; The overlay cannot see main's symbols, so it carries its OWN copy of theme.p8 and the box
+    ; helpers: we pass the theme id (and, for About, the build number and the emulator flag) and
+    ; it paints itself to match. No shared state, no main-RAM cost beyond the three vars here.
+    const ubyte HELP_BANK = edoc.ARENA_FIRST_BANK + 2       ; overlay bank 8 for help.ovl
+    extsub @bank 8 $A000 = help_init()
+    extsub @bank 8 $A003 = ovl_keymap(ubyte theme_id @R0)
+    extsub @bank 8 $A006 = ovl_about(ubyte theme_id @R0, uword build @R1, ubyte emu @R2)
+    bool help_ok                        ; help.ovl loaded OK -> the Help screens are available
+    str  helpovl = "help.ovl"
     ubyte file_count
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
@@ -238,7 +254,7 @@ main {
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
-        xarena.first_bank = edoc.ARENA_FIRST_BANK + 2   ; +2 past the filelist/clip overlay banks (6,7)
+        xarena.first_bank = edoc.ARENA_FIRST_BANK + 3   ; +3 past the overlay banks: filelist (6), clipboard (7), help.ovl (8)
         find_term[0] = 0                ; the "?"*N buffers start non-empty; clear them
         repl_term[0] = 0
         clip_has = false
@@ -251,6 +267,17 @@ main {
         theme.apply(theme.cfg_read())   ; colour scheme from the install folder's edit.cfg (missing -> Classic).
                                         ; Read here, while the cwd is still the fsroot we launched in - theme's
                                         ; paths are relative to it and it does no chdir of its own.
+
+        ; load the Help screens overlay into its reserved bank, from the install folder (same place
+        ; edit.cfg came from - we are still in the launch cwd). A missing help.ovl is not fatal:
+        ; help_ok stays false and the two Help screens say so instead of jumping into empty RAM.
+        cx16.push_rambank(HELP_BANK)
+        help_ok = diskio.loadlib(theme.path_to(helpovl), $a000) != 0
+        cx16.pop_rambank()
+        if help_ok
+            help_init()                 ; extsub @bank 8: clears the overlay's in-bank BSS, ONCE
+        else
+            void diskio.status()         ; drop the FILE NOT FOUND (else the activity LED blinks)
         bool reloaded = restore_run_state()
         if not reloaded {               ; fresh launch (no BASLOAD reload pending):
             snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
@@ -2169,117 +2196,32 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         }
     }
 
+    ; The About and Keyboard Map screens themselves live in help.ovl (HELP_BANK) - see the extsub
+    ; block near the top. What is left here is the hand-off: pass the overlay the theme (so it
+    ; paints in the current colours) plus, for About, the build number and the emulator flag, which
+    ; it has no way to read out of main. The overlay blocks on a key; we repaint the editor after.
+
     sub act_about() {
-        const ubyte w = 34
-        ubyte x0 = (SCR_W - w) / 2
-        ubyte x1 = x0 + w - 1
-        ubyte tx = x0 + 3
-        draw_box_frame(x0, 9, x1, 18)
-        draw_box_shadow(x0, 9, x1, 18)
-        draw_box_title(x0, x1, 9, " About ")                  ; XFMGR-style solid title bar (white on blue)
-        put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
-        put_str_at(tx, 12, "Text stored in banked RAM")
-        if g_emu
-            put_str_at(tx, 13, "Running on:  Emulator")
-        else
-            put_str_at(tx, 13, "Running on:  Hardware")
-        put_str_at(tx, 15,     "(c)sadLogic 2026 v0.9.")         ; version = v0.9.<BUILD_NUM>
-        void put_uw_at(tx + 22, 15, BUILD_NUM)                   ; 22 = len("(c)sadLogic 2026 v0.9.")
-        put_str_at(tx, 16,     "Open Source! play, have fun!")
-        ubyte fcol = x0 + (w - 13) / 2
-        put_str_at(fcol, 18, " Press any key ")               ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, 18, theme.CB_BOX)            ; white hint on the dark-grey frame
-        void wait_key()
+        if not help_ok {
+            no_help()
+            return
+        }
+        ovl_about(theme.current, BUILD_NUM, g_emu as ubyte)
         full_redraw()
-    }
-
-    ubyte km_keyc                       ; left key column (set by act_keymap per width)
-    ubyte km_desc                       ; left description column
-    ubyte km_keyc2                      ; right key column   (80-col two-column layout)
-    ubyte km_desc2                      ; right description column
-
-    sub km_row(ubyte row, str keys, str desc) {
-        put_str_at(km_keyc, row, keys)
-        put_str_at(km_desc, row, desc)
-    }
-
-    sub km_row2(ubyte row, str keys, str desc) {
-        put_str_at(km_keyc2, row, keys)
-        put_str_at(km_desc2, row, desc)
     }
 
     sub act_keymap() {
-        ; wide 80-col box uses two columns of bindings; 40-col falls back to a single column.
-        ubyte x0, x1, y1, bw, fcol
-        if SCR_W >= 80 {
-            bw = 68
-            x0 = (SCR_W - bw) / 2       ; centred wide box, top at row 5
-            x1 = x0 + bw - 1
-            y1 = 23
-            km_keyc  = x0 + 3           ; left column: keys at +3, descriptions at +16
-            km_desc  = x0 + 16
-            km_keyc2 = x0 + 37          ; right column: keys at +37, descriptions at +50
-            km_desc2 = x0 + 50
-            draw_box_frame(x0, 5, x1, y1)
-            draw_box_shadow(x0, 5, x1, y1)
-            draw_box_title(x0, x1, 5, " Keyboard Map ")
-            km_row ( 7, "Arrows",       "Move cursor")
-            km_row ( 8, "Ctrl+Lt/Rt",   "Jump a word")
-            km_row ( 9, "Home / End",   "Start/end of line")
-            km_row (10, "PgUp / PgDn",  "Page up / down")
-            km_row (11, "Shift+arrows", "Select text")
-            km_row (12, "Tab",          "Insert 4 spaces")
-            km_row (13, "Ctrl+Up/Dn",   "Move line up/down")
-            km_row (14, "Ctrl+K",       "Delete line")
-            km_row2( 7, "Ctrl+C / X",   "Copy / Cut")
-            km_row2( 8, "Ctrl+V / F4",  "Paste")
-            km_row2( 9, "Ctrl+Z",       "Undo")
-            km_row2(10, "Ctrl+U",       "Redo")
-            km_row2(11, "Ctrl+F / F6",  "Find")
-            km_row2(12, "Ctrl+G / F3",  "Find next")
-            km_row2(13, "Ctrl+R / F8",  "Replace")
-            km_row2(14, "Ctrl+N / O",   "New / Open")
-            km_row2(15, "F2 / F1",      "Save / About")
-            draw_box_sep(x0, x1, 16)                           ; ---- Run a BASIC file via BASLOAD ----
-            km_row(18, "F5", "Save & run current file thru BASLOAD")
-            km_row(19, "F8", "After BASLOAD, at BASIC READY: return to EDITOR")
-            put_str_at(x0 + 3, 21, "Emulator eats Ctrl+F/R/V - use F6/F8/F4")
-        } else {
-            bw = 38
-            x0 = (SCR_W - bw) / 2
-            x1 = x0 + bw - 1
-            y1 = 29
-            km_keyc = x0 + 2
-            km_desc = x0 + 17
-            draw_box_frame(x0, 3, x1, y1)                      ; shadow omitted: runs off the 40-col edge
-            draw_box_title(x0, x1, 3, " Keyboard Map ")
-            km_row ( 5, "Arrows",       "Move cursor")
-            km_row ( 6, "Ctrl+Lt/Rt",   "Jump a word")
-            km_row ( 7, "Home / End",   "Start/end line")
-            km_row ( 8, "PgUp / PgDn",  "Page up/down")
-            km_row ( 9, "Shift+arrows", "Select text")
-            km_row (10, "Tab",          "Insert 4 spaces")
-            km_row (11, "Ctrl+Up/Dn",   "Move line up/dn")
-            km_row (12, "Ctrl+K",       "Delete line")
-            km_row (13, "Ctrl+C / X",   "Copy / Cut")
-            km_row (14, "Ctrl+V / F4",  "Paste")
-            km_row (15, "Ctrl+Z",       "Undo")
-            km_row (16, "Ctrl+U",       "Redo")
-            km_row (17, "Ctrl+F / F6",  "Find")
-            km_row (18, "Ctrl+G / F3",  "Find next")
-            km_row (19, "Ctrl+R / F8",  "Replace")
-            km_row (20, "Ctrl+N / O",   "New / Open")
-            km_row (21, "F2 / F1",      "Save / About")
-            draw_box_sep(x0, x1, 23)                           ; ---- BASLOAD ----
-            km_row(24, "F5", "Run file thru BASLOAD")
-            km_row(25, "F8", "Return back to EDIT")
-            put_str_at(x0 + 2, 27, "Emu eats Ctrl+F/R/V")
+        if not help_ok {
+            no_help()
+            return
         }
-        fcol = x0 + (bw - 15) / 2
-        put_str_at(fcol, y1, " Press any key ")                ; hint on the bottom frame
-        set_color_run(fcol, fcol + 14, y1, theme.CB_BOX)             ; white hint on the dark-grey frame
-        void wait_key()
+        ovl_keymap(theme.current)
         full_redraw()
+    }
+
+    sub no_help() {
+        ; help.ovl missing (an incomplete install) - say so rather than calling into an empty bank
+        flash_status("help.ovl not found in the program folder")
     }
 
     ; ----- Key Probe diagnostic: disabled (removed from the Help menu). Kept here,

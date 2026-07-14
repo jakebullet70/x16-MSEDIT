@@ -1,6 +1,6 @@
 ; install - self-installer for EDIT, run once from the unpacked release folder.
 ;
-; A normal $0801 PRG. The user copies the release files (edit.prg, edcfg.prg) plus this installer
+; A normal $0801 PRG. The user copies the release files (edit.prg, edcfg.prg, help.ovl) plus this installer
 ; into ONE folder on their SD card, boots the X16, CDs into that folder and runs it. It:
 ;   * reports the folder it is running from,
 ;   * creates /MSEDIT on the drive root,
@@ -26,7 +26,10 @@
 
 main {
     str TARGET_DIR = "msedit"                   ; install folder at the drive root
-    str[3] FILES = ["edit.prg", "edcfg.prg", "edit.cfg"]    ; edit.prg is mandatory; the rest optional
+    ; edit.prg is mandatory; the rest are copied when present. help.ovl holds EDIT's Help screens
+    ; (loaded into banked RAM at startup) - without it EDIT runs, but Help>Keyboard/About report
+    ; it missing. edit.cfg is the user's settings and is PRESERVED, never overwritten.
+    str[4] FILES = ["edit.prg", "edcfg.prg", "help.ovl", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
     ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "MSEDIT/EDIT.PRG"
