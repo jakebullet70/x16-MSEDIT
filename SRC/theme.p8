@@ -77,12 +77,22 @@ theme {
         ; light green, comments light grey (the one deliberately muted tone - comments should recede,
         ; but still be readable, which medium grey on blue was not).
         14,  6, $6e, $f0, $61, $6e, $e1, $0f, $16, $e1, $00, $6c, $67, $00,  2, $61, $67, $63, $6a, $6d, $6f,
-        ; 3 Light - light-grey field with black text, blue chrome, white popups.
-        ; The selected menu row is white-on-DARK GREY, not the obvious white-on-blue invert: the
-        ; accelerator letter keeps its row's background and only recolours the fg, so it has to stay
-        ; legible on BOTH the bar and the selected row. Yellow works on the blue bar and on dark grey;
-        ; on a white selected row it vanished completely.
-         0, 15, $f0, $61, $10, $16, $61, $b1, $0f, $61, $cc, $c0, $c6, $10,  7, $f0, $f6, $f4, $f2, $f5, $fb
+        ; 3 Light - WHITE field with black text, blue chrome, white popups; the current-line band is
+        ; light grey (so the cursor's line reads as a soft grey bar on the white page). The syntax
+        ; colours carry a WHITE background nibble to match the field (light grey would leave grey cells
+        ; behind coloured tokens on the white page).
+        ;
+        ; Body text is DARK GREY (not pure black) for a softer page, on the white field. Syntax palette
+        ; is a VS Code "light+" look: purple keywords, blue functions, red strings, green numbers, grey
+        ; comments, dark-grey default (operators / variables / punctuation). Only the DARK half of the
+        ; X16 palette is used - on a white field the light tones (cyan, yellow, light blue/green/grey)
+        ; wash out, so VS Code's teal/gold become the nearest readable blue/purple.
+        ;
+        ; The selected menu row is LIGHT GREY with black text (a soft highlight on the blue dropdown /
+        ; menu bar). The accelerator letter keeps its row's background and only recolours the fg, so it
+        ; must read on BOTH the blue bar and the light-grey selected row: ORANGE does (yellow vanished
+        ; on light grey, and any dark colour vanished on the blue bar).
+         11, 1, $1b, $61, $10, $16, $61, $f0, $0f, $61, $cc, $c0, $c6, $f0,  8, $1b, $14, $16, $12, $15, $1b
     ]
 
     sub apply(ubyte id) {
