@@ -24,8 +24,9 @@ REM    ...the misc overlay - About screen (EDIT loads MSEDIT/misc.ovl into bank 
 IF EXIST "%BUILDDIR%\misc.ovl" COPY /Y "%BUILDDIR%\misc.ovl" "%PROGDIR%\misc.ovl" >NUL
 REM    ...the text/hex viewer overlay (bank 9)...
 IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\tview.ovl" >NUL
-REM    ...and the help text file the viewer shows for Help > Keyboard.
-IF EXIST "%~dp0edit.hlp" COPY /Y "%~dp0edit.hlp" "%PROGDIR%\edit.hlp" >NUL
+REM    ...and the help text files the viewer shows for Help > Keyboard / Help > BASLOAD.
+IF EXIST "%~dp0edit.hlp"    COPY /Y "%~dp0edit.hlp"    "%PROGDIR%\edit.hlp"    >NUL
+IF EXIST "%~dp0basload.hlp" COPY /Y "%~dp0basload.hlp" "%PROGDIR%\basload.hlp" >NUL
 
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
 CALL "%~dp0build.bat" edcfg.p8

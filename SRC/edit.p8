@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 89         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 91         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -193,6 +193,7 @@ main {
     bool tview_ok                       ; tview.ovl loaded OK -> the viewer is available
     str  tviewovl = "tview.ovl"
     str  keysfile = "edit.hlp"          ; the help / Keyboard Map text file, viewed by Help > Keyboard
+    str  basloadhlp = "basload.hlp"     ; the BASLOAD guide, viewed by Help > BASLOAD
     ubyte file_count
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
@@ -226,7 +227,7 @@ main {
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   's' -> return 2   'l' -> return 3 }
-            else -> when key { 'k' -> return 0   'c' -> return 1   'a' -> return 2 }
+            else -> when key { 'k' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }
         }
         return 255
     }
@@ -1350,7 +1351,8 @@ main {
             else -> {                       ; Help
                 when i {
                     0 -> put_str_at(col, row, "Keyboard...")
-                    1 -> put_str_at(col, row, "Config...")
+                    1 -> put_str_at(col, row, "BASLOAD...")
+                    2 -> put_str_at(col, row, "Config...")
                     else -> put_str_at(col, row, "About      F1")
                 }
             }
@@ -1396,8 +1398,8 @@ main {
 
     sub run_dropdown(ubyte active) -> ubyte {
         ; returns the chosen item index, or 255=esc, 254=prev menu, 253=next menu
-        ubyte n = 3
-        ubyte boxw = 13                     ; Help ("About      F1")
+        ubyte n = 4
+        ubyte boxw = 13                     ; Help ("Keyboard.../BASLOAD.../Config.../About F1")
         when active {
             0 -> { n = 6  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
@@ -1494,7 +1496,8 @@ main {
             else -> {                       ; Help
                 when choice {
                     0 -> act_keymap()
-                    1 -> act_config()
+                    1 -> act_basload_help()
+                    2 -> act_config()
                     else -> act_about()
                 }
             }
@@ -2299,11 +2302,21 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     sub act_keymap() {
         ; the Keyboard Map is a shipped text file (edit.hlp) shown in the viewer, so the key list is
         ; editable data instead of hand-drawn code.
+        view_help(keysfile)
+    }
+
+    sub act_basload_help() {
+        ; the BASLOAD guide (basload.hlp), shown in the same viewer as the Keyboard Map
+        view_help(basloadhlp)
+    }
+
+    sub view_help(str fname) {
+        ; open a shipped help text file (in the install folder) read-only in the viewer
         if not tview_ok {
-            flash_status("keyboard help needs tview.ovl + edit.hlp")
+            flash_status("help viewer needs tview.ovl + the .hlp file")
             return
         }
-        ovl_view(theme.path_to(keysfile), theme.current)
+        ovl_view(theme.path_to(fname), theme.current)
         full_redraw()
     }
 
