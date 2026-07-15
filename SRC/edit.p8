@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 84         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 85         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -3450,9 +3450,11 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             return
         }
         ; selection management: Shift+cursor extends the selection, any other
-        ; cursor-movement key collapses it
+        ; cursor-movement key collapses it. 147 = Shift+Home (CLR $93) and 132 = Shift+End
+        ; (HELP $84): the X16 keymap delivers those combos as distinct codes, not Home/End+shift,
+        ; so they are listed here explicitly - they only ever arrive with shift held.
         when k {
-            17, 145, 29, 157, 19, 4, 2, 130 -> {
+            17, 145, 29, 157, 19, 4, 2, 130, 147, 132 -> {
                 if (g_mod & MOD_SHIFT) != 0 {
                     if not sel_active {
                         anc_row = cur_row
@@ -3503,6 +3505,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             }
             19 -> ed_home()
             4 -> ed_end()                   ; End key
+            147 -> ed_home()                ; Shift+Home (CLR $93): extend selection to line start
+            132 -> ed_end()                 ; Shift+End (HELP $84): extend selection to line end
             25 -> {                         ; forward Delete key ($19). Shift+Del = Cut (CUA), if the
                 if (g_mod & MOD_SHIFT) != 0  ; emulator delivers Shift+Del as this code + the shift bit
                     op_cut()
@@ -3549,6 +3553,17 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
                         delete_selection()
                     ed_insert(k)
                 }
+            }
+        }
+        ; drain the key-repeat backlog after a Shift+cursor selection step. Holding Shift+Arrow
+        ; generates repeats faster than the selection-highlight redraw consumes them, so the KERNAL
+        ; buffer fills and releasing the key kept extending the selection for a moment (overshoot).
+        ; Flushing after each step caps movement to the redraw rate and stops the instant the key is
+        ; released. Gated on a held Shift AND a cursor/selection key, so type-ahead of text - including
+        ; Shift+letter capitals - is never flushed.
+        if (g_mod & MOD_SHIFT) != 0 {
+            when k {
+                17, 145, 29, 157, 19, 4, 2, 130, 147, 132 -> cx16.kbdbuf_clear()
             }
         }
     }
