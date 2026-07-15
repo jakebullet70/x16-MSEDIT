@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 99         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 100         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -3350,7 +3350,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     }
 
     sub ed_tab() {
-        ubyte spaces = 4 - (cur_col & 3)
+        ; advance to the next multiple of the user's tab width (EDCFG "Tab width", read from edit.cfg)
+        ubyte spaces = theme.tab_width - (cur_col % theme.tab_width)
         repeat spaces
             ed_insert(' ')
     }

@@ -25,12 +25,12 @@
 %zeropage basicsafe
 
 main {
-    const ubyte NSET = 1                ; number of setting rows (grows as settings are added)
+    const ubyte NSET = 2                ; number of setting rows (grows as settings are added)
     const ubyte ROW0 = 6                ; screen row of the first setting
 
     str edprog = "edit.prg"             ; EDIT, chain-loaded on the way out; theme.path_to()
                                         ; prefixes the install folder from the root ED launcher
-    ubyte[16] cfg_line                  ; cfg write buffer ("theme=N\r")
+    ubyte[24] cfg_line                  ; cfg write buffer ("theme=N\r tab=W\r ...")
 
     ubyte SCR_W, SCR_H
     ubyte saved_mode                    ; screen mode we were launched in; restored on the way out
@@ -98,23 +98,49 @@ main {
                 }
                 theme.apply(id)                     ; live preview - draw_all() repaints in the new colours
             }
+            1 -> {                                  ; tab width: clamp within MIN_TAB..MAX_TAB
+                if forward {
+                    if theme.tab_width < theme.MAX_TAB
+                        theme.tab_width++
+                } else {
+                    if theme.tab_width > theme.MIN_TAB
+                        theme.tab_width--
+                }
+            }
         }
     }
 
     sub cfg_write(ubyte id) -> bool {
-        ; overwrite the cfg with "theme=<id>\r" (delete-then-create: a portable overwrite)
+        ; overwrite the cfg with one "key=<value>\r" line per setting (delete-then-create: a portable
+        ; overwrite). Kept in step with theme.cfg_read()'s parser - same keys, same order.
         uword cfg = theme.path_to(theme.CFG_FILE)   ; (a uword: prog8 only lets a `str` var hold a literal)
         diskio.delete(cfg)
         void diskio.status()                        ; deleting a file that isn't there parks an error on the
                                                     ; DOS channel (blinking activity LED) - read it and drop it
         if not diskio.f_open_w(cfg)
             return false
-        void strings.copy("theme=", cfg_line)
-        cfg_line[6] = '0' + id
-        cfg_line[7] = 13
-        bool ok = diskio.f_write(cfg_line, 8)
+        ubyte n = 0
+        n = append_kv(n, "theme=", id)
+        n = append_kv(n, "tab=", theme.tab_width)
+        bool ok = diskio.f_write(cfg_line, n)
         diskio.f_close_w()
         return ok
+    }
+
+    ; append "key<digit>\r" to cfg_line at offset n, return the new offset.
+    ; values here are single-digit (theme 1..3, tab 1..8), which keeps this trivial.
+    sub append_kv(ubyte n, str key, ubyte value) -> ubyte {
+        ubyte j = 0
+        while key[j] != 0 {
+            cfg_line[n] = key[j]
+            n++
+            j++
+        }
+        cfg_line[n] = '0' + value
+        n++
+        cfg_line[n] = 13
+        n++
+        return n
     }
 
     sub leave() {
@@ -158,6 +184,12 @@ main {
                 0 -> {
                     put_str_at(4, row, "Color scheme")
                     put_str_at(20, row, theme.NAMES[theme.current - 1])
+                }
+                1 -> {
+                    put_str_at(4, row, "Tab width")
+                    txt.plot(20, row)
+                    txt.print_ub(theme.tab_width)            ; 1..8 -> single digit
+                    txt.print(" spaces ")
                 }
             }
             ubyte c = theme.CB_BODY

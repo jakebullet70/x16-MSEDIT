@@ -52,6 +52,12 @@ theme {
     ubyte C_NUMBER      = $0d           ; syntax: numeric constants / line numbers
     ubyte C_COMMENT     = $05           ; syntax: REM ... to end of line
 
+    ; ---- other live settings (not colours, but persisted alongside the theme in edit.cfg) ----
+    const ubyte MIN_TAB = 1
+    const ubyte MAX_TAB = 8
+    const ubyte DEF_TAB = 4
+    ubyte tab_width = DEF_TAB            ; Tab inserts spaces to the next multiple of this (EDCFG-settable)
+
     ubyte current = 1                   ; the applied theme id (1..LAST)
 
     ; ---- the presets, NCOL bytes each, in the exact var order above ----
@@ -144,7 +150,7 @@ theme {
     str  progdir  = "?" * 32            ; install folder incl. trailing slash (empty = programs at root)
     str  progpath = "?" * 44            ; progdir + a filename, built by path_to()
     ubyte[32] edbuf                     ; ED launcher load buffer (the launcher is 27 bytes)
-    ubyte[16] cfg_line                  ; cfg load buffer (the theme=N line is 8 bytes)
+    ubyte[24] cfg_line                  ; cfg load buffer (holds the whole file: theme=N\r tab=W\r ...)
     bool dir_known = false
 
     ; There is deliberately NO save/restore of the working directory around the disk calls below.
@@ -193,11 +199,25 @@ theme {
         return progpath
     }
 
+    ; does the key at cfg_line[at..] equal `name`, delimited by '=' ?  (used by cfg_read)
+    sub cfg_key_is(ubyte at, str name) -> bool {
+        ubyte j = 0
+        while name[j] != 0 {
+            if cfg_line[at + j] != name[j]
+                return false
+            j++
+        }
+        return cfg_line[at + j] == '='
+    }
+
     sub cfg_read() -> ubyte {
-        ; the saved theme id; missing file / junk -> 1 (Classic). Uses the headerless KERNAL LOAD
-        ; (load_raw), never f_open: XFMGR2 found that an f_open on an ABSENT file leaves read-channel
+        ; Parse the cfg into the live settings and return the saved theme id. The file is one
+        ; `key=value` line per setting, CR-terminated:  theme=N  and  tab=W. A missing file / junk /
+        ; unknown key just leaves the defaults (theme 1 = Classic, tab = 4). Uses the headerless KERNAL
+        ; LOAD (load_raw), never f_open: XFMGR2 found that an f_open on an ABSENT file leaves read-channel
         ; traffic that corrupts the next UI draw. load_raw returns 0 when the file isn't there.
         ubyte id = FIRST
+        tab_width = DEF_TAB
         uword endaddr = diskio.load_raw(path_to(CFG_FILE), &cfg_line)
         if endaddr == 0 {
             ; No cfg yet (the normal first-run case). The failed LOAD leaves a FILE NOT FOUND on the
@@ -207,19 +227,36 @@ theme {
             return id
         }
         @(endaddr) = 0
-        ubyte p = 0
-        while cfg_line[p] != 0 and cfg_line[p] != '='
-            p++
-        if cfg_line[p] == '=' {
-            ubyte d = cfg_line[p+1]
-            if d >= '1' and d <= '9'
-                id = d - '0'
+        ubyte i = 0
+        while cfg_line[i] != 0 {
+            ubyte ks = i                                 ; start of this line's key
+            while cfg_line[i] != 0 and cfg_line[i] != '=' and cfg_line[i] != 13
+                i++
+            if cfg_line[i] == '=' {
+                i++                                      ; step over '='
+                uword val = 0
+                while cfg_line[i] >= '0' and cfg_line[i] <= '9' {
+                    val = val * 10 + (cfg_line[i] - '0')
+                    i++
+                }
+                if cfg_key_is(ks, "theme")
+                    id = lsb(val)
+                else if cfg_key_is(ks, "tab")
+                    tab_width = lsb(val)
+            }
+            while cfg_line[i] != 0 and cfg_line[i] != 13    ; skip to end of line
+                i++
+            if cfg_line[i] == 13
+                i++                                      ; step over the CR onto the next line
         }
         if id < FIRST or id > LAST
             id = FIRST
+        if tab_width < MIN_TAB or tab_width > MAX_TAB
+            tab_width = DEF_TAB
         return id
     }
 
-    ; NOTE: writing the cfg lives in EDCFG (edcfg.p8), not here. EDIT only ever READS it, and keeping
-    ; f_open_w/f_write out of edit.prg keeps that diskio code out of its low RAM.
+    ; NOTE: writing the cfg (all its key=value lines) lives in EDCFG (edcfg.p8), not here. EDIT only
+    ; ever READS it, and keeping f_open_w/f_write out of edit.prg keeps that diskio code out of its
+    ; low RAM.
 }
