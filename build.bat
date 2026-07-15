@@ -58,6 +58,10 @@ IF /I "%SRC%"=="edit.p8" (
     IF ERRORLEVEL 1 ( TYPE "%TEMP%\edit_tview_build.txt" & ECHO *** tview overlay build FAILED *** & ENDLOCAL & EXIT /B 1 )
     MOVE /Y "%BUILDDIR%\tview.bin" "%BUILDDIR%\tview.ovl" >NUL
     ECHO   viewer overlay    : build\tview.ovl built ^($A000 HIRAM bank overlay^)
+    java -jar "%~dp0prog8c.jar" -target cx16 -out "%BUILDDIR%" "%SRCDIR%\picker.p8" > "%TEMP%\edit_picker_build.txt" 2>&1
+    IF ERRORLEVEL 1 ( TYPE "%TEMP%\edit_picker_build.txt" & ECHO *** picker overlay build FAILED *** & ENDLOCAL & EXIT /B 1 )
+    MOVE /Y "%BUILDDIR%\picker.bin" "%BUILDDIR%\picker.ovl" >NUL
+    ECHO   picker overlay    : build\picker.ovl built ^($A000 HIRAM bank overlay^)
 )
 
 ENDLOCAL & EXIT /B 0

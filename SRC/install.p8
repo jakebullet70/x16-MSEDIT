@@ -1,6 +1,6 @@
 ; install - self-installer for EDIT, run once from the unpacked release folder.
 ;
-; A normal $0801 PRG. The user copies the release files (edit.prg, edcfg.prg, help.ovl) plus this installer
+; A normal $0801 PRG. The user copies the release files (edit.prg, edcfg.prg, the .ovl overlays) plus this installer
 ; into ONE folder on their SD card, boots the X16, CDs into that folder and runs it. It:
 ;   * reports the folder it is running from,
 ;   * creates /MSEDIT on the drive root,
@@ -27,10 +27,11 @@
 main {
     str TARGET_DIR = "msedit"                   ; install folder at the drive root
     ; edit.prg is mandatory; the rest are copied when present. misc.ovl = About screen, tview.ovl =
-    ; the text/hex viewer (File>View and Help>Keyboard/BASLOAD), edit.hlp / basload.hlp = the help
-    ; text files the viewer shows. All are loaded/opened at runtime; without them EDIT still runs and
-    ; the affected menu items just report the file missing. edit.cfg is the user's settings, PRESERVED.
-    str[7] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "edit.hlp", "basload.hlp", "edit.cfg"]
+    ; the text/hex viewer (File>View and Help>Keyboard/BASLOAD), picker.ovl = the Open/View file
+    ; picker, edit.hlp / basload.hlp = the help text files the viewer shows. All are loaded/opened at
+    ; runtime; without them EDIT still runs and the affected menu items just report the file missing.
+    ; edit.cfg is the user's settings, PRESERVED.
+    str[8] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "edit.hlp", "basload.hlp", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
     ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "/MSEDIT/EDIT.PRG"

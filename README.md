@@ -7,7 +7,7 @@ the whole document held in **banked RAM**.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.106** · © sadLogic 2026 · Open source
+> **Version 0.9.111** · © sadLogic 2026 · Open source
 
 ---
 
@@ -232,13 +232,13 @@ Requirements:
 - The [64tass](https://sourceforge.net/projects/tass64/) assembler
 
 ```bat
-build.bat                 :: compiles SRC\edit.p8 (+ the misc.ovl / tview.ovl overlays) -> edit.prg
+build.bat                 :: compiles SRC\edit.p8 (+ the misc.ovl / tview.ovl / picker.ovl overlays) -> edit.prg
 build.bat edcfg.p8        :: the settings program
 build.bat install.p8      :: the self-installer
 build.bat tools\fktest.p8 :: a one-off diagnostic (stays in build\, never published)
 ```
 
-Everything the compiler emits — the `.prg`, the `misc.ovl` / `tview.ovl` overlays, the `.asm`
+Everything the compiler emits — the `.prg`, the `misc.ovl` / `tview.ovl` / `picker.ovl` overlays, the `.asm`
 listing and the `.vice-mon-list` symbol file — goes into `build\`, which is gitignored. The project
 root stays source-only: no binaries are kept or committed there (the build number auto-increments,
 so a tracked `.prg` would churn on every compile). `run.bat`, `dbg.bat` and `dist.bat` all stage
@@ -255,13 +255,14 @@ run.bat              :: build, stage into run\, and launch x16emu
 ```
 
 `run.bat` builds, then stages the runtime files — `edit.prg`, the settings program `edcfg.prg`,
-the `misc.ovl` (About) and `tview.ovl` (file viewer) overlays, and the `edit.hlp` help text — into
+the `misc.ovl` (About), `tview.ovl` (file viewer) and `picker.ovl` (Open/View file picker) overlays,
+and the `edit.hlp` help text — into
 `run\MSEDIT\`, while `run\` itself becomes the emulator's host filesystem root (so sample files
 there are visible to Open/Save), and boots straight into the editor. The emulator path comes from
 `LOCAL.BAT` — point `%x16%` at your `x16emu` install.
 
 On hardware, run `dist.bat` and copy the files it stages (`install.prg` plus `edit.prg`,
-`edcfg.prg`, `misc.ovl`, `tview.ovl`, `edit.hlp`) into one folder on the SD card, then `CD` into it
+`edcfg.prg`, `misc.ovl`, `tview.ovl`, `picker.ovl`, `edit.hlp`, `basload.hlp`) into one folder on the SD card, then `CD` into it
 and `^INSTALL`. The installer creates `/MSEDIT`, copies the programs in and writes the `/ED`
 launcher, so the editor starts from anywhere with `^/ED`.
 
@@ -271,8 +272,9 @@ launcher, so the editor starts from anywhere with `^/ED`.
 instead of x16emu and hands it the `build\edit.vice-mon-list` that `prog8c` emits alongside the
 compiled program. That is a VICE label file, so every prog8 symbol (`p8b_main:p8s_ed_pgdn`, …) shows up by
 name in Box16's disassembly, breakpoint and memory views — including the banked-RAM views, which
-is where the document arena, the filelist (bank 6), the clipboard (bank 7) and the `misc.ovl`
-(bank 8) and `tview.ovl` (bank 9) code overlays live.
+is where the document arena, the `picker.ovl` code overlay (bank 6), the clipboard (bank 7), the
+`misc.ovl` (bank 8) and `tview.ovl` (bank 9) code overlays, and the picker's file-list records
+(bank 10) live.
 
 ```bat
 dbg.bat              :: build, then launch under Box16 with symbols

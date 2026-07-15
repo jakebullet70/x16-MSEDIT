@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 106         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 111         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -162,17 +162,23 @@ main {
     ubyte d_sp
     uword g_group                       ; monotonically increasing action-group id
 
-    ; file-picker popup: directory entries copied verbatim from diskio's listing into
-    ; a fixed-stride record array (FNREC bytes per record, NUL-terminated name) for Open.
-    ; OVERLAY: filelist lives in its own banked-RAM bank (FLIST_BANK), not low RAM - it is
-    ; modal (only the Open picker touches it) and FILE_CAP*FNREC (4992) fits one 8KB window.
-    ; Access maps the bank first; see the CLIP_BANK note above for why nested edoc calls stay safe.
-    const ubyte FILE_CAP = 96           ; max entries shown
-    const ubyte FNREC    = 52           ; bytes/record: [type][name up to 49 + NUL][blocks]; matches
-                                        ; diskio's ~49-char names so long files open (no truncate-on-open).
-                                        ; Costs banked RAM only now: 96*52=4992 < 8192 (one bank).
-    const ubyte FLIST_BANK = edoc.ARENA_FIRST_BANK          ; overlay bank 6 for the picker list
-    const uword filelist   = xarena.WIN_START               ; $A000 within FLIST_BANK
+    ; CODE OVERLAY: the Open/View file picker (picker.ovl) in reserved bank 6. Its directory-record
+    ; store lives in a SEPARATE dedicated bank (RECORDS_BANK) - an overlay running at $A000 can't map a
+    ; second bank into $A000 to reach data, so the four rec_* helpers below run from LOW RAM (which
+    ; stays mapped when the HIRAM bank flips) and do the banked access; the overlay calls them through
+    ; jmp-(ptr) trampolines, staging bytes through recstage. Giving the records their own 8KB bank
+    ; lifts the Open list to ~157 files. Same loadlib + extsub @bank pattern as misc.ovl / tview.ovl.
+    ;   picker_setup(peek, read, write, move, stage)  - wire the bank helpers, once after load
+    ;   pick(dest, theme_id, blkptr) -> 1 if a file was chosen (dest + @blkptr filled), 0 if cancelled.
+    const ubyte PICKER_BANK  = edoc.ARENA_FIRST_BANK       ; overlay bank 6 for picker.ovl
+    const ubyte RECORDS_BANK = edoc.ARENA_FIRST_BANK + 4   ; bank 10: the picker's file-list records
+    const ubyte REC_STAGE_LEN = 52                         ; bytes/record - MUST match picker.p8 FNREC
+    extsub @bank 6 $A000 = picker_init()
+    extsub @bank 6 $A003 = pick(uword dest @R0, ubyte theme_id @R1, uword blkptr @R2) -> ubyte @A
+    extsub @bank 6 $A006 = picker_setup(uword peekfn @R0, uword readfn @R1, uword writefn @R2, uword movefn @R3, uword stage @R4)
+    bool picker_ok                      ; picker.ovl loaded OK -> the Open/View picker is available
+    str  pickerovl = "picker.ovl"
+    ubyte[REC_STAGE_LEN] recstage       ; low-RAM staging buffer for one record (rec_read/rec_write)
 
     ; CODE OVERLAY: the About screen lives in misc.ovl, loaded into MISC_BANK (bank 8) at startup.
     ; It is cold (user-triggered) but carries literal text + its box-draw code, so it runs from
@@ -198,8 +204,7 @@ main {
     str  tviewovl = "tview.ovl"
     str  keysfile = "edit.hlp"          ; the help / Keyboard Map text file, viewed by Help > Keyboard
     str  basloadhlp = "basload.hlp"     ; the BASLOAD guide, viewed by Help > BASLOAD
-    ubyte file_count
-    ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
+    ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen by the picker
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
 
     ubyte[NMENU] menu_col = [2, 9, 16, 25, 31]   ; start column of each top-menu title
@@ -271,7 +276,7 @@ main {
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
-        xarena.first_bank = edoc.ARENA_FIRST_BANK + 4   ; +4 past the overlay banks: filelist (6), clipboard (7), misc.ovl (8), tview.ovl (9)
+        xarena.first_bank = edoc.ARENA_FIRST_BANK + 5   ; +5 past the reserved banks: picker.ovl (6), clipboard (7), misc.ovl (8), tview.ovl (9), picker records (10)
         find_term[0] = 0                ; the "?"*N buffers start non-empty; clear them
         repl_term[0] = 0
         clip_has = false
@@ -304,6 +309,17 @@ main {
         if tview_ok
             tview_init()                ; extsub @bank 9: clears the overlay's in-bank BSS, ONCE
         else
+            void diskio.status()
+
+        ; ...and the Open/View file picker overlay into its bank (bank 6, same pattern). Missing
+        ; picker.ovl is not fatal: picker_ok stays false and File>Open / File>View report it.
+        cx16.push_rambank(PICKER_BANK)
+        picker_ok = diskio.loadlib(theme.path_to(pickerovl), $a000) != 0
+        cx16.pop_rambank()
+        if picker_ok {
+            picker_init()               ; extsub @bank 6: clears the overlay's in-bank BSS, ONCE
+            picker_setup(&rec_peek, &rec_read, &rec_write, &rec_move, &recstage)  ; wire the bank helpers
+        } else
             void diskio.status()
         bool reloaded = restore_run_state()
         if not reloaded {               ; fresh launch (no BASLOAD reload pending):
@@ -1690,228 +1706,45 @@ main {
         full_redraw()                   ; repaint (needed when invoked via hotkey)
     }
 
-    ; ---------- file-picker popup (Open) ----------
-
-    sub add_entry(ubyte etype, uword nameptr, uword blocks) {
-        ; append one slab record: [type][name + NUL ...][blocks @ FNREC-1]. type 0=file,
-        ; 1=dir. blocks = diskio file size (256-byte units) clamped to a byte and kept in
-        ; the record's last byte, so it rides through sort_dirs_first and lets the caller
-        ; size the "Loading..." blink to the file.
-        if file_count >= FILE_CAP
-            return
-        uword rec = filelist + (file_count as uword) * FNREC
-        cx16.push_rambank(FLIST_BANK)           ; the record lives in the overlay bank (nameptr is low RAM)
-        @(rec) = etype
-        ubyte i = 0
-        while i < FNREC - 3 and @(nameptr + i) != 0 {   ; reserve the last byte for blocks
-            @(rec + 1 + i) = @(nameptr + i)
-            i++
-        }
-        @(rec + 1 + i) = 0
-        ubyte bb = 255                          ; 255 blocks (~64KB+) saturates to "large"
-        if blocks < 256
-            bb = lsb(blocks)
-        @(rec + FNREC - 1) = bb
+    ; ---------- picker record bank helpers (called from picker.ovl via jmp-(ptr) trampolines) ----------
+    ; These run from LOW RAM, so flipping the HIRAM bank to RECORDS_BANK does not swap out the caller
+    ; (the picker overlay, which is in a different bank). The overlay passes window addresses ($A000+off)
+    ; and stages record bytes through recstage. push/pop restores whatever bank was mapped on entry
+    ; (the picker overlay's bank), so control returns to it correctly.
+    sub rec_peek(uword winaddr @R0) -> ubyte {
+        uword wa = winaddr
+        cx16.push_rambank(RECORDS_BANK)
+        ubyte v = @(wa)
         cx16.pop_rambank()
-        file_count++
+        return v
     }
-
-    sub copy_rec_slot(uword src, uword dst) {
-        ; copy one FNREC-byte record (non-overlapping slots) - hand-rolled to avoid the
-        ; sys.memcopy overlap hazard, though here the slots never overlap. Assumes the caller
-        ; has already mapped FLIST_BANK (only sort_dirs_first calls this); a record or &tmpbuf
-        ; may be either operand - tmpbuf is low RAM so it reads/writes fine with the bank mapped.
+    sub rec_read(uword winaddr @R0, ubyte nb @R1) {
+        uword wa = winaddr
+        ubyte n = nb
+        cx16.push_rambank(RECORDS_BANK)
         ubyte i
-        for i in 0 to FNREC - 1
-            @(dst + i) = @(src + i)
-    }
-
-    sub sort_dirs_first() {
-        ; stable insertion sort so directory records sort before files; ".." (the first
-        ; dir, index 0) therefore stays at the very top. Sorts the records in place.
-        if file_count < 2
-            return
-        cx16.push_rambank(FLIST_BANK)           ; all record reads/copies below hit the overlay bank
-        ubyte i
-        for i in 1 to file_count - 1 {
-            uword reci = filelist + (i as uword) * FNREC
-            ubyte keyi = 1                       ; file=1, dir=0 (dirs sort first)
-            if @(reci) != 0
-                keyi = 0
-            copy_rec_slot(reci, &tmpbuf)         ; stash record i
-            ubyte j = i
-            while j != 0 {
-                uword recp = filelist + ((j - 1) as uword) * FNREC
-                ubyte keyp = 1
-                if @(recp) != 0
-                    keyp = 0
-                if keyp <= keyi                  ; predecessor already <= -> stable stop
-                    break
-                copy_rec_slot(recp, filelist + (j as uword) * FNREC)
-                j--
-            }
-            copy_rec_slot(&tmpbuf, filelist + (j as uword) * FNREC)
-        }
+        for i in 0 to n - 1
+            recstage[i] = @(wa + i)
         cx16.pop_rambank()
     }
-
-    sub scan_files() {
-        ; fill the filelist records with the current directory's entries: a ".." (go up)
-        ; entry first, then sub-directories and files. '.'-prefixed entries from the
-        ; listing (incl. its own . / ..) are skipped; we synthesize our own "..".
-        file_count = 0
-        add_entry(1, "..", 0)
-        if not diskio.lf_start_list("*")
-            return
-        while diskio.lf_next_entry() {
-            if diskio.list_filename[0] == '.'
-                continue
-            ubyte etype = 0
-            if diskio.list_filetype == "dir"
-                etype = 1
-            add_entry(etype, &diskio.list_filename, diskio.list_blocks)
-            if file_count >= FILE_CAP
-                break
-        }
-        diskio.lf_end_list()
-        sort_dirs_first()                        ; group directories above files
-    }
-
-    sub put_mem_trunc(ubyte col, ubyte row, uword ptr, ubyte maxw) {
-        ; draw a NUL-terminated PETSCII string from RAM, truncated to maxw cells
-        ubyte i = 0
-        while i < maxw and @(ptr + i) != 0 {
-            txt.setchr(col + i, row, txt.petscii2scr(@(ptr + i)))
-            i++
-        }
-    }
-
-    sub pick_file(uword dest) -> bool {
-        ; modal scrollable list of the directory's files. Enter -> copy the chosen
-        ; name to dest and return true; Esc/Stop -> false. Empty dir -> false.
-        scan_files()
-        if file_count == 0 {
-            notify("No files in directory")
-            return false
-        }
-        ubyte w = 44
-        if SCR_W < 80
-            w = SCR_W - 2
-        ubyte x0 = (SCR_W - w) / 2
-        ubyte x1 = x0 + w - 1
-        ubyte y0 = 2
-        ubyte y1 = SCR_H - 3
-        if SCR_W >= 80 {            ; 80-col: make the popup 2 rows shorter (1 trimmed each end)
-            y0++
-            y1--
-        }
-        ubyte rows = y1 - y0 - 1             ; visible file rows
-        ubyte namew = w - 5                  ; name field (marker col + 1 right margin)
-        ubyte cursor = 0
-        ubyte top = 0
-        ubyte nav_depth = 0                  ; sub-dirs descended below the start dir
-        uword rec
+    sub rec_write(uword winaddr @R0, ubyte nb @R1) {
+        uword wa = winaddr
+        ubyte n = nb
+        cx16.push_rambank(RECORDS_BANK)
         ubyte i
-        ubyte is_dir                         ; type + size pulled out of the chosen record on Enter
-        ubyte blk
-        ; draw the static frame, title and footer ONCE - only the file list below is
-        ; repainted as the cursor moves (redrawing the title each key caused header flicker)
-        draw_box_frame(x0, y0, x1, y1)
-        if x1 + 1 < SCR_W and y1 + 1 < SCR_H
-            draw_box_shadow(x0, y0, x1, y1)
-        put_str_at(x0 + (w - 10) / 2, y0, " Open File ")
-        set_color_run(x0 + (w - 10) / 2, x0 + (w - 10) / 2 + 10, y0, theme.CB_BOX)    ; title in white
-        put_str_at(x0 + (w - 11) / 2, y1, " Esc to exit ")
-        set_color_run(x0 + (w - 11) / 2, x0 + (w - 11) / 2 + 12, y1, theme.CB_BOX)    ; footer in white
-        repeat {
-            if cursor < top
-                top = cursor
-            if cursor >= top + rows
-                top = cursor - rows + 1
-            ubyte r
-            cx16.push_rambank(FLIST_BANK)               ; records read below live in the overlay bank
-            for r in 0 to rows - 1 {
-                ubyte rr = y0 + 1 + r
-                set_color_run(x0 + 1, x1 - 1, rr, theme.CB_BOX)   ; clear the row (colour + chars)
-                ubyte cc
-                for cc in x0 + 1 to x1 - 1
-                    txt.setchr(cc, rr, SPACE_SC)
-                ubyte idx = top + r
-                if idx < file_count {
-                    rec = filelist + (idx as uword) * FNREC
-                    if @(rec) != 0                          ; directory: "/" marker
-                        txt.setchr(x0 + 2, rr, sc:'/')
-                    put_mem_trunc(x0 + 3, rr, rec + 1, namew)
-                    if idx == cursor
-                        set_color_run(x0 + 1, x1 - 1, rr, theme.CB_SEL)
-                }
-            }
-            cx16.pop_rambank()
-            if top != 0
-                txt.setchr(x1 - 1, y0 + 1, sc:'^')
-            if top + rows < file_count
-                txt.setchr(x1 - 1, y1 - 1, sc:'v')
-            ubyte k = wait_key()
-            when k {
-                145 -> {                        ; up
-                    if cursor != 0
-                        cursor--
-                }
-                17 -> {                         ; down
-                    if cursor + 1 < file_count
-                        cursor++
-                }
-                130 -> {                        ; PgUp
-                    if cursor < rows
-                        cursor = 0
-                    else
-                        cursor -= rows
-                }
-                2 -> {                          ; PgDn
-                    cursor += rows
-                    if cursor >= file_count
-                        cursor = file_count - 1
-                }
-                19 -> cursor = 0                ; Home
-                4 -> cursor = file_count - 1    ; End
-                13 -> {                         ; Enter: open file, or enter directory
-                    rec = filelist + (cursor as uword) * FNREC
-                    cx16.push_rambank(FLIST_BANK)   ; pull the whole record out of the overlay bank,
-                    i = 0                           ; then drop the mapping before any diskio/scan
-                    while @(rec + 1 + i) != 0 {  ; copy the name out (dest = low-RAM scratch)
-                        @(dest + i) = @(rec + 1 + i)
-                        i++
-                    }
-                    @(dest + i) = 0
-                    is_dir = @(rec)
-                    blk = @(rec + FNREC - 1)     ; size hint for the load blink
-                    cx16.pop_rambank()
-                    if is_dir != 0 {           ; directory -> chdir + rescan, stay open
-                        diskio.chdir(dest)
-                        ; track depth so a later cancel can restore the start dir. ".."
-                        ; goes up (one less deep, floored at 0); a named dir goes down.
-                        if @(dest) == '.' and @(dest + 1) == '.' and @(dest + 2) == 0 {
-                            if nav_depth != 0
-                                nav_depth--
-                        } else {
-                            nav_depth++
-                        }
-                        scan_files()
-                        cursor = 0
-                        top = 0
-                    } else {
-                        pick_blocks = blk
-                        return true             ; file -> dest holds the chosen name
-                                                ; (caller shows "Loading..." on the status bar)
-                    }
-                }
-                27, 3 -> {                      ; cancel: climb back to the start dir
-                    repeat nav_depth
-                        diskio.chdir("..")
-                    return false
-                }
-            }
-        }
+        for i in 0 to n - 1
+            @(wa + i) = recstage[i]
+        cx16.pop_rambank()
+    }
+    sub rec_move(uword dstwin @R0, uword srcwin @R1, ubyte nb @R2) {
+        uword dw = dstwin
+        uword sw = srcwin
+        ubyte n = nb                        ; sort's slots never overlap -> ascending copy is safe
+        cx16.push_rambank(RECORDS_BANK)
+        ubyte i
+        for i in 0 to n - 1
+            @(dw + i) = @(sw + i)
+        cx16.pop_rambank()
     }
 
     sub act_open() {
@@ -1925,7 +1758,12 @@ main {
             }
         }
         fnbuf[0] = 0
-        if not pick_file(&fnbuf) {
+        if not picker_ok {
+            flash_status("picker.ovl not found in the program folder")
+            return
+        }
+        cursor_sprite_off()             ; the overlay owns the screen: hide our cursor sprite
+        if pick(&fnbuf, theme.current, &pick_blocks) == 0 {
             full_redraw()
             return
         }
@@ -2432,12 +2270,16 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             flash_status("tview.ovl not found in the program folder")
             return
         }
+        if not picker_ok {
+            flash_status("picker.ovl not found in the program folder")
+            return
+        }
         fnbuf[0] = 0
-        if not pick_file(&fnbuf) {
+        cursor_sprite_off()                     ; both overlays own the screen: hide our cursor sprite
+        if pick(&fnbuf, theme.current, &pick_blocks) == 0 {
             full_redraw()
             return
         }
-        cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
         ovl_view(&fnbuf, theme.current)
         full_redraw()
     }
