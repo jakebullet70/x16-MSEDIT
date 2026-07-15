@@ -16,3 +16,10 @@
   memory. The supported set is enumerated in the BASLOAD docs — mirror that list, don't invent one.
 - **Escape-char popup** — same idea for the `/x`-style escape form (e.g. hex/`\x` character escapes):
   a pick-and-insert popup for the characters that are awkward to type.
+- **Markdown (.md) syntax colouring** — a second file-type mode alongside the BASIC classifier in
+  `SRC/syntax.p8`, selected when the loaded file has a `.md` extension. Keep it minimal: just TWO
+  colours. Colour heading lines (a line starting with `#` or `##`) as one accent colour and leave
+  the rest as body text — reuse existing theme slots (e.g. `C_KEYWORD` for headings) rather than
+  adding new theme bytes. Also handle `/#` as an ESCAPE: a leading `/#` means "the `#` that follows
+  is a literal `#`, not a heading" — so that line renders as plain body text (and ideally the `/`
+  is dropped so only the real `#` shows). Line-oriented and stateless like the BASIC path.

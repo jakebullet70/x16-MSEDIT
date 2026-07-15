@@ -63,8 +63,9 @@ theme {
         ; The bars are black on LIGHT GREY, which puts them outside every family already in use here:
         ; blue is the field, black is the current-line band, and the greys were too close to both the
         ; band and the popups to read as separate chrome. A light bar also flips the contrast the
-        ; right way round - dark text on a light strip, framing a dark work area. Accelerators go red
-        ; on it, and the selected row inverts to light-grey-on-black.
+        ; right way round - dark text on a light strip, framing a dark work area. Accelerators go PURPLE
+        ; on it (a dark hue that reads on both the light-grey bar and the black selected row, and stays
+        ; clear of the coral keywords in the field), and the selected row inverts to light-grey-on-black.
         ;
         ; The band cannot be the thing that moves: only its BG nibble is used (the fg stays whatever
         ; the syntax colour was), and every syntax fg here is a light tone, so the band must stay dark.
@@ -73,10 +74,13 @@ theme {
         ; darker half of the palette (medium grey, orange, blue) has almost no contrast - grey comments
         ; and orange strings both sank into the background. Everything here is a LIGHT tone, and each
         ; token type gets a different hue so they stay apart when the current-line band goes black
-        ; underneath them: text white, keywords yellow, functions cyan, strings light red, numbers
-        ; light green, comments light grey (the one deliberately muted tone - comments should recede,
-        ; but still be readable, which medium grey on blue was not).
-        14,  6, $6e, $f0, $61, $6e, $e1, $0f, $16, $e1, $00, $6c, $67, $00,  2, $61, $67, $63, $6a, $6d, $6f,
+        ; underneath them. The hue relationships mirror a Night-Owl-style dark editor theme: text white,
+        ; keywords CORAL (light red), functions/type names LIGHT GREEN (teal), strings LIGHT BLUE (sky),
+        ; numbers ORANGE, comments MEDIUM GREY - the one deliberately muted tone, so comments recede
+        ; instead of reading like white body text (light grey sat too close to it). Medium grey on blue is
+        ; readable here: it is the same tone the line-number gutter already uses. Green functions vs blue
+        ; strings keep the two adjacent hues apart; coral keywords pop against both.
+        14,  6, $6e, $f0, $61, $6e, $e1, $0f, $16, $e1, $00, $6c, $67, $00,  4, $61, $6a, $6d, $6e, $68, $6c,
         ; 3 Light - WHITE field with black text, blue chrome, white popups; the current-line band is
         ; light grey (so the cursor's line reads as a soft grey bar on the white page). The syntax
         ; colours carry a WHITE background nibble to match the field (light grey would leave grey cells
