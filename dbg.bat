@@ -60,7 +60,9 @@ SET PROGDIR=%RUNDIR%\MSEDIT
 IF NOT EXIST "%PROGDIR%" MKDIR "%PROGDIR%"
 COPY /Y "%PRGFILE%" "%PROGDIR%\%NAME%.prg" >NUL
 IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\edcfg.prg" >NUL
-IF EXIST "%BUILDDIR%\help.ovl"  COPY /Y "%BUILDDIR%\help.ovl"  "%PROGDIR%\help.ovl"  >NUL
+IF EXIST "%BUILDDIR%\misc.ovl"  COPY /Y "%BUILDDIR%\misc.ovl"  "%PROGDIR%\misc.ovl"  >NUL
+IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\tview.ovl" >NUL
+IF EXIST "%~dp0edit.hlp"        COPY /Y "%~dp0edit.hlp"        "%PROGDIR%\edit.hlp"  >NUL
 
 REM 2b) the /ED root launcher, same as run.bat (SHIFT+RUN after F5 BASLOAD reloads EDIT)
 IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,25,8,10,0,147,34,47,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"

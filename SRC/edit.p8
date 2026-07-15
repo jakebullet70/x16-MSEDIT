@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 85         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 89         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -170,21 +170,29 @@ main {
     const ubyte FLIST_BANK = edoc.ARENA_FIRST_BANK          ; overlay bank 6 for the picker list
     const uword filelist   = xarena.WIN_START               ; $A000 within FLIST_BANK
 
-    ; CODE OVERLAY: the Keyboard Map and About screens live in help.ovl, loaded into HELP_BANK
-    ; (bank 8) at startup. They are cold (user-triggered) but bulky - ~850 bytes of literal text
-    ; plus their draw code - and low RAM is the scarce resource, so they run from banked RAM.
-    ; `extsub @bank 8` wraps each call in a JSRFAR that maps the bank around it. $A000 is the
-    ; library init; the entries follow at 3-byte intervals (help.p8's %jmptable).
+    ; CODE OVERLAY: the About screen lives in misc.ovl, loaded into MISC_BANK (bank 8) at startup.
+    ; It is cold (user-triggered) but carries literal text + its box-draw code, so it runs from
+    ; banked RAM rather than EDIT's scarce low RAM. `extsub @bank 8` wraps each call in a JSRFAR
+    ; that maps the bank around it. $A000 is the library init; $A003 = About (misc.p8's %jmptable).
     ;
     ; The overlay cannot see main's symbols, so it carries its OWN copy of theme.p8 and the box
-    ; helpers: we pass the theme id (and, for About, the build number and the emulator flag) and
-    ; it paints itself to match. No shared state, no main-RAM cost beyond the three vars here.
-    const ubyte HELP_BANK = edoc.ARENA_FIRST_BANK + 2       ; overlay bank 8 for help.ovl
-    extsub @bank 8 $A000 = help_init()
-    extsub @bank 8 $A003 = ovl_keymap(ubyte theme_id @R0)
-    extsub @bank 8 $A006 = ovl_about(ubyte theme_id @R0, uword build @R1, ubyte emu @R2)
-    bool help_ok                        ; help.ovl loaded OK -> the Help screens are available
-    str  helpovl = "help.ovl"
+    ; helpers: we pass the theme id, the build number and the emulator flag and it paints to match.
+    const ubyte MISC_BANK = edoc.ARENA_FIRST_BANK + 2       ; overlay bank 8 for misc.ovl
+    extsub @bank 8 $A000 = misc_init()
+    extsub @bank 8 $A003 = ovl_about(ubyte theme_id @R0, uword build @R1, ubyte emu @R2)
+    bool misc_ok                        ; misc.ovl loaded OK -> the About screen is available
+    str  miscovl = "misc.ovl"
+
+    ; CODE OVERLAY: the read-only text/hex file viewer (tview.ovl) in its own reserved bank 9.
+    ; Used by Help > Keyboard (views the shipped edit.hlp) and File > View (any picked file). Same
+    ; loadlib + extsub @bank pattern as misc.ovl; it carries its own theme.p8 copy, so we pass the
+    ; theme id and it paints in EDIT's colours. $A003 = view_file(nameptr, theme_id).
+    const ubyte TVIEW_BANK = edoc.ARENA_FIRST_BANK + 3      ; overlay bank 9 for tview.ovl
+    extsub @bank 9 $A000 = tview_init()
+    extsub @bank 9 $A003 = ovl_view(uword nameptr @R0, ubyte theme_id @R1)
+    bool tview_ok                       ; tview.ovl loaded OK -> the viewer is available
+    str  tviewovl = "tview.ovl"
+    str  keysfile = "edit.hlp"          ; the help / Keyboard Map text file, viewed by Help > Keyboard
     ubyte file_count
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
@@ -214,7 +222,7 @@ main {
     sub item_accel(ubyte active, ubyte key) -> ubyte {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
+            0 -> when key { 'n' -> return 0   'o' -> return 1   'v' -> return 2   's' -> return 3   'a' -> return 4   'x' -> return 5 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   's' -> return 2   'l' -> return 3 }
@@ -226,7 +234,7 @@ main {
     sub accel_off(ubyte active, ubyte i) -> ubyte {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
-            0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1 (New/Open/Save 'N/O/S'@0 default)
+            0 -> when i { 4 -> return 5   5 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1 (New/Open/View/Save 'N/O/V/S'@0 default)
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
             3 -> when i { 1 -> return 5 }                       ; Dev: Make Backup 'B'@5 (Run BASLOAD 'R'@0 default)
@@ -258,7 +266,7 @@ main {
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
-        xarena.first_bank = edoc.ARENA_FIRST_BANK + 3   ; +3 past the overlay banks: filelist (6), clipboard (7), help.ovl (8)
+        xarena.first_bank = edoc.ARENA_FIRST_BANK + 4   ; +4 past the overlay banks: filelist (6), clipboard (7), misc.ovl (8), tview.ovl (9)
         find_term[0] = 0                ; the "?"*N buffers start non-empty; clear them
         repl_term[0] = 0
         clip_has = false
@@ -272,16 +280,26 @@ main {
                                         ; Read here, while the cwd is still the fsroot we launched in - theme's
                                         ; paths are relative to it and it does no chdir of its own.
 
-        ; load the Help screens overlay into its reserved bank, from the install folder (same place
-        ; edit.cfg came from - we are still in the launch cwd). A missing help.ovl is not fatal:
-        ; help_ok stays false and the two Help screens say so instead of jumping into empty RAM.
-        cx16.push_rambank(HELP_BANK)
-        help_ok = diskio.loadlib(theme.path_to(helpovl), $a000) != 0
+        ; load the misc overlay (About) into its reserved bank, from the install folder (same place
+        ; edit.cfg came from - we are still in the launch cwd). A missing misc.ovl is not fatal:
+        ; misc_ok stays false and About says so instead of jumping into empty RAM.
+        cx16.push_rambank(MISC_BANK)
+        misc_ok = diskio.loadlib(theme.path_to(miscovl), $a000) != 0
         cx16.pop_rambank()
-        if help_ok
-            help_init()                 ; extsub @bank 8: clears the overlay's in-bank BSS, ONCE
+        if misc_ok
+            misc_init()                 ; extsub @bank 8: clears the overlay's in-bank BSS, ONCE
         else
             void diskio.status()         ; drop the FILE NOT FOUND (else the activity LED blinks)
+
+        ; ...and the text/hex viewer overlay into its bank (same pattern). Missing tview.ovl is not
+        ; fatal: tview_ok stays false and Help>Keyboard / File>View report it instead of jumping in.
+        cx16.push_rambank(TVIEW_BANK)
+        tview_ok = diskio.loadlib(theme.path_to(tviewovl), $a000) != 0
+        cx16.pop_rambank()
+        if tview_ok
+            tview_init()                ; extsub @bank 9: clears the overlay's in-bank BSS, ONCE
+        else
+            void diskio.status()
         bool reloaded = restore_run_state()
         if not reloaded {               ; fresh launch (no BASLOAD reload pending):
             snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
@@ -1278,8 +1296,9 @@ main {
                 when i {
                     0 -> put_str_at(col, row, "New        Ctrl+N")
                     1 -> put_str_at(col, row, "Open...    Ctrl+O")
-                    2 -> put_str_at(col, row, "Save       F2")
-                    3 -> put_str_at(col, row, "Save As...")
+                    2 -> put_str_at(col, row, "View...")
+                    3 -> put_str_at(col, row, "Save       F2")
+                    4 -> put_str_at(col, row, "Save As...")
                     else -> put_str_at(col, row, "Exit")
                 }
             }
@@ -1380,7 +1399,7 @@ main {
         ubyte n = 3
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
-            0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
+            0 -> { n = 6  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
             3 -> { n = 4  boxw = 16 }       ; Dev ("Line Numbers On ")
@@ -1432,8 +1451,9 @@ main {
                 when choice {
                     0 -> act_new()
                     1 -> act_open()
-                    2 -> void save_now()
-                    3 -> act_save_as()
+                    2 -> act_view()
+                    3 -> void save_now()
+                    4 -> act_save_as()
                     else -> act_exit()
                 }
             }
@@ -2262,14 +2282,14 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         }
     }
 
-    ; The About and Keyboard Map screens themselves live in help.ovl (HELP_BANK) - see the extsub
-    ; block near the top. What is left here is the hand-off: pass the overlay the theme (so it
-    ; paints in the current colours) plus, for About, the build number and the emulator flag, which
-    ; it has no way to read out of main. The overlay blocks on a key; we repaint the editor after.
+    ; The About screen lives in misc.ovl (MISC_BANK) - see the extsub block near the top. What is
+    ; left here is the hand-off: pass the overlay the theme (so it paints in the current colours),
+    ; the build number and the emulator flag, which it has no way to read out of main. The overlay
+    ; blocks on a key; we repaint the editor after.
 
     sub act_about() {
-        if not help_ok {
-            no_help()
+        if not misc_ok {
+            flash_status("misc.ovl not found in the program folder")
             return
         }
         ovl_about(theme.current, BUILD_NUM, g_emu as ubyte)
@@ -2277,18 +2297,32 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     }
 
     sub act_keymap() {
-        if not help_ok {
-            no_help()
+        ; the Keyboard Map is a shipped text file (edit.hlp) shown in the viewer, so the key list is
+        ; editable data instead of hand-drawn code.
+        if not tview_ok {
+            flash_status("keyboard help needs tview.ovl + edit.hlp")
             return
         }
-        ovl_keymap(theme.current)
+        ovl_view(theme.path_to(keysfile), theme.current)
         full_redraw()
     }
 
-    sub no_help() {
-        ; help.ovl missing (an incomplete install) - say so rather than calling into an empty bank
-        flash_status("help.ovl not found in the program folder")
+    sub act_view() {
+        ; File > View: pick a file and show it read-only in the viewer, without loading it into the
+        ; document (so it side-steps the document size limit for a quick look at a big file).
+        if not tview_ok {
+            flash_status("tview.ovl not found in the program folder")
+            return
+        }
+        fnbuf[0] = 0
+        if not pick_file(&fnbuf) {
+            full_redraw()
+            return
+        }
+        ovl_view(&fnbuf, theme.current)
+        full_redraw()
     }
+
 
     ; ----- Key Probe diagnostic: disabled (removed from the Help menu). Kept here,
     ; ----- commented out, in case the raw-keycode/modifier readout is needed again.

@@ -30,7 +30,9 @@ SET DISTDIR=%RUNDIR%\DIST
 IF NOT EXIST "%DISTDIR%" MKDIR "%DISTDIR%"
 COPY /Y "%BUILDDIR%\edit.prg"    "%DISTDIR%\edit.prg"    >NUL
 COPY /Y "%BUILDDIR%\edcfg.prg"   "%DISTDIR%\edcfg.prg"   >NUL
-COPY /Y "%BUILDDIR%\help.ovl"    "%DISTDIR%\help.ovl"    >NUL
+COPY /Y "%BUILDDIR%\misc.ovl"    "%DISTDIR%\misc.ovl"    >NUL
+COPY /Y "%BUILDDIR%\tview.ovl"   "%DISTDIR%\tview.ovl"   >NUL
+COPY /Y "%~dp0edit.hlp"          "%DISTDIR%\edit.hlp"    >NUL
 COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\install.prg" >NUL
 ECHO   staged release: %DISTDIR%
 

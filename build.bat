@@ -44,15 +44,20 @@ IF NOT "%ERR%"=="0" ( ENDLOCAL & EXIT /B %ERR% )
 REM --- memory-stats block parsed from the segment map ---
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0memstats.ps1" -Log "%BUILDLOG%" -Prg "%PRGFILE%"
 
-REM --- companion build: the Help screens overlay (%output library -> headerless help.bin, renamed
-REM     help.ovl here) at $A000, loaded into HIRAM bank 8 at runtime and called via extsub @bank.
-REM     %memtop $C000 in help.p8 fails the build if it ever outgrows the bank. edit.p8 builds only:
-REM     edit.prg without help.ovl beside it still runs, it just reports the Help screens as missing.
+REM --- companion builds: the banked overlays (%output library -> headerless .bin, renamed .ovl)
+REM     at $A000, loaded into their HIRAM banks at runtime and called via extsub @bank. %memtop
+REM     $C000 fails the build if an overlay outgrows its bank. edit.p8 builds only: edit.prg still
+REM     runs without the .ovl files beside it, the affected menu items just report them missing.
+REM       misc.ovl  = About screen (bank 8)      tview.ovl = text/hex viewer (bank 9)
 IF /I "%SRC%"=="edit.p8" (
-    java -jar "%~dp0prog8c.jar" -target cx16 -out "%BUILDDIR%" "%SRCDIR%\help.p8" > "%TEMP%\edit_help_build.txt" 2>&1
-    IF ERRORLEVEL 1 ( TYPE "%TEMP%\edit_help_build.txt" & ECHO *** help overlay build FAILED *** & ENDLOCAL & EXIT /B 1 )
-    MOVE /Y "%BUILDDIR%\help.bin" "%BUILDDIR%\help.ovl" >NUL
-    ECHO   help overlay      : build\help.ovl built ^($A000 HIRAM bank overlay^)
+    java -jar "%~dp0prog8c.jar" -target cx16 -out "%BUILDDIR%" "%SRCDIR%\misc.p8" > "%TEMP%\edit_misc_build.txt" 2>&1
+    IF ERRORLEVEL 1 ( TYPE "%TEMP%\edit_misc_build.txt" & ECHO *** misc overlay build FAILED *** & ENDLOCAL & EXIT /B 1 )
+    MOVE /Y "%BUILDDIR%\misc.bin" "%BUILDDIR%\misc.ovl" >NUL
+    ECHO   misc overlay      : build\misc.ovl built ^($A000 HIRAM bank overlay^)
+    java -jar "%~dp0prog8c.jar" -target cx16 -out "%BUILDDIR%" "%SRCDIR%\tview.p8" > "%TEMP%\edit_tview_build.txt" 2>&1
+    IF ERRORLEVEL 1 ( TYPE "%TEMP%\edit_tview_build.txt" & ECHO *** tview overlay build FAILED *** & ENDLOCAL & EXIT /B 1 )
+    MOVE /Y "%BUILDDIR%\tview.bin" "%BUILDDIR%\tview.ovl" >NUL
+    ECHO   viewer overlay    : build\tview.ovl built ^($A000 HIRAM bank overlay^)
 )
 
 ENDLOCAL & EXIT /B 0
