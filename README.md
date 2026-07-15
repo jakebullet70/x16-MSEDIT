@@ -5,8 +5,11 @@ A small, full-screen text editor for the **Commander X16**, styled after the cla
 the whole document held in **banked RAM**. It doubles as a lightweight **IDE for
 [BASLOAD](https://github.com/stefan-b-jakobsson/basload-rom)** — X16 BASIC syntax coloring,
 line numbers, comment/uncomment commands, and a one-key **edit → run → return** loop through
-the ROM's BASLOAD tool.
+the ROM's BASLOAD tool.  
+  
+<img width="642" height="513" alt="image" src="https://github.com/user-attachments/assets/6c1220cf-abd7-4b4e-9808-c7ece640d769" />
 
+  
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
