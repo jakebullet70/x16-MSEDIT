@@ -1,8 +1,11 @@
-# EDIT — a text editor for the Commander X16
+# EDIT — a text editor & BASLOAD IDE for the Commander X16
 
 A small, full-screen text editor for the **Commander X16**, styled after the classic
 **MS-DOS EDIT**: a menu bar up top, dropdown menus, a status line at the bottom, and
-the whole document held in **banked RAM**.
+the whole document held in **banked RAM**. It doubles as a lightweight **IDE for
+[BASLOAD](https://github.com/stefan-b-jakobsson/basload-rom)** — X16 BASIC syntax coloring,
+line numbers, comment/uncomment commands, and a one-key **edit → run → return** loop through
+the ROM's BASLOAD tool.
 
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
@@ -14,9 +17,10 @@ Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and
 ## Why this project exists
 
 EDIT was written **almost entirely by an AI coding agent** (Claude / Claude Code),
-directed and reviewed by a human. It is less a "product" and more a hands-on experiment in
-**learning how to control an AI** — how to prompt it, correct it, and review its work while
-it builds real, low-level software from scratch.
+directed and reviewed by a human — a hands-on experiment in **learning how to control an AI**:
+how to prompt it, correct it, and review its work while it builds real, low-level software from
+scratch. Along the way it grew into a genuinely usable tool — a real text editor and a working
+BASLOAD IDE, not just a demo.
 
 The Commander X16 was chosen *because* it is niche and unforgiving. There is very little
 training data for its banked-memory model, VERA video chip, and PETSCII quirks, so the AI
@@ -26,34 +30,47 @@ operator and the model. If you're curious what it looks like to steer an LLM thr
 
 ## Highlights
 
+### As a text editor
+
 - **Document lives in banked RAM.** The text isn't capped by the ~38 KB of low RAM — lines
   are stored in the X16's banked HIRAM (`$A000+`) through a small storage layer (`edoc` +
   `xarena`), so documents grow into the extra RAM banks the machine has installed.
-- **MS-DOS EDIT look & feel** — menu bar, dropdown menus (File / Edit / Search / Help),
+- **MS-DOS EDIT look & feel** — menu bar, dropdown menus (File / Edit / Search / Dev / Help),
   drop-shadowed popups, and a live status bar (line, column, INS/OVR, total lines).
 - **Adopts your screen mode** — boots into 80×30 or 40×30 to match however the machine
   started, and lays the UI out to fit.
-- **Full editing** — insert/overwrite, word-wrap-free line editing, selection with
-  Shift+arrows, cut / copy / paste, find, find-next, replace-all, and go-to-line.
+- **Full editing** — insert/overwrite line editing, selection with Shift+arrows, cut / copy /
+  paste, duplicate/move line, find, find-next, interactive replace, and go-to-line.
 - **Undo / redo** — a per-line history kept in banked RAM, so multiple steps of undo cost
   no low-RAM headroom (see [Undo / redo](#undo--redo) below).
-- **BASIC syntax coloring** — an optional highlighter for X16 BASIC (keywords, strings,
-  numbers, line numbers, and green `REM` comments), toggled from the Edit menu. It's
-  display-only and stateless per line, so it never touches what's saved and keeps scrolling
-  fast.
-- **Line numbers** — an optional left-hand gutter that numbers each line, toggled from the Edit
-  menu. Display-only, and the number for the line you're on is highlighted.
+- **Two cursors, themes, and settings** — an underline cursor for insert mode and a block for
+  overtype, several color schemes (including a Night-Owl-style dark theme and a light theme),
+  and a separate settings program (`EDCFG`) for theme, tab width, and comment placement.
 - **Soft word wrap** — an optional display-only wrap (Edit menu) that folds long lines at word
   boundaries across screen rows without ever changing the file; arrow keys move by the wrapped
   rows you see.
-- **Run through BASLOAD** — press **F5** to save the current file, hand it to the ROM
-  [BASLOAD](https://github.com/stefan-b-jakobsson/basload-rom) tool (which tokenizes plain-text
-  BASIC source into a runnable program) and run it. EDIT arms **F8** so one keypress brings
-  you back to the editor at the same file and line (see [Run through BASLOAD](#run-through-basload)).
+- **File viewer** — open any file read-only in a scrollable text/hex viewer (a banked overlay)
+  without loading it into the document.
 - **Plain ASCII on disk** — text is edited in PETSCII internally but saved and loaded as
   plain ASCII, so files interchange cleanly with other tools.
 - **Restores your environment on exit** — screen mode, charset, text colour, and the case
   switch are captured at launch and put back when you quit.
+
+### As a BASLOAD IDE
+
+- **BASIC syntax coloring** — an optional highlighter for X16 BASIC (keywords, strings,
+  numbers, line numbers, and green `REM` / `##` comments). It's display-only and stateless per
+  line, so it never touches what's saved and keeps scrolling fast.
+- **Line numbers** — an optional left-hand gutter that numbers each line; the number for the
+  line you're on is highlighted.
+- **Auto-detect on open** — opening a BASLOAD source file (`.bas` / `.basl` / `.bl` / `.bas.txt`)
+  turns coloring and line numbers on automatically; opening anything else turns them off.
+- **Comment / uncomment** — Dev-menu (and keyboard) commands to toggle `REM` on the current line
+  or comment/uncomment a whole selected block, at column 0 or after the indent.
+- **Run through BASLOAD** — press **F5** to save the current file, hand it to the ROM BASLOAD
+  tool (which tokenizes plain-text BASIC source into a runnable program) and run it. EDIT arms
+  **F8** so one keypress brings you straight back to the editor at the same file and line
+  (see [Run through BASLOAD](#run-through-basload)).
 
 ## Keyboard reference
 
