@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 79         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 84         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -215,9 +215,9 @@ main {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
             0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
-            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   's' -> return 9   'l' -> return 10   'w' -> return 11 }
+            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-            3 -> when key { 'r' -> return 0   'b' -> return 1 }
+            3 -> when key { 'r' -> return 0   'b' -> return 1   's' -> return 2   'l' -> return 3 }
             else -> when key { 'k' -> return 0   'c' -> return 1   'a' -> return 2 }
         }
         return 255
@@ -1287,25 +1287,13 @@ main {
                 when i {
                     0 -> put_str_at(col, row, "Undo         Ctrl+Z")
                     1 -> put_str_at(col, row, "Redo         Ctrl+U")
-                    2 -> put_str_at(col, row, "Cut Line     Ctrl+X")
+                    2 -> put_str_at(col, row, "Cut Line     Ctrl+X")   ; Ctrl+X or Shift+Del (Sh+Del not shown)
                     3 -> put_str_at(col, row, "Copy         Ctrl+C")
                     4 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
                     5 -> put_str_at(col, row, "Delete Line  Ctrl+K")
                     6 -> put_str_at(col, row, "Duplicate Line")
                     7 -> put_str_at(col, row, "Move Up      Ctrl+Up")
                     8 -> put_str_at(col, row, "Move Down    Ctrl+Dn")
-                    9 -> {
-                        if hl_on
-                            put_str_at(col, row, "Syntax Color On ")
-                        else
-                            put_str_at(col, row, "Syntax Color Off")
-                    }
-                    10 -> {
-                        if ln_on
-                            put_str_at(col, row, "Line Numbers On ")
-                        else
-                            put_str_at(col, row, "Line Numbers Off")
-                    }
                     else -> {
                         if wrap_on
                             put_str_at(col, row, "Word Wrap    On ")
@@ -1325,7 +1313,19 @@ main {
             3 -> {                          ; Dev
                 when i {
                     0 -> put_str_at(col, row, "Run BASLOAD  F5")
-                    else -> put_str_at(col, row, "Make Backup")
+                    1 -> put_str_at(col, row, "Make Backup")
+                    2 -> {
+                        if hl_on
+                            put_str_at(col, row, "Syntax Color On ")
+                        else
+                            put_str_at(col, row, "Syntax Color Off")
+                    }
+                    else -> {
+                        if ln_on
+                            put_str_at(col, row, "Line Numbers On ")
+                        else
+                            put_str_at(col, row, "Line Numbers Off")
+                    }
                 }
             }
             else -> {                       ; Help
@@ -1345,10 +1345,11 @@ main {
         ubyte fr
         for fr in y0 to y1
             set_color_run(x0, x1, fr, theme.CB_BAR)
+        ubyte dsep = menu_divider(active)       ; item index a divider follows (255 = no divider)
         ubyte i
         for i in 0 to n - 1 {
             ubyte row = y0 + 1 + i
-            if active == 1 and i >= 9            ; Edit: items below the Move Down divider shift down a row
+            if dsep != 255 and i > dsep          ; items below the divider shift down a row
                 row++
             ubyte base = theme.CB_BAR
             set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
@@ -1360,9 +1361,18 @@ main {
             ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
             ; survives the selection fill
             txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | theme.ACCEL_FG)
-            if active == 1 and i == 8            ; Edit: divider between Move Down and the display toggles
+            if dsep != 255 and i == dsep         ; draw the divider row just under item `dsep`
                 draw_menu_sep(x0, x1, row + 1)
         }
+    }
+
+    sub menu_divider(ubyte active) -> ubyte {
+        ; the dropdown-item index that a horizontal divider follows, grouping the menu (255 = none).
+        when active {
+            1 -> return 8       ; Edit: line ops (Undo..Move Down) | display toggle (Word Wrap)
+            3 -> return 1       ; Dev:  actions (Run BASLOAD, Make Backup) | view toggles (Syntax, Line#)
+        }
+        return 255
     }
 
     sub run_dropdown(ubyte active) -> ubyte {
@@ -1371,9 +1381,9 @@ main {
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
             0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
-            1 -> { n = 12  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
+            1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
-            3 -> { n = 2  boxw = 15 }       ; Dev ("Run BASLOAD  F5")
+            3 -> { n = 4  boxw = 16 }       ; Dev ("Line Numbers On ")
         }
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
@@ -1384,7 +1394,7 @@ main {
             x1 = SCR_W - 1
         }
         ubyte y1 = y0 + n + 1
-        if active == 1                      ; Edit dropdown has one divider row (after Move Down)
+        if menu_divider(active) != 255      ; a divider row adds one to the box height (Edit, Dev)
             y1++
         md_boxbot = y1                      ; remember the box extent so it can be erased cheaply
         ubyte sel = 0
@@ -1438,8 +1448,6 @@ main {
                     6 -> op_dup_line()
                     7 -> op_move_line(false)
                     8 -> op_move_line(true)
-                    9 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
-                    10 -> ln_on = not ln_on     ; toggle the line-number gutter (repaints on close)
                     else -> {                   ; toggle soft word-wrap
                         wrap_on = not wrap_on
                         left_col = 0            ; wrap ignores horizontal scroll
@@ -1458,7 +1466,9 @@ main {
             3 -> {                          ; Dev
                 when choice {
                     0 -> act_run_basload()
-                    else -> act_make_backup()
+                    1 -> act_make_backup()
+                    2 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
+                    else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
                 }
             }
             else -> {                       ; Help
@@ -3493,16 +3503,25 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             }
             19 -> ed_home()
             4 -> ed_end()                   ; End key
-            25 -> {                         ; forward Delete key
-                if sel_active
-                    delete_selection()
-                else
-                    ed_delete()
+            25 -> {                         ; forward Delete key ($19). Shift+Del = Cut (CUA), if the
+                if (g_mod & MOD_SHIFT) != 0  ; emulator delivers Shift+Del as this code + the shift bit
+                    op_cut()
+                else {
+                    if sel_active
+                        delete_selection()
+                    else
+                        ed_delete()
+                }
             }
             2 -> ed_pgdn()
             130 -> ed_pgup()
             9 -> ed_tab()
-            148 -> toggle_overwrite()       ; Insert key: toggle insert/overwrite
+            148 -> {                        ; $94: the Insert key -> INS/OVR toggle. On the X16 keymap
+                if (g_mod & MOD_SHIFT) != 0  ; Shift+Del is ALSO $94 (the CBM INST/DEL combo); when the
+                    op_cut()                 ; shift bit is set treat it as Shift+Del = Cut, else Insert.
+                else
+                    toggle_overwrite()
+            }
             10 -> act_goto()                ; Ctrl+J  go to line
             ; ---- shortcut hotkeys (Ctrl+letter arrive as control codes 1..26) ----
             ; x16emu STEALS Ctrl+V (paste), Ctrl+F (fullscreen) and Ctrl+R (reset!)

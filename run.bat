@@ -36,6 +36,6 @@ IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::Wri
 
 REM 3) launch with the run folder as the host filesystem root, so the emulator
 REM    boots straight into MSEDIT\edit.prg while the editor still sees run\ as its cwd.
-CALL "%~    dp0LOCAL.BAT"
+CALL "%~dp0LOCAL.BAT"
 START "" /D "%RUNDIR%" "%x16%" -fsroot "%RUNDIR%" -prg "%PROGDIR%\edit.prg" -run -rtc -joy1
 ENDLOCAL

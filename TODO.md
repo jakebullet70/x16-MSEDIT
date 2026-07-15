@@ -1,5 +1,15 @@
 # EDIT - TODO
 
+- **Shift+Home / Shift+End select text** — extend the selection to the start / end of the line, like
+  Shift+arrows already do. Both keys currently move the cursor (ed_home / ed_end) and collapse any
+  selection. Add Home ($13) and End ($04) to the selection-management `when` block in editor_key (they
+  are NOT there yet), and honour the Shift bit so the cursor end of the selection jumps to line
+  start/end. (Shift+End especially, to grab from the cursor to end-of-line for a quick cut.)
+- **Open-file popup: filter + delete** — in the Open file picker, add (1) a filter toggle that shows
+  only BASLOAD source (the `has_basic_ext` set: `.bas` / `.basl` / `.bl` / `.bas.txt`), and (2) a Delete
+  key that removes the highlighted file from disk (with a Y/N confirm) and drops it from the list. Both
+  act on the existing `filelist` records in FLIST_BANK; delete uses `diskio.delete` + `void diskio.status()`
+  (clear the channel), then re-reads the directory or compacts the list in place.
 - **Test the installer** — `dist.bat` has never been exercised end to end since `help.ovl` joined the
   release. Run it, then in the emulator at the BASIC prompt: `CD"DIST"` + `^INSTALL` (answer `T` first
   for the dry run, then `Y`). Check: /MSEDIT is created with all four files, the /ED launcher works
