@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 103         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 104         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -91,6 +91,7 @@ main {
     bool cur_dirty                      ; editbuf differs from its stored record
     bool modified                       ; document changed since last save
     bool ovr_mode                       ; false = insert (default), true = overwrite (Insert key)
+    bool spr_ok                         ; the insert-mode underline cursor sprite is set up and usable
     bool g_running
     bool g_redrawn                      ; set by full_redraw(); lets the menu skip a redundant repaint
     bool alt_was                        ; ALT held on the previous poll (edge detect)
@@ -309,6 +310,7 @@ main {
             snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
             new_document()
         }                               ; (on reload, restore_run_state loaded the snapshot from ed.run)
+        cursor_sprite_setup()                   ; the insert-mode underline cursor sprite (theme+mode set)
         full_redraw()
         if reloaded and berr_len != 0           ; the Run BASLOAD came back with an error; show the full
             show_basload_error()                ; error on the bar (cursor's already on the line it named)
@@ -320,6 +322,7 @@ main {
 
         if startdir[0] != 0             ; restore the working dir we started in
             diskio.chdir(startdir)
+        cursor_sprite_off()                     ; don't leave our cursor sprite on for the next program
         txt.clear_screen()
         cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
         restore_machine_state()                 ; re-apply the user's charset + text colour (CINT reset them)
@@ -639,8 +642,9 @@ main {
                 }
             }
         }
-        ; cursor cell
-        if idx == cur_row and cur_col >= left_col {
+        ; cursor cell: OVERTYPE (or no sprite) = reverse-block; INSERT = left blank, the underline
+        ; sprite marks it instead (so insert and overtype look different)
+        if idx == cur_row and cur_col >= left_col and (ovr_mode or not spr_ok) {
             ubyte ccol = cur_col - left_col
             if ccol < textw
                 txt.setclr(gutter_w + ccol, sy, theme.CB_CUR)
@@ -946,6 +950,78 @@ main {
         ; existing call sites still compile; they always repaint the affected row(s).
     }
 
+    ; ---------- insert-mode underline cursor (VERA sprite) ----------
+    ; The X16 text layer is one screencode + one colour per 8x8 cell, so a sub-cell underline is
+    ; impossible in the cell itself. Instead a single VERA sprite floats above the text as the
+    ; INSERT-mode underline; OVERTYPE keeps the reverse-block cell (drawn in draw_text_row), so only
+    ; one sprite shape is needed. The sprite lives above layer 1 (Z=3), so it must be HIDDEN whenever
+    ; a menu/dialog is open (done in wait_key) and repositioned before each editor keypress
+    ; (get_editor_key). Position is in tile space (col*8, row*8): VERA scales sprites together with
+    ; the text layer, so this aligns in both 80x30 and 40x30.
+    const uword CURS_VADDR = $0000          ; sprite bitmap: VRAM bank 1 -> $10000 (8x8 4bpp = 32 bytes)
+    const uword CURS_ATTR  = $fc00          ; sprite 0 attributes: VRAM bank 1 -> $1FC00
+
+    sub curs_color_index() -> ubyte {
+        ; a palette index that reads on the theme's field: dark on the Light (white) field, else bright
+        if theme.current == 3
+            return 11                       ; dark grey on white
+        return 7                            ; yellow on the dark-grey / blue fields
+    }
+
+    sub cursor_sprite_setup() {
+        ; upload the underline bitmap (bottom 2 of 8 rows filled) + configure sprite 0, then enable
+        ; sprites globally. Runs once, after the theme and screen mode are set.
+        ubyte ci = curs_color_index()
+        ubyte fill = (ci << 4) | ci         ; a 4bpp byte = two filled pixels of colour ci
+        ubyte i
+        for i in 0 to 31 {
+            ubyte v = 0
+            if i >= 24                       ; bytes 24..31 = tile rows 6..7 = the underline
+                v = fill
+            cx16.vpoke(1, CURS_VADDR + i, v)
+        }
+        cx16.vpoke(1, CURS_ATTR + 0, $00)   ; data addr>>5 = $10000>>5 = $800 -> lo $00 ...
+        cx16.vpoke(1, CURS_ATTR + 1, $08)   ; ... hi nibble $8, mode bit7=0 (4bpp)
+        cx16.vpoke(1, CURS_ATTR + 6, $00)   ; Z=0: start hidden
+        cx16.vpoke(1, CURS_ATTR + 7, $00)   ; 8x8, palette offset 0
+        cx16.VERA_CTRL = cx16.VERA_CTRL & %11111101     ; DCSEL=0 so DC_VIDEO is addressable
+        cx16.VERA_DC_VIDEO = cx16.VERA_DC_VIDEO | %01000000   ; sprites enable
+        spr_ok = true
+    }
+
+    sub cursor_sprite_off() {
+        if spr_ok
+            cx16.vpoke(1, CURS_ATTR + 6, $00)           ; Z=0 -> disabled
+    }
+
+    sub cursor_update() {
+        ; reposition + show the insert underline; hide it in overtype / wrap / off-screen (all of which
+        ; fall back to the reverse-block cell painted by draw_text_row / draw_wrapped_row)
+        if not spr_ok
+            return
+        if ovr_mode or wrap_on {
+            cursor_sprite_off()
+            return
+        }
+        if cur_row < top_line or cur_row >= top_line + TEXT_ROWS or cur_col < left_col {
+            cursor_sprite_off()
+            return
+        }
+        ubyte scol = gutter_w + lsb(cur_col - left_col)
+        if scol >= SCR_W {
+            cursor_sprite_off()
+            return
+        }
+        ubyte srow = TEXT_TOP + lsb(cur_row - top_line)
+        uword px = (scol as uword) << 3
+        uword py = (srow as uword) << 3
+        cx16.vpoke(1, CURS_ATTR + 2, lsb(px))
+        cx16.vpoke(1, CURS_ATTR + 3, msb(px))
+        cx16.vpoke(1, CURS_ATTR + 4, lsb(py))
+        cx16.vpoke(1, CURS_ATTR + 5, msb(py))
+        cx16.vpoke(1, CURS_ATTR + 6, $0c)               ; Z=3 -> in front of layer 1
+    }
+
     sub redraw_after_move() {
         ; Repaint after a cursor move as cheaply as the move allows:
         ;   * selection active        -> full repaint (the highlight spans many rows)
@@ -1105,6 +1181,7 @@ main {
     ; ---------- input ----------
 
     sub wait_key() -> ubyte {
+        cursor_sprite_off()                 ; modal loops (menus/dialogs) run here: hide the editor cursor
         repeat {
             ubyte k = cbm.GETIN2()
             if k != 0
@@ -1116,6 +1193,7 @@ main {
         ; like wait_key, but ALT released with no key returns the synthetic MENU_KEY.
         ; We wait for ALT *release* (not press) so an Alt+letter chord delivers its letter
         ; (a graphics code 161-191) to us as a menu accelerator instead of opening File.
+        cursor_update()                 ; the editor is idle here: position + show the insert underline
         repeat {
             ubyte k = cbm.GETIN2()
             if k != 0 {
@@ -2300,6 +2378,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             flash_status("misc.ovl not found in the program folder")
             return
         }
+        cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
         ovl_about(theme.current, BUILD_NUM, g_emu as ubyte)
         full_redraw()
     }
@@ -2321,6 +2400,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             flash_status("help viewer needs tview.ovl + the .hlp file")
             return
         }
+        cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
         ovl_view(theme.path_to(fname), theme.current)
         full_redraw()
     }
@@ -2337,6 +2417,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             full_redraw()
             return
         }
+        cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
         ovl_view(&fnbuf, theme.current)
         full_redraw()
     }
@@ -2692,6 +2773,15 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
 
     sub toggle_overwrite() {
         ovr_mode = not ovr_mode
+        ; the cursor shape differs per mode (insert = underline sprite, overtype = reverse block),
+        ; so repaint the cursor cell and move the sprite immediately
+        if cur_row >= top_line and cur_row < top_line + TEXT_ROWS {
+            if wrap_on
+                draw_all_text()
+            else
+                draw_text_row(lsb(cur_row - top_line))
+        }
+        cursor_update()
         draw_status()
     }
 
