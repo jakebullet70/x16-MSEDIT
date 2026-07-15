@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 104         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 106         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -1442,6 +1442,31 @@ main {
         }
     }
 
+    sub dropdown_row(ubyte active, ubyte i) -> ubyte {
+        ; screen row of dropdown item `i` (items below the group divider shift down one)
+        ubyte row = 2 + i                       ; y0 is always 1, so first item is row 2
+        ubyte dsep = menu_divider(active)
+        if dsep != 255 and i > dsep
+            row++
+        return row
+    }
+
+    sub draw_dropdown_item(ubyte active, ubyte x0, ubyte x1, ubyte i, ubyte sel) {
+        ; paint ONE dropdown item row in its current selected/unselected state. Used both by the
+        ; full draw and by the up/down navigation, which repaints only the two rows that change.
+        ubyte row = dropdown_row(active, i)
+        ubyte base = theme.CB_BAR
+        set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
+        draw_item(active, i, x0 + 2, row)
+        if i == sel {
+            set_color_run(x0 + 1, x1 - 1, row, theme.CB_MENUSEL)   ; selected row: reverse so it pops
+            base = theme.CB_MENUSEL
+        }
+        ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
+        ; survives the selection fill
+        txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | theme.ACCEL_FG)
+    }
+
     sub draw_dropdown(ubyte active, ubyte x0, ubyte y0, ubyte x1, ubyte y1, ubyte n, ubyte sel) {
         draw_box_frame(x0, y0, x1, y1)
         ; the dropdown shares the top bar's light-blue background; recolour the whole box so
@@ -1452,21 +1477,9 @@ main {
         ubyte dsep = menu_divider(active)       ; item index a divider follows (255 = no divider)
         ubyte i
         for i in 0 to n - 1 {
-            ubyte row = y0 + 1 + i
-            if dsep != 255 and i > dsep          ; items below the divider shift down a row
-                row++
-            ubyte base = theme.CB_BAR
-            set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
-            draw_item(active, i, x0 + 2, row)
-            if i == sel {
-                set_color_run(x0 + 1, x1 - 1, row, theme.CB_MENUSEL)   ; selected row: reverse (white) so it pops on light blue
-                base = theme.CB_MENUSEL
-            }
-            ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
-            ; survives the selection fill
-            txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | theme.ACCEL_FG)
+            draw_dropdown_item(active, x0, x1, i, sel)
             if dsep != 255 and i == dsep         ; draw the divider row just under item `dsep`
-                draw_menu_sep(x0, x1, row + 1)
+                draw_menu_sep(x0, x1, dropdown_row(active, i) + 1)
         }
     }
 
@@ -1502,8 +1515,9 @@ main {
             y1++
         md_boxbot = y1                      ; remember the box extent so it can be erased cheaply
         ubyte sel = 0
+        ubyte old                           ; prog8 has no block scope - hoist the nav scratch
+        draw_dropdown(active, x0, y0, x1, y1, n, sel)   ; full box once; navigation patches 2 rows
         repeat {
-            draw_dropdown(active, x0, y0, x1, y1, n, sel)
             ubyte k = wait_key()
             if k >= $c1 and k <= $da
                 k -= $80
@@ -1513,15 +1527,21 @@ main {
             when k {
                 27, 3 -> return 255
                 17 -> {
+                    old = sel
                     sel++
                     if sel >= n
                         sel = 0
+                    draw_dropdown_item(active, x0, x1, old, sel)   ; only the two changed rows repaint
+                    draw_dropdown_item(active, x0, x1, sel, sel)
                 }
                 145 -> {
+                    old = sel
                     if sel == 0
                         sel = n - 1
                     else
                         sel--
+                    draw_dropdown_item(active, x0, x1, old, sel)
+                    draw_dropdown_item(active, x0, x1, sel, sel)
                 }
                 157, '[' -> return 254
                 29, ']' -> return 253
