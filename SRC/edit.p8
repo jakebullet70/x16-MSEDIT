@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 111         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 114         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -235,7 +235,7 @@ main {
             0 -> when key { 'n' -> return 0   'o' -> return 1   'v' -> return 2   's' -> return 3   'a' -> return 4   'x' -> return 5 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-            3 -> when key { 'r' -> return 0   'b' -> return 1   's' -> return 2   'l' -> return 3 }
+            3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
             else -> when key { 'k' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }
         }
         return 255
@@ -1409,7 +1409,7 @@ main {
                     2 -> put_str_at(col, row, "Cut Line     Ctrl+X")   ; Ctrl+X or Shift+Del (Sh+Del not shown)
                     3 -> put_str_at(col, row, "Copy         Ctrl+C")
                     4 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
-                    5 -> put_str_at(col, row, "Delete Line  Ctrl+K")
+                    5 -> put_str_at(col, row, "Delete Line  Ctrl+E")
                     6 -> put_str_at(col, row, "Duplicate Line")
                     7 -> put_str_at(col, row, "Move Up      Ctrl+Up")
                     8 -> put_str_at(col, row, "Move Down    Ctrl+Dn")
@@ -1433,7 +1433,10 @@ main {
                 when i {
                     0 -> put_str_at(col, row, "Run BASLOAD  F5")
                     1 -> put_str_at(col, row, "Make Backup")
-                    2 -> {
+                    2 -> put_str_at(col, row, "Toggle Comment  Ctrl+L")
+                    3 -> put_str_at(col, row, "Comment Block   Ctrl+K")
+                    4 -> put_str_at(col, row, "Uncomment Block Ctrl+W")
+                    5 -> {
                         if hl_on
                             put_str_at(col, row, "Syntax Color On ")
                         else
@@ -1503,7 +1506,7 @@ main {
         ; the dropdown-item index that a horizontal divider follows, grouping the menu (255 = none).
         when active {
             1 -> return 8       ; Edit: line ops (Undo..Move Down) | display toggle (Word Wrap)
-            3 -> return 1       ; Dev:  actions (Run BASLOAD, Make Backup) | view toggles (Syntax, Line#)
+            3 -> return 4       ; Dev:  actions (Run BASLOAD, Make Backup, comment ops) | view toggles (Syntax, Line#)
         }
         return 255
     }
@@ -1516,7 +1519,7 @@ main {
             0 -> { n = 6  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
-            3 -> { n = 4  boxw = 16 }       ; Dev ("Line Numbers On ")
+            3 -> { n = 7  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
         }
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
@@ -1608,7 +1611,10 @@ main {
                 when choice {
                     0 -> act_run_basload()
                     1 -> act_make_backup()
-                    2 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
+                    2 -> comment_apply(0)       ; toggle REM comment on the current line
+                    3 -> comment_apply(1)       ; comment the selected block (add REM)
+                    4 -> comment_apply(2)       ; uncomment the selected block (strip REM)
+                    5 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
                     else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
                 }
             }
@@ -2792,6 +2798,156 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         draw_status()
     }
 
+    ; ---------- REM comment ops (Dev menu + Ctrl+L / Ctrl+E / Ctrl+W) ----------
+    ; Comment marker is "REM   " (uppercase-PETSCII R,E,M + 3 spaces - so it displays/​saves as
+    ; uppercase REM, matching how BASLOAD source loads). Detection + removal are case-insensitive
+    ; (folded) and lenient. Insert point (column 0 vs after the leading indent) is the EDCFG
+    ; "Comment at" setting, theme.cmt_indent.
+    ubyte[6] cmt_prefix = [$d2, $c5, $cd, $20, $20, $20]     ; "REM   " in uppercase PETSCII
+
+    sub cfold(ubyte b) -> ubyte {
+        ; fold shifted-PETSCII letters ($C1-$DA) down onto $41-$5A so REM matches in any case
+        if b >= $c1 and b <= $da
+            return b - $80
+        return b
+    }
+
+    sub rem_start(uword buf, ubyte blen) -> ubyte {
+        ; index where a REM comment starts (after leading spaces), or 255 if the line isn't a comment.
+        ; REM must be a whole token (end-of-line or a space next) so "REMARK" isn't mistaken for one.
+        ubyte i = 0
+        while i < blen and @(buf + i) == ' '
+            i++
+        if i + 3 > blen
+            return 255
+        ; compare against the FOLDED (uppercase $41-$5A) codes for R,E,M directly - a char literal like
+        ; 'R' encodes to shifted PETSCII ($D2), which cfold would never produce, so match on $52/$45/$4D.
+        if cfold(@(buf + i)) == $52 and cfold(@(buf + i + 1)) == $45 and cfold(@(buf + i + 2)) == $4d {
+            if i + 3 == blen or @(buf + i + 3) == ' '
+                return i
+        }
+        return 255
+    }
+
+    sub build_commented(uword buf, ubyte blen) -> ubyte {
+        ; workbuf = buf with "REM   " inserted at column 0, or after the leading spaces if cmt_indent
+        ubyte ins = 0
+        if theme.cmt_indent != 0
+            while ins < blen and @(buf + ins) == ' '
+                ins++
+        ubyte o = 0
+        ubyte i = 0
+        while i < ins and o < edoc.MAX_LEN {            ; copy the leading indent (indent mode)
+            workbuf[o] = @(buf + i)
+            o++
+            i++
+        }
+        ubyte j = 0
+        while j < 6 and o < edoc.MAX_LEN {              ; insert the REM prefix
+            workbuf[o] = cmt_prefix[j]
+            o++
+            j++
+        }
+        while i < blen and o < edoc.MAX_LEN {           ; copy the rest of the line
+            workbuf[o] = @(buf + i)
+            o++
+            i++
+        }
+        return o
+    }
+
+    sub build_uncommented(uword buf, ubyte blen, ubyte rs) -> ubyte {
+        ; workbuf = buf with the REM (3 chars at rs) + up to 3 following spaces removed
+        ubyte cut = rs + 3
+        ubyte sp = 0
+        while sp < 3 and cut < blen and @(buf + cut) == ' ' {
+            cut++
+            sp++
+        }
+        ubyte o = 0
+        ubyte i = 0
+        while i < rs {                                  ; keep any indent before REM
+            workbuf[o] = @(buf + i)
+            o++
+            i++
+        }
+        i = cut
+        while i < blen {                                ; keep everything after the stripped REM
+            workbuf[o] = @(buf + i)
+            o++
+            i++
+        }
+        return o
+    }
+
+    sub comment_apply(ubyte mode) {
+        ; mode 0 = toggle the current line; 1 = comment the block; 2 = uncomment the block. One undo
+        ; group. Selection blocks re-select as whole lines (like block_shift); no selection -> current line.
+        commit_editbuf()
+        bool had_sel = sel_active
+        uword r0
+        uword r1
+        if mode == 0 {
+            r0 = cur_row                                ; toggle acts on the current line only
+            r1 = cur_row
+        } else if had_sel {
+            sel_norm()
+            r0 = s_row
+            r1 = e_row
+            if r1 > r0 and e_col == 0
+                r1--
+        } else {
+            r0 = cur_row
+            r1 = cur_row
+        }
+        bool do_add = mode != 2                         ; comment adds REM; uncomment strips it
+        if mode == 0 {
+            ubyte cl = edoc.load(cur_row, &tmpbuf)
+            do_add = rem_start(&tmpbuf, cl) == 255      ; toggle: add only if the line isn't a comment
+        }
+        ubyte llen
+        ubyte newlen
+        ubyte rs
+        undo_begin()
+        uword r = r0
+        while r <= r1 {
+            llen = edoc.load(r, &tmpbuf)
+            if do_add {
+                if rem_start(&tmpbuf, llen) == 255 {    ; don't double-comment an already-REM line
+                    newlen = build_commented(&tmpbuf, llen)
+                    urec_replace(r, &tmpbuf, llen)
+                    void edoc.commit(r, &workbuf, newlen)
+                }
+            } else {
+                rs = rem_start(&tmpbuf, llen)
+                if rs != 255 {
+                    newlen = build_uncommented(&tmpbuf, llen, rs)
+                    urec_replace(r, &tmpbuf, llen)
+                    void edoc.commit(r, &workbuf, newlen)
+                }
+            }
+            r++
+        }
+        cur_row = r1
+        cur_len = edoc.load(cur_row, &editbuf)
+        cur_dirty = false
+        if had_sel and mode != 0 {
+            anc_row = r0                                 ; re-select the block as whole lines
+            anc_col = 0
+            cur_col = cur_len
+            sel_active = true
+        } else {
+            if cur_col > cur_len
+                cur_col = cur_len
+            sel_active = false
+        }
+        modified = true
+        cx16.kbdbuf_clear()
+        void ensure_visible()
+        draw_all_text()
+        draw_status()
+    }
+
     sub copy_selection() {
         ; copy the selected text into the clipboard (with $0D between lines)
         commit_editbuf()
@@ -3637,7 +3793,10 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
                     op_cut()                ; Ctrl+X: cut (selection or line)
             }
             22, 138 -> op_paste()           ; Ctrl+V / F4  paste
-            11 -> op_delete_line()          ; Ctrl+K  delete line
+            11 -> comment_apply(1)          ; Ctrl+K  comment the selected block (add REM) - Notepad++ key
+            12 -> comment_apply(0)          ; Ctrl+L  toggle line comment (REM)
+            5  -> op_delete_line()          ; Ctrl+E  delete line (moved off Ctrl+K, now Comment Block)
+            23 -> comment_apply(2)          ; Ctrl+W  uncomment the selected block (strip REM)
             26 -> do_undo()                 ; Ctrl+Z  undo
             21 -> do_redo()                 ; Ctrl+U  redo
             6, 139 -> act_find()            ; Ctrl+F / F6  find

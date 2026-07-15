@@ -57,6 +57,7 @@ theme {
     const ubyte MAX_TAB = 8
     const ubyte DEF_TAB = 4
     ubyte tab_width = DEF_TAB            ; Tab inserts spaces to the next multiple of this (EDCFG-settable)
+    ubyte cmt_indent = 0                 ; comment insert point: 0 = column 0, 1 = after leading indent (EDCFG)
 
     ubyte current = 1                   ; the applied theme id (1..LAST)
 
@@ -218,6 +219,7 @@ theme {
         ; traffic that corrupts the next UI draw. load_raw returns 0 when the file isn't there.
         ubyte id = FIRST
         tab_width = DEF_TAB
+        cmt_indent = 0
         uword endaddr = diskio.load_raw(path_to(CFG_FILE), &cfg_line)
         if endaddr == 0 {
             ; No cfg yet (the normal first-run case). The failed LOAD leaves a FILE NOT FOUND on the
@@ -227,15 +229,23 @@ theme {
             return id
         }
         @(endaddr) = 0
+        ; Parse by BYTE COUNT, treating both CR and NUL as line separators. The write layer prepends a
+        ; stray $00 to the file, so a plain "stop at the first NUL" scan would parse nothing - length-
+        ; bounded parsing skips leading/embedded NULs and reads every key=value line regardless.
+        ubyte cnt = lsb(endaddr - &cfg_line)             ; bytes loaded (the cfg is small, fits a byte)
         ubyte i = 0
-        while cfg_line[i] != 0 {
-            ubyte ks = i                                 ; start of this line's key
-            while cfg_line[i] != 0 and cfg_line[i] != '=' and cfg_line[i] != 13
+        while i < cnt {
+            while i < cnt and (cfg_line[i] == 0 or cfg_line[i] == 13)    ; skip separators / stray NULs
                 i++
-            if cfg_line[i] == '=' {
+            if i >= cnt
+                break
+            ubyte ks = i                                 ; start of this line's key
+            while i < cnt and cfg_line[i] != '=' and cfg_line[i] != 13 and cfg_line[i] != 0
+                i++
+            if i < cnt and cfg_line[i] == '=' {
                 i++                                      ; step over '='
                 uword val = 0
-                while cfg_line[i] >= '0' and cfg_line[i] <= '9' {
+                while i < cnt and cfg_line[i] >= '0' and cfg_line[i] <= '9' {
                     val = val * 10 + (cfg_line[i] - '0')
                     i++
                 }
@@ -243,16 +253,18 @@ theme {
                     id = lsb(val)
                 else if cfg_key_is(ks, "tab")
                     tab_width = lsb(val)
+                else if cfg_key_is(ks, "cmt")
+                    cmt_indent = lsb(val)
             }
-            while cfg_line[i] != 0 and cfg_line[i] != 13    ; skip to end of line
+            while i < cnt and cfg_line[i] != 13 and cfg_line[i] != 0    ; to the end of this line
                 i++
-            if cfg_line[i] == 13
-                i++                                      ; step over the CR onto the next line
         }
         if id < FIRST or id > LAST
             id = FIRST
         if tab_width < MIN_TAB or tab_width > MAX_TAB
             tab_width = DEF_TAB
+        if cmt_indent > 1
+            cmt_indent = 0
         return id
     }
 

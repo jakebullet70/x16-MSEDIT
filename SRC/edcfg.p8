@@ -25,7 +25,7 @@
 %zeropage basicsafe
 
 main {
-    const ubyte NSET = 2                ; number of setting rows (grows as settings are added)
+    const ubyte NSET = 3                ; number of setting rows (grows as settings are added)
     const ubyte ROW0 = 6                ; screen row of the first setting
 
     str edprog = "edit.prg"             ; EDIT, chain-loaded on the way out; theme.path_to()
@@ -107,6 +107,12 @@ main {
                         theme.tab_width--
                 }
             }
+            2 -> {                                  ; comment insert point: toggle Column 0 <-> Indent
+                if theme.cmt_indent == 0
+                    theme.cmt_indent = 1
+                else
+                    theme.cmt_indent = 0
+            }
         }
     }
 
@@ -122,6 +128,7 @@ main {
         ubyte n = 0
         n = append_kv(n, "theme=", id)
         n = append_kv(n, "tab=", theme.tab_width)
+        n = append_kv(n, "cmt=", theme.cmt_indent)
         bool ok = diskio.f_write(cfg_line, n)
         diskio.f_close_w()
         return ok
@@ -190,6 +197,13 @@ main {
                     txt.plot(20, row)
                     txt.print_ub(theme.tab_width)            ; 1..8 -> single digit
                     txt.print(" spaces ")
+                }
+                2 -> {
+                    put_str_at(4, row, "Comment at")
+                    if theme.cmt_indent == 0
+                        put_str_at(20, row, "Column 0    ")   ; REM at the line start
+                    else
+                        put_str_at(20, row, "Indentation ")   ; REM after the leading spaces
                 }
             }
             ubyte c = theme.CB_BODY

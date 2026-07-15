@@ -7,7 +7,7 @@ the whole document held in **banked RAM**.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.111** · © sadLogic 2026 · Open source
+> **Version 0.9.114** · © sadLogic 2026 · Open source
 
 ---
 
@@ -74,21 +74,29 @@ highlighted red letter (e.g. `Alt`+`F` → File).
 | Key | Action |
 | --- | --- |
 | Shift + arrows | Select text |
-| Tab | Insert 4 spaces |
+| Tab / Shift+Tab | Indent / outdent (configurable width, default 4) |
 | Insert | Toggle insert / overwrite (INS / OVR) |
 | Backspace | Delete character to the left |
 | Enter | Split line / new line |
 | Ctrl+C | Copy |
 | Ctrl+X | Cut line |
 | Ctrl+V / F4 | Paste |
-| Ctrl+K | Delete line |
+| Ctrl+E | Delete line |
 | Ctrl+↑ / Ctrl+↓ | Move line up / down |
+| Ctrl+L | Toggle comment on current line |
+| Ctrl+K | Comment selected block |
+| Ctrl+W | Uncomment selected block |
 | Ctrl+Z | Undo |
 | Ctrl+U | Redo |
 
 **Enter auto-indents** — a new line starts with the same leading spaces as the line you left.
 **Duplicate Line** and **Move Line Up/Down** are on the **Edit** menu (Move also has the Ctrl+↑/↓
 keys above). The line the cursor is on is shown with a subtle highlight band.
+
+**Commenting** adds `REM` to BASIC lines (the same commands live on the **Dev** menu). Whether the
+`REM` goes at column 0 or after the line's leading indentation is set by **Comment at** in the EDCFG
+settings program (**Help ▸ Config**). Uncommenting removes a leading `REM` regardless of where it
+sits. The **Tab width** is set in the same place.
 
 ### Search
 
