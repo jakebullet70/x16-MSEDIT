@@ -107,6 +107,11 @@ syntax {
                         closed = true
                     i++
                 }
+            } else if c == $23 and i + 1 < slen and @(src + i + 1) == $23 {
+                while i < slen {                ; ## -> BASLOAD comment: colour the rest of the line
+                    @(dest + i) = theme.C_COMMENT
+                    i++
+                }
             } else {
                 if is_letter(c) {               ; identifier / keyword
                     ubyte ts = i
