@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 100         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 103         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -112,6 +112,9 @@ main {
 
     ; text selection (Shift+cursor). The anchor is fixed; the cursor is the moving end.
     bool sel_active
+    bool sel_cleared                    ; set when a plain cursor key just collapsed a selection, so the
+                                        ; next redraw_after_move() does ONE full repaint to erase the old
+                                        ; highlight (the partial-redraw path only touches the cursor rows)
     uword anc_row
     ubyte anc_col
     uword s_row, e_row                  ; normalized selection start/end (set by sel_norm)
@@ -949,6 +952,8 @@ main {
         ;   * no scroll                -> repaint only the old + new cursor rows
         ;   * scrolled by exactly 1    -> shift the text window in VRAM, repaint 1-2 rows
         ;   * scrolled further (PgUp/Dn)-> full repaint
+        bool force_full = sel_cleared           ; a selection was just collapsed -> repaint every row once
+        sel_cleared = false
         if wrap_on {
             ensure_visible_wrap()               ; soft-wrap forces a full repaint (segments shift)
             draw_all_text()
@@ -958,8 +963,8 @@ main {
         uword old_top = top_line
         ubyte old_left = left_col
         bool scrolled = ensure_visible()
-        if sel_active or left_col != old_left {
-            ; selection spans rows, or a horizontal scroll changed every row -> full repaint
+        if sel_active or force_full or left_col != old_left {
+            ; selection spans rows (or was just cleared), or a horizontal scroll changed every row
             draw_all_text()
             draw_status()
             return
@@ -2752,6 +2757,89 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         draw_status()
     }
 
+    sub block_shift(bool indent) {
+        ; Tab / Shift+Tab: indent or outdent every line the selection touches by one tab width, as ONE
+        ; undo group (a single Ctrl+Z reverts the whole block). With no selection it acts on the current
+        ; line. The affected range is re-selected as whole lines afterwards, so holding/repeating
+        ; Tab / Shift+Tab keeps stepping the same block. Blank lines are skipped on indent (no trailing
+        ; whitespace); outdent removes up to tab_width leading spaces from each line.
+        commit_editbuf()
+        bool had_sel = sel_active
+        uword r0
+        uword r1
+        if had_sel {
+            sel_norm()
+            r0 = s_row
+            r1 = e_row
+            if r1 > r0 and e_col == 0        ; selection ends at col 0 of the line below the block -
+                r1--                          ; that last line holds no selected text, so leave it alone
+        } else {
+            r0 = cur_row
+            r1 = cur_row
+        }
+        ubyte w = theme.tab_width
+        ubyte llen                                      ; prog8 has no block scope - hoist all scratch
+        ubyte nlen
+        ubyte rm
+        ubyte i
+        ubyte o
+        undo_begin()
+        uword r = r0
+        while r <= r1 {
+            llen = edoc.load(r, &tmpbuf)
+            if indent {
+                if llen != 0 {                          ; don't indent blank lines
+                    urec_replace(r, &tmpbuf, llen)      ; snapshot pre-edit content for undo
+                    nlen = 0
+                    while nlen < w and nlen < edoc.MAX_LEN {
+                        workbuf[nlen] = ' '
+                        nlen++
+                    }
+                    i = 0
+                    while i < llen and nlen < edoc.MAX_LEN {
+                        workbuf[nlen] = tmpbuf[i]
+                        nlen++
+                        i++
+                    }
+                    void edoc.commit(r, &workbuf, nlen)
+                }
+            } else {
+                rm = 0                                  ; count up to w leading spaces to strip
+                while rm < w and rm < llen and tmpbuf[rm] == ' '
+                    rm++
+                if rm != 0 {
+                    urec_replace(r, &tmpbuf, llen)
+                    o = 0
+                    i = rm
+                    while i < llen {
+                        tmpbuf[o] = tmpbuf[i]
+                        o++
+                        i++
+                    }
+                    void edoc.commit(r, &tmpbuf, o)
+                }
+            }
+            r++
+        }
+        cur_row = r1
+        cur_len = edoc.load(cur_row, &editbuf)
+        cur_dirty = false
+        if had_sel {
+            anc_row = r0                                 ; re-select the block as whole lines
+            anc_col = 0
+            cur_col = cur_len
+            sel_active = true
+        } else {
+            cur_col = 0
+            sel_active = false
+        }
+        modified = true
+        cx16.kbdbuf_clear()                             ; drain key-repeat so a held Tab can't over-indent
+        void ensure_visible()
+        draw_all_text()
+        draw_status()
+    }
+
     sub copy_selection() {
         ; copy the selected text into the clipboard (with $0D between lines)
         commit_editbuf()
@@ -3510,7 +3598,10 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
                         sel_active = true
                     }
                 } else {
-                    sel_active = false
+                    if sel_active {                     ; collapsing a selection: force a full repaint
+                        sel_active = false              ; so the movement redraw erases the old highlight
+                        sel_cleared = true
+                    }
                 }
             }
         }
@@ -3567,7 +3658,12 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             }
             2 -> ed_pgdn()
             130 -> ed_pgup()
-            9 -> ed_tab()
+            9 -> {                          ; Tab: indent the selected block, else insert spaces
+                if sel_active
+                    block_shift(true)
+                else
+                    ed_tab()
+            }
             148 -> {                        ; $94: the Insert key -> INS/OVR toggle. On the X16 keymap
                 if (g_mod & MOD_SHIFT) != 0  ; Shift+Del is ALSO $94 (the CBM INST/DEL combo); when the
                     op_cut()                 ; shift bit is set treat it as Shift+Del = Cut, else Insert.
@@ -3582,7 +3678,12 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             ; and real hardware: F4=paste, F6=find, F8=replace. The Ctrl keys stay
             ; bound too, for muscle memory on real hardware where they work.
             3 -> op_copy()                  ; Ctrl+C  copy (selection or line)
-            24 -> op_cut()                  ; Ctrl+X  cut (selection or line)
+            24 -> {                         ; $18 is BOTH Ctrl+X and Shift+Tab - split on the shift bit
+                if (g_mod & MOD_SHIFT) != 0
+                    block_shift(false)      ; Shift+Tab: outdent the block (or current line)
+                else
+                    op_cut()                ; Ctrl+X: cut (selection or line)
+            }
             22, 138 -> op_paste()           ; Ctrl+V / F4  paste
             11 -> op_delete_line()          ; Ctrl+K  delete line
             26 -> do_undo()                 ; Ctrl+Z  undo
