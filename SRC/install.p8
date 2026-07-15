@@ -32,11 +32,14 @@ main {
     str[4] FILES = ["edit.prg", "edcfg.prg", "help.ovl", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
-    ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "MSEDIT/EDIT.PRG"
-    ; (matches the file run.bat/dbg.bat generate for the dev tree)
-    ubyte[27] ED_BYTES = [
-        $01,$08, $18,$08, $0a,$00, $93,
-        $22, $4d,$53,$45,$44,$49,$54, $2f, $45,$44,$49,$54,$2e,$50,$52,$47, $22,
+    ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "/MSEDIT/EDIT.PRG"
+    ; (matches the file run.bat/dbg.bat generate for the dev tree). The path is ABSOLUTE - a
+    ; leading '/' from the drive root - so the reload works no matter what folder ^/ED is run from.
+    ; The line grew one byte vs. the old relative form, so the next-line link is $0819 not $0818
+    ; (it targets the $00,$00 end marker, which shifted up by the inserted '/').
+    ubyte[28] ED_BYTES = [
+        $01,$08, $19,$08, $0a,$00, $93,
+        $22, $2f, $4d,$53,$45,$44,$49,$54, $2f, $45,$44,$49,$54,$2e,$50,$52,$47, $22,
         $00, $00,$00 ]
 
     ubyte[80] cur                ; folder we were launched from (copied out of curdir's transient buffer)

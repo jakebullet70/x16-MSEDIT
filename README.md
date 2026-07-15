@@ -7,7 +7,7 @@ the whole document held in **banked RAM**.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.75** · © sadLogic 2026 · Open source
+> **Version 0.9.79** · © sadLogic 2026 · Open source
 
 ---
 
@@ -154,7 +154,8 @@ A few things worth knowing about how it works:
 ## Syntax coloring
 
 For BASLOAD source, (.BASL, .BL, .BAS.TXT ) EDIT can highlight X16 BASIC **keywords**, **strings**, **numbers**, leading
-**line numbers**, and `REM` **comments** (shown in green). Toggle it from the **Edit** menu
+**line numbers**, and comments (shown in green) — both `REM` and BASLOAD's `##` to end of line.
+Toggle it from the **Edit** menu
 (*Syntax Color*). Coloring is purely a display layer — it never changes the bytes on disk — and
 because BASIC lines are self-contained, only the rows actually on screen are re-colored, so it
 stays out of the way while you scroll.

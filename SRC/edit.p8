@@ -1,7 +1,7 @@
 ; EDIT - a basic full-screen text editor for the Commander X16 (like MS-DOS EDIT).
 ;
 ;   * 80x30 text screen: menu bar (row 0), text area, status bar (bottom row)
-;   * MS-Edit style dropdown menus (File / Help), opened with ALT or Esc
+;   * MS-Edit style dropdown menus (File / Edit / Search / Dev / Help), opened with ALT or Esc
 ;   * the document text lives in BANKED RAM via the edoc/xarena storage layer
 ;   * core editing: type, Enter, Backspace, arrows, Home, PgUp/PgDn, Tab
 ;   * File: New, Open, Save, Save As, Exit  (with save-changes prompts)
@@ -28,10 +28,10 @@
 
 main {
     const ubyte TEXT_TOP   = 1          ; first text-area row (row 0 is the menu bar)
-    const ubyte NMENU      = 4
+    const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 75         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 79         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -61,6 +61,7 @@ main {
     str filename = "?" * 40
     str fnbuf    = "?" * 42             ; input scratch for prompts
     str savebuf  = "?" * 44             ; "@:" + filename for overwrite
+    str bakname  = "?" * 44             ; "<name>.bak" built by act_make_backup
     str untitled = "untitled"
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     bool run_config = false             ; Help>Config armed the hand-off to the EDCFG settings program
@@ -188,8 +189,8 @@ main {
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen in pick_file
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
 
-    ubyte[NMENU] menu_col = [2, 9, 16, 25]   ; start column of each top-menu title
-    ubyte[NMENU] menu_len = [4, 4, 6, 4]     ; File, Edit, Search, Help
+    ubyte[NMENU] menu_col = [2, 9, 16, 25, 31]   ; start column of each top-menu title
+    ubyte[NMENU] menu_len = [4, 4, 6, 3, 4]       ; File, Edit, Search, Dev, Help
 
     ; ALT is the Commodore key, so ALT+letter arrives as a graphics code $A1..$BF (161..191);
     ; this maps each (indexed by code-161) back to its base letter. 0 = not a letter.
@@ -199,12 +200,13 @@ main {
         'a','e','r','w','h','j','l','y','u','o', 0 ,'f','c','x','v','b' ]
 
     sub menu_for_letter(ubyte letter) -> ubyte {
-        ; top-menu accelerator: F/E/S/H -> menu index 0..3, else 255
+        ; top-menu accelerator: F/E/S/D/H -> menu index 0..4, else 255
         when letter {
             'f' -> return 0
             'e' -> return 1
             's' -> return 2
-            'h' -> return 3
+            'd' -> return 3
+            'h' -> return 4
         }
         return 255
     }
@@ -212,9 +214,10 @@ main {
     sub item_accel(ubyte active, ubyte key) -> ubyte {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'r' -> return 4   'x' -> return 5 }
+            0 -> when key { 'n' -> return 0   'o' -> return 1   's' -> return 2   'a' -> return 3   'x' -> return 4 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   's' -> return 9   'l' -> return 10   'w' -> return 11 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
+            3 -> when key { 'r' -> return 0   'b' -> return 1 }
             else -> when key { 'k' -> return 0   'c' -> return 1   'a' -> return 2 }
         }
         return 255
@@ -223,9 +226,10 @@ main {
     sub accel_off(ubyte active, ubyte i) -> ubyte {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
-            0 -> when i { 3 -> return 5   5 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1 (Run 'R'@0 default)
+            0 -> when i { 3 -> return 5   4 -> return 1 }       ; Save As 'A'@5, Exit 'x'@1 (New/Open/Save 'N/O/S'@0 default)
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
+            3 -> when i { 1 -> return 5 }                       ; Dev: Make Backup 'B'@5 (Run BASLOAD 'R'@0 default)
         }
         return 0
     }
@@ -1002,14 +1006,15 @@ main {
         put_str_at(menu_col[0], 0, "File")
         put_str_at(menu_col[1], 0, "Edit")
         put_str_at(menu_col[2], 0, "Search")
-        put_str_at(menu_col[3], 0, "Help")
+        put_str_at(menu_col[3], 0, "Dev")
+        put_str_at(menu_col[4], 0, "Help")
         draw_filename_title()
         if active != 255 {
             ubyte x
             for x in menu_col[active] to menu_col[active] + menu_len[active] - 1
                 txt.setclr(x, 0, theme.CB_MENUSEL)
         }
-        ; highlight each title's accelerator letter (F/E/S/H, always the first char)
+        ; highlight each title's accelerator letter (F/E/S/D/H, always the first char)
         ubyte mi
         for mi in 0 to NMENU - 1 {
             ubyte base = theme.CB_BAR
@@ -1275,7 +1280,6 @@ main {
                     1 -> put_str_at(col, row, "Open...    Ctrl+O")
                     2 -> put_str_at(col, row, "Save       F2")
                     3 -> put_str_at(col, row, "Save As...")
-                    4 -> put_str_at(col, row, "Run BASLOAD  F5")
                     else -> put_str_at(col, row, "Exit")
                 }
             }
@@ -1316,6 +1320,12 @@ main {
                     1 -> put_str_at(col, row, "Find Next   Ctrl+G")
                     2 -> put_str_at(col, row, "Replace...  Ctrl+R/F8")
                     else -> put_str_at(col, row, "Go to Line  Ctrl+J")
+                }
+            }
+            3 -> {                          ; Dev
+                when i {
+                    0 -> put_str_at(col, row, "Run BASLOAD  F5")
+                    else -> put_str_at(col, row, "Make Backup")
                 }
             }
             else -> {                       ; Help
@@ -1360,9 +1370,10 @@ main {
         ubyte n = 3
         ubyte boxw = 13                     ; Help ("About      F1")
         when active {
-            0 -> { n = 6  boxw = 17 }       ; File ("Run BASLOAD  F5" / "Open...    Ctrl+O")
+            0 -> { n = 5  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 12  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
+            3 -> { n = 2  boxw = 15 }       ; Dev ("Run BASLOAD  F5")
         }
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
@@ -1413,7 +1424,6 @@ main {
                     1 -> act_open()
                     2 -> void save_now()
                     3 -> act_save_as()
-                    4 -> act_run_basload()
                     else -> act_exit()
                 }
             }
@@ -1443,6 +1453,12 @@ main {
                     1 -> act_find_next()
                     2 -> act_replace()
                     else -> act_goto()
+                }
+            }
+            3 -> {                          ; Dev
+                when choice {
+                    0 -> act_run_basload()
+                    else -> act_make_backup()
                 }
             }
             else -> {                       ; Help
@@ -1867,6 +1883,46 @@ main {
         }
         g_running = false
         g_redrawn = true                ; we're quitting - skip the menu's post-action screen repaint
+    }
+
+    sub act_make_backup() {
+        ; write the current document to a sibling "<name>.bak" (extension replaced, or appended if
+        ; the name has none). Backs up what is loaded in the editor - including unsaved edits - and
+        ; deliberately leaves the document's own modified/saved state untouched: the .bak is a side
+        ; copy, not a Save. An existing .bak triggers a Y/N overwrite prompt.
+        if filename[0] == 0 {
+            flash_status("Open or save a file first")
+            bar_fill(STATUS_ROW, theme.CB_BAR)
+            put_str_at(1, STATUS_ROW, "Open or save a file first")
+            void wait_key()
+            return
+        }
+        ; bakname = filename with everything from the last '.' replaced by ".bak"
+        void strings.copy(filename, bakname)
+        ubyte cut = 255
+        ubyte i = 0
+        while bakname[i] != 0 {
+            if bakname[i] == '.'
+                cut = i
+            i++
+        }
+        if cut == 255
+            cut = i                             ; no extension -> append ".bak" at the end
+        void strings.copy(".bak", &bakname + cut)
+
+        if not confirm_overwrite(bakname)       ; existing .bak -> require Y before clobbering it
+            return
+
+        commit_editbuf()
+        savebuf[0] = '@'                        ; "@:" = overwrite if it already exists
+        savebuf[1] = ':'
+        void strings.copy(bakname, &savebuf + 2)
+        notify_blink("Backing up...", blink_phases(edoc.line_count / 6))
+        if not edoc.save_file(savebuf) {
+            notify("Backup failed")
+            return
+        }
+        notify("Backup saved")                  ; modified state left as-is on purpose
     }
 
     sub act_run_basload() {

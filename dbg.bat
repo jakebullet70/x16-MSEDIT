@@ -63,7 +63,7 @@ IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\edcfg.
 IF EXIST "%BUILDDIR%\help.ovl"  COPY /Y "%BUILDDIR%\help.ovl"  "%PROGDIR%\help.ovl"  >NUL
 
 REM 2b) the /ED root launcher, same as run.bat (SHIFT+RUN after F5 BASLOAD reloads EDIT)
-IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,24,8,10,0,147,34,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"
+IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,25,8,10,0,147,34,47,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"
 
 CALL "%~dp0LOCAL.BAT"
 IF NOT EXIST "%box16%" (

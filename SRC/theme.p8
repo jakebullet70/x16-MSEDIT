@@ -115,7 +115,7 @@ theme {
     }
 
     ; ---- where the programs are installed ----
-    ; NOT hard-coded: the root launcher `ED` (a tokenized `10 LOAD"MSEDIT/EDIT.PRG"`) already names
+    ; NOT hard-coded: the root launcher `ED` (a tokenized `10 LOAD"/MSEDIT/EDIT.PRG"`) already names
     ; the folder EDIT was installed into, so we read the path out of ITS quotes and keep everything up
     ; to the last '/'. That makes the install location the installer's business alone - move the
     ; programs, point ED at them, and edit.cfg / edcfg.prg follow automatically. An ED we can't read
@@ -125,7 +125,7 @@ theme {
     ; copied straight out with no re-encoding.
 
     str  ED_NAME  = "ed"                ; the launcher, at the fsroot
-    str  DEF_DIR  = "msedit/"           ; fallback when ED is missing/unparsable
+    str  DEF_DIR  = "/msedit/"          ; fallback when ED is missing/unparsable (absolute, like ED's path)
     str  CFG_FILE = "edit.cfg"
     str  progdir  = "?" * 32            ; install folder incl. trailing slash (empty = programs at root)
     str  progpath = "?" * 44            ; progdir + a filename, built by path_to()
@@ -171,7 +171,7 @@ theme {
     }
 
     sub path_to(str fname) -> str {
-        ; progdir + fname, e.g. "msedit/" + "edit.cfg"
+        ; progdir + fname, e.g. "/msedit/" + "edit.cfg"
         if not dir_known
             find_progdir()
         void strings.copy(progdir, progpath)

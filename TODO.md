@@ -1,5 +1,10 @@
 # EDIT - TODO
 
+- **Test the installer** — `dist.bat` has never been exercised end to end since `help.ovl` joined the
+  release. Run it, then in the emulator at the BASIC prompt: `CD"DIST"` + `^INSTALL` (answer `T` first
+  for the dry run, then `Y`). Check: /MSEDIT is created with all four files, the /ED launcher works
+  (`^/ED` from any folder), Help>Keyboard/About find the overlay, a REINSTALL keeps an existing
+  edit.cfg, and running the installer from INSIDE /msedit skips the copy instead of truncating.
 - **BASLOAD token picker popup** — a popup listing the BASLOAD control-code tokens (`{CLR}`, `{HOME}`,
   `{RVS ON}`, colour names, ...) so they can be picked and inserted at the cursor instead of typed from
   memory. The supported set is enumerated in the BASLOAD docs — mirror that list, don't invent one.
