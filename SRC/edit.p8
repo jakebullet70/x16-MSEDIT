@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 114         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 116         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -2803,7 +2803,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     ; uppercase REM, matching how BASLOAD source loads). Detection + removal are case-insensitive
     ; (folded) and lenient. Insert point (column 0 vs after the leading indent) is the EDCFG
     ; "Comment at" setting, theme.cmt_indent.
-    ubyte[6] cmt_prefix = [$d2, $c5, $cd, $20, $20, $20]     ; "REM   " in uppercase PETSCII
+    ubyte[4] cmt_prefix = [$d2, $c5, $cd, $20]               ; "REM " in uppercase PETSCII
 
     sub cfold(ubyte b) -> ubyte {
         ; fold shifted-PETSCII letters ($C1-$DA) down onto $41-$5A so REM matches in any case
@@ -2830,7 +2830,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     }
 
     sub build_commented(uword buf, ubyte blen) -> ubyte {
-        ; workbuf = buf with "REM   " inserted at column 0, or after the leading spaces if cmt_indent
+        ; workbuf = buf with "REM " inserted at column 0, or after the leading spaces if cmt_indent
         ubyte ins = 0
         if theme.cmt_indent != 0
             while ins < blen and @(buf + ins) == ' '
@@ -2843,7 +2843,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             i++
         }
         ubyte j = 0
-        while j < 6 and o < edoc.MAX_LEN {              ; insert the REM prefix
+        while j < 4 and o < edoc.MAX_LEN {              ; insert the REM prefix
             workbuf[o] = cmt_prefix[j]
             o++
             j++
