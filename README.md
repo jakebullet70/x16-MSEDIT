@@ -13,7 +13,7 @@ the ROM's BASLOAD tool.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.116** · © sadLogic 2026 · Open source
+> **Version 0.9.117** · © sadLogic 2026 · Open source
 
 ---
 
@@ -270,7 +270,7 @@ Everything the compiler emits — the `.prg`, the `misc.ovl` / `tview.ovl` / `pi
 listing and the `.vice-mon-list` symbol file — goes into `build\`, which is gitignored. The project
 root stays source-only: no binaries are kept or committed there (the build number auto-increments,
 so a tracked `.prg` would churn on every compile). `run.bat`, `dbg.bat` and `dist.bat` all stage
-straight out of `build\` (plus the tracked `edit.hlp` help text).
+straight out of `build\` (plus the tracked `SRC\edit.hlp` / `SRC\basload.hlp` help text).
 
 Paths to Java and 64tass are set near the top of `build.bat`; adjust them for your machine.
 After a successful build it prints a memory-usage summary (image / variables / slabs and the

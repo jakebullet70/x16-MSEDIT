@@ -27,8 +27,8 @@ IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\tview.
 REM    ...the Open/View file-picker overlay (bank 6)...
 IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\picker.ovl" >NUL
 REM    ...and the help text files the viewer shows for Help > Keyboard / Help > BASLOAD.
-IF EXIST "%~dp0edit.hlp"    COPY /Y "%~dp0edit.hlp"    "%PROGDIR%\edit.hlp"    >NUL
-IF EXIST "%~dp0basload.hlp" COPY /Y "%~dp0basload.hlp" "%PROGDIR%\basload.hlp" >NUL
+IF EXIST "%~dp0SRC\edit.hlp"    COPY /Y "%~dp0SRC\edit.hlp"    "%PROGDIR%\edit.hlp"    >NUL
+IF EXIST "%~dp0SRC\basload.hlp" COPY /Y "%~dp0SRC\basload.hlp" "%PROGDIR%\basload.hlp" >NUL
 
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
 CALL "%~dp0build.bat" edcfg.p8
