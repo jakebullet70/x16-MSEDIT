@@ -58,6 +58,7 @@ theme {
     const ubyte DEF_TAB = 4
     ubyte tab_width = DEF_TAB            ; Tab inserts spaces to the next multiple of this (EDCFG-settable)
     ubyte cmt_indent = 0                 ; comment insert point: 0 = column 0, 1 = after leading indent (EDCFG)
+    bool  show_dev = true                ; show the Dev menu in EDIT's menu bar (EDCFG-settable; hotkeys stay)
 
     ubyte current = 1                   ; the applied theme id (1..LAST)
 
@@ -220,6 +221,7 @@ theme {
         ubyte id = FIRST
         tab_width = DEF_TAB
         cmt_indent = 0
+        show_dev = true
         uword endaddr = diskio.load_raw(path_to(CFG_FILE), &cfg_line)
         if endaddr == 0 {
             ; No cfg yet (the normal first-run case). The failed LOAD leaves a FILE NOT FOUND on the
@@ -255,6 +257,8 @@ theme {
                     tab_width = lsb(val)
                 else if cfg_key_is(ks, "cmt")
                     cmt_indent = lsb(val)
+                else if cfg_key_is(ks, "dev")
+                    show_dev = val != 0
             }
             while i < cnt and cfg_line[i] != 13 and cfg_line[i] != 0    ; to the end of this line
                 i++

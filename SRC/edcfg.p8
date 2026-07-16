@@ -26,8 +26,8 @@
 %zeropage basicsafe
 
 main {
-    const ubyte NSET = 3                ; number of setting rows (grows as settings are added)
-    ubyte[3] SET_ROW = [7, 10, 11]      ; screen row of each setting; headers sit on rows 6 and 9
+    const ubyte NSET = 4                ; number of setting rows (grows as settings are added)
+    ubyte[4] SET_ROW = [7, 8, 10, 11]   ; GUI: Color scheme@7, Dev menu@8 (hdr row 6); Editor: Tab@10, Comment@11 (hdr row 9)
 
     str edprog = "edit.prg"             ; EDIT, chain-loaded on the way out; theme.path_to()
                                         ; prefixes the install folder from the root ED launcher
@@ -100,7 +100,10 @@ main {
                 }
                 theme.apply(id)                     ; live preview - draw_all() repaints in the new colours
             }
-            1 -> {                                  ; tab width: clamp within MIN_TAB..MAX_TAB
+            1 -> {                                  ; Dev menu: toggle Shown <-> Hidden
+                theme.show_dev = not theme.show_dev
+            }
+            2 -> {                                  ; tab width: clamp within MIN_TAB..MAX_TAB
                 if forward {
                     if theme.tab_width < theme.MAX_TAB
                         theme.tab_width++
@@ -109,7 +112,7 @@ main {
                         theme.tab_width--
                 }
             }
-            2 -> {                                  ; comment insert point: toggle Column 0 <-> Indent
+            3 -> {                                  ; comment insert point: toggle Column 0 <-> Indent
                 if theme.cmt_indent == 0
                     theme.cmt_indent = 1
                 else
@@ -144,6 +147,10 @@ main {
             n = append_kv(n, "theme=", id)
             n = append_kv(n, "tab=", theme.tab_width)
             n = append_kv(n, "cmt=", theme.cmt_indent)
+            ubyte dv = 0
+            if theme.show_dev
+                dv = 1
+            n = append_kv(n, "dev=", dv)                ; 1 = show Dev menu, 0 = hide
             ok = diskio.f_write(cfg_line, n)
             diskio.f_close_w()
         }
@@ -214,12 +221,19 @@ main {
                     put_str_at(20, row, theme.NAMES[theme.current - 1])
                 }
                 1 -> {
+                    put_str_at(4, row, "Dev menu")
+                    if theme.show_dev
+                        put_str_at(20, row, "Shown  ")        ; Dev appears in EDIT's menu bar
+                    else
+                        put_str_at(20, row, "Hidden ")        ; Dev hidden (its hotkeys still work)
+                }
+                2 -> {
                     put_str_at(4, row, "Tab width")
                     txt.plot(20, row)
                     txt.print_ub(theme.tab_width)            ; 1..8 -> single digit
                     txt.print(" spaces ")
                 }
-                2 -> {
+                3 -> {
                     put_str_at(4, row, "Comment at")
                     if theme.cmt_indent == 0
                         put_str_at(20, row, "Column 0    ")   ; REM at the line start

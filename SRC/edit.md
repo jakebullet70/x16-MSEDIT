@@ -1,8 +1,6 @@
-# EDIT - an MS-DOS-EDIT-style text editor for the Commander X16
+# EDIT - an MS-DOS-EDIT-style text editor / IDE for the Commander X16
 
- A full-screen text editor with a menu bar, dropdown menus and a status line.
- The document lives in banked RAM, so files are not capped by low memory. It
- has selection and clipboard, undo / redo, find / replace, optional BASIC
+ A full-screen text editor & BASLOAD IDE with a menu bar, dropdown menus and a status line. The document lives in banked RAM, so files are not capped by low memory. It has selection and clipboard, undo / redo, find / replace, optional BASIC
  syntax colouring and line numbers, soft word wrap, colour themes, and can
  hand a file to the ROM BASLOAD tool to tokenize and run it.
 

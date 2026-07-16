@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 143         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 146         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -237,7 +237,11 @@ main {
             'f' -> return 0
             'e' -> return 1
             's' -> return 2
-            'd' -> return 3
+            'd' -> {                        ; Alt+D opens Dev only when it is shown
+                if theme.show_dev
+                    return 3
+                return 255
+            }
             'h' -> return 4
         }
         return 255
@@ -250,7 +254,13 @@ main {
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
-            else -> when key { 'h' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }   ; Help 'H'@0, BASLOAD 'B', Config 'C', About 'A'
+            else -> {                        ; Help. Dev shown: H/B/C/A -> 0/1/2/3. Dev hidden (no BASLOAD): H/C/A -> 0/1/2
+                if theme.show_dev {
+                    when key { 'h' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }
+                } else {
+                    when key { 'h' -> return 0   'c' -> return 1   'a' -> return 2 }
+                }
+            }
         }
         return 255
     }
@@ -303,6 +313,10 @@ main {
         theme.apply(theme.cfg_read())   ; colour scheme from the install folder's edit.cfg (missing -> Classic).
                                         ; Read here, while the cwd is still the fsroot we launched in - theme's
                                         ; paths are relative to it and it does no chdir of its own.
+        if not theme.show_dev
+            menu_col[4] = menu_col[3]    ; Dev menu hidden -> slide Help left into Dev's slot (no bar gap).
+                                        ; show_dev is fixed for the session (only EDCFG changes it), so this
+                                        ; one-time column overwrite is safe; Dev(3) is then never drawn/opened.
 
         ; load the misc overlay (About) into its reserved bank, from the install folder (same place
         ; edit.cfg came from - we are still in the launch cwd). A missing misc.ovl is not fatal:
@@ -1146,7 +1160,8 @@ main {
         put_str_at(menu_col[0], 0, "File")
         put_str_at(menu_col[1], 0, "Edit")
         put_str_at(menu_col[2], 0, "Search")
-        put_str_at(menu_col[3], 0, "Dev")
+        if theme.show_dev
+            put_str_at(menu_col[3], 0, "Dev")      ; hidden when show_dev is off (Help sits at its column)
         put_str_at(menu_col[4], 0, "Help")
         draw_filename_title()
         if active != 255 {
@@ -1154,13 +1169,15 @@ main {
             for x in menu_col[active] to menu_col[active] + menu_len[active] - 1
                 txt.setclr(x, 0, theme.CB_MENUSEL)
         }
-        ; highlight each title's accelerator letter (F/E/S/D/H, always the first char)
+        ; highlight each title's accelerator letter (F/E/S/D/H, always the first char); skip Dev if hidden
         ubyte mi
         for mi in 0 to NMENU - 1 {
-            ubyte base = theme.CB_BAR
-            if mi == active
-                base = theme.CB_MENUSEL
-            txt.setclr(menu_col[mi], 0, (base & $f0) | theme.ACCEL_FG)
+            if theme.show_dev or mi != 3 {
+                ubyte base = theme.CB_BAR
+                if mi == active
+                    base = theme.CB_MENUSEL
+                txt.setclr(menu_col[mi], 0, (base & $f0) | theme.ACCEL_FG)
+            }
         }
     }
 
@@ -1426,8 +1443,9 @@ main {
     ; ---------- dropdown menus ----------
 
     sub menu_flags() -> ubyte {
-        ; pack the three toggle states menus.ovl needs for its dynamic item labels:
-        ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers.
+        ; pack the states menus.ovl needs for its dynamic item labels:
+        ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers, bit3 = Dev menu shown
+        ; (when Dev is hidden, the Help menu also drops its BASLOAD item and compacts).
         ubyte f = 0
         if wrap_on
             f |= 1
@@ -1435,7 +1453,17 @@ main {
             f |= 2
         if ln_on
             f |= 4
+        if theme.show_dev
+            f |= 8
         return f
+    }
+
+    sub help_logical(ubyte i) -> ubyte {
+        ; map a DISPLAYED Help-menu row to its logical action index. When Dev is hidden the BASLOAD
+        ; item (logical index 1) is removed, so displayed rows 1.. shift up past it.
+        if not theme.show_dev and i >= 1
+            return i + 1
+        return i
     }
 
     sub dropdown_row(ubyte active, ubyte i) -> ubyte {
@@ -1499,6 +1527,8 @@ main {
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
             3 -> { n = 7  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
         }
+        if active == 4 and not theme.show_dev
+            n = 3                           ; Dev hidden -> Help drops BASLOAD, leaving Help/Config/About
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
         ubyte x1 = x0 + boxw + 3
@@ -1596,8 +1626,8 @@ main {
                     else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
                 }
             }
-            else -> {                       ; Help
-                when choice {
+            else -> {                       ; Help (choice is a displayed row; map past a hidden BASLOAD)
+                when help_logical(choice) {
                     0 -> act_keymap()
                     1 -> act_basload_help()
                     2 -> act_config()
@@ -1637,16 +1667,24 @@ main {
                     erase_dropdown(255) ; close: wipe the dropdown + un-highlight the menu bar
                     return
                 }
-                254 -> {
-                    if active == 0
-                        active = NMENU - 1
-                    else
-                        active--
+                254 -> {                            ; prev menu (skips a hidden Dev)
+                    repeat {
+                        if active == 0
+                            active = NMENU - 1
+                        else
+                            active--
+                        if theme.show_dev or active != 3
+                            break
+                    }
                 }
-                253 -> {
-                    active++
-                    if active >= NMENU
-                        active = 0
+                253 -> {                            ; next menu (skips a hidden Dev)
+                    repeat {
+                        active++
+                        if active >= NMENU
+                            active = 0
+                        if theme.show_dev or active != 3
+                            break
+                    }
                 }
                 else -> {
                     erase_dropdown(255)         ; wipe the dropdown before running the action
