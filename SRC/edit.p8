@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 131         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 135         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -2444,8 +2444,16 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     }
 
     sub goto_found() {
+        ; jump to the match AND highlight it as a selection. Anchor at the match END, cursor at the
+        ; match START: the highlight spans [found_col, found_col+tlen) either way (sel_norm orders
+        ; them), and leaving the cursor at the start keeps act_find_next's "find_wrap(.., cur_col+1)"
+        ; continuation finding the next occurrence correctly, incl. adjacent ones.
+        ubyte tlen = lsb(strings.length(find_term))
+        anc_row = found_row
+        anc_col = found_col + tlen
         cur_row = found_row
         cur_col = found_col
+        sel_active = true
         cur_len = edoc.load(cur_row, &editbuf)
         cur_dirty = false
         void ensure_visible()
@@ -2454,7 +2462,33 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         draw_status()
     }
 
+    sub sel_to_find() {
+        ; If a SINGLE-LINE selection is active, copy the highlighted text into find_term so the
+        ; Find / Replace prompt opens pre-filled with it (select code, hit Find, search for it).
+        ; Multi-line selections are left alone - a search term is one line - so find_term keeps its
+        ; previous value. The selection is consumed (cleared) so the located match highlights cleanly
+        ; instead of leaving a stale highlight spanning the old anchor to the new cursor.
+        if not sel_active
+            return
+        sel_norm()
+        if s_row != e_row or e_col <= s_col     ; multi-line or empty: keep the last search term
+            return
+        commit_editbuf()
+        ubyte llen = edoc.load(s_row, &tmpbuf)
+        ubyte i = s_col
+        ubyte o = 0
+        while i < e_col and i < llen and o < 38 {
+            find_term[o] = tmpbuf[i]
+            o++
+            i++
+        }
+        find_term[o] = 0
+        sel_active = false
+        draw_all_text()
+    }
+
     sub act_find() {
+        sel_to_find()
         if not prompt_str("Find:", &find_term, 38, false, true)
             return
         commit_editbuf()
@@ -2470,8 +2504,13 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
 
     sub act_find_next() {
         if find_term[0] == 0 {
-            notify("No search term - use Find first")
-            return
+            sel_to_find()                   ; no term yet: adopt a single-line highlight as the term,
+                                            ; so "select a word, F3" searches for it (no warning path)
+            if find_term[0] == 0 {          ; nothing selected either -> warn, and BLOCK to eat the
+                notify("No search term - use Find first")   ; key the user presses to react, so it
+                void wait_key()             ; can't fall through and edit the document
+                return
+            }
         }
         commit_editbuf()
         ubyte res = find_wrap(cur_row, cur_col + 1)
@@ -2514,6 +2553,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         ; time. For each match, highlight it and ask Y/N/All/Esc (A = replace the rest without
         ; asking). The whole run is ONE undo group (a snapshot per touched line); if it changes
         ; more lines than the ring holds it drops history (can't undo fully).
+        sel_to_find()
         if not prompt_str("Find:", &find_term, 38, false, true)
             return
         if not prompt_str("Replace with:", &repl_term, 38, true, true)    ; empty = delete
