@@ -27,15 +27,19 @@ IF ERRORLEVEL 1 GOTO :EOF
 SET BUILDDIR=%~dp0build
 SET RUNDIR=%~dp0run
 SET DISTDIR=%RUNDIR%\DIST
-IF NOT EXIST "%DISTDIR%" MKDIR "%DISTDIR%"
-COPY /Y "%BUILDDIR%\edit.prg"    "%DISTDIR%\edit.prg"    >NUL
-COPY /Y "%BUILDDIR%\edcfg.prg"   "%DISTDIR%\edcfg.prg"   >NUL
-COPY /Y "%BUILDDIR%\misc.ovl"    "%DISTDIR%\misc.ovl"    >NUL
-COPY /Y "%BUILDDIR%\tview.ovl"   "%DISTDIR%\tview.ovl"   >NUL
-COPY /Y "%BUILDDIR%\picker.ovl"  "%DISTDIR%\picker.ovl"  >NUL
-COPY /Y "%~dp0SRC\edit.hlp"      "%DISTDIR%\edit.hlp"    >NUL
-COPY /Y "%~dp0SRC\basload.hlp"   "%DISTDIR%\basload.hlp" >NUL
-COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\install.prg" >NUL
+REM Wipe and recreate DIST so the filenames land UPPERCASE. COPY onto an existing lowercase entry
+REM overwrites the bytes but keeps the old directory-entry case on Windows, so a fresh folder is the
+REM only reliable way to force the case shown in the X16's DIR listing.
+IF EXIST "%DISTDIR%" RMDIR /S /Q "%DISTDIR%"
+MKDIR "%DISTDIR%"
+COPY /Y "%BUILDDIR%\edit.prg"    "%DISTDIR%\EDIT.PRG"    >NUL
+COPY /Y "%BUILDDIR%\edcfg.prg"   "%DISTDIR%\EDCFG.PRG"   >NUL
+COPY /Y "%BUILDDIR%\misc.ovl"    "%DISTDIR%\MISC.OVL"    >NUL
+COPY /Y "%BUILDDIR%\tview.ovl"   "%DISTDIR%\TVIEW.OVL"   >NUL
+COPY /Y "%BUILDDIR%\picker.ovl"  "%DISTDIR%\PICKER.OVL"  >NUL
+COPY /Y "%~dp0SRC\edit.hlp"      "%DISTDIR%\EDIT.HLP"    >NUL
+COPY /Y "%~dp0SRC\basload.hlp"   "%DISTDIR%\BASLOAD.HLP" >NUL
+COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\INSTALL.PRG" >NUL
 ECHO   staged release: %DISTDIR%
 
 CALL "%~dp0LOCAL.BAT"

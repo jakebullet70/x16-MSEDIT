@@ -25,7 +25,7 @@ theme {
 
     str[3] NAMES = ["Classic  (dark grey / light blue)",
                     "X16      (blue / light blue)",
-                    "Light    (light grey / blue)"]
+                    "Light    (white / blue)"]
 
     ; ---- the live colours: every draw in edit.p8 / syntax.p8 reads these ----
     ubyte COL_FG        = 1             ; txt.color2 fg (clear_screen / chrout)

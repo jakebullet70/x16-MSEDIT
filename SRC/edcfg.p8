@@ -9,11 +9,12 @@
 ; WRITING that file is this program's job alone - EDIT only reads it, which keeps diskio's write
 ; path (f_open_w/f_write) out of EDIT's low RAM entirely.
 ;
-; UI: one row per setting. Up/Down picks a row, Left/Right changes its value (applied LIVE - the
-; whole screen repaints in the new colours). Enter writes the settings and returns to EDIT; Esc
-; returns without writing. No save prompt here - EDIT already asks about the DOCUMENT on the way in,
-; and a second prompt on the way out was one too many. Adding a setting = one more row here plus its
-; var in theme.p8.
+; UI: the settings are grouped under non-selectable section headers (GUI, Editor). One row per
+; setting. Up/Down picks a setting row (headers are skipped - they are never highlighted),
+; Left/Right changes its value (applied LIVE - the whole screen repaints in the new colours). F10
+; writes the settings and returns to EDIT; Esc returns without writing. No save prompt here - EDIT
+; already asks about the DOCUMENT on the way in, and a second prompt on the way out was one too many.
+; Adding a setting = one more row (its SET_ROW entry + draw arm) plus its var in theme.p8.
 ;
 ; Screen: forces 80x30 (the settings rows assume the width) and puts the machine back in whatever
 ; mode it booted in before handing control to BASIC.
@@ -26,7 +27,7 @@
 
 main {
     const ubyte NSET = 3                ; number of setting rows (grows as settings are added)
-    const ubyte ROW0 = 6                ; screen row of the first setting
+    ubyte[3] SET_ROW = [7, 10, 11]      ; screen row of each setting; headers sit on rows 6 and 9
 
     str edprog = "edit.prg"             ; EDIT, chain-loaded on the way out; theme.path_to()
                                         ; prefixes the install folder from the root ED launcher
@@ -64,7 +65,7 @@ main {
                 }
                 29, ' ' -> change(true)             ; cursor right / space: next value
                 157 -> change(false)                ; cursor left: previous value
-                13 -> {                             ; Enter: write the settings, back to EDIT
+                21 -> {                             ; F10 ($15): write the settings, back to EDIT
                     if not cfg_write(theme.current) {
                         put_str_at(2, SCR_H - 3, "could not write the settings file!")
                         void wait_key()
@@ -184,9 +185,12 @@ main {
         put_str_at(2, 3, "Left/Right changes the highlighted setting.")
         set_color_run(0, SCR_W - 1, 3, theme.CB_BODY)
 
+        draw_header(6, "GUI")                       ; colour scheme lives under this
+        draw_header(9, "Editor")                    ; tab width + comments live under this
+
         ubyte i
         for i in 0 to NSET - 1 {
-            ubyte row = ROW0 + i
+            ubyte row = SET_ROW[i]
             when i {
                 0 -> {
                     put_str_at(4, row, "Color scheme")
@@ -213,8 +217,15 @@ main {
         }
 
         bar_fill(SCR_H - 1, theme.CB_BAR)
-        put_str_at(2, SCR_H - 1, "Up/Dn Pick   Lt/Rt Change   Enter Save+Exit   Esc Cancel")
+        put_str_at(2, SCR_H - 1, "Up/Dn Pick   Lt/Rt Change   F10 Save+Exit   Esc Cancel")
         set_color_run(2, 58, SCR_H - 1, theme.CB_BAR)
+    }
+
+    sub draw_header(ubyte row, str s) {
+        ; non-selectable section label. A short highlight chip at col 2 (never a full-width run, so it
+        ; can't be mistaken for a selected setting row) sets it apart from the indented settings below.
+        put_str_at(2, row, s)
+        set_color_run(2, 2 + strings.length(s) - 1, row, theme.CB_MENUSEL)
     }
 
     sub put_str_at(ubyte col, ubyte row, str s) {
