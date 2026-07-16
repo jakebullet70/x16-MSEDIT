@@ -133,12 +133,17 @@ syntax {
                     i++
                 }
             } else {
-                if is_letter(c) {               ; identifier / keyword
+                if is_letter(c) {               ; identifier / keyword / BASLOAD label
                     ubyte ts = i
                     i++
                     while i < slen {
                         d = @(src + i)
-                        if is_letter(d) or is_digit(d)
+                        ; '.' is a legal char INSIDE a BASLOAD label (DIR.READ.BIN.NUM16), so it
+                        ; keeps the whole dotted name as one token. No keyword contains a '.', so a
+                        ; label can never match the tables -> it stays default-coloured, and an
+                        ; embedded keyword-like fragment (the READ in DIR.READ) is no longer
+                        ; mis-coloured as the READ statement.
+                        if is_letter(d) or is_digit(d) or d == $2e
                             i++
                         else
                             break
