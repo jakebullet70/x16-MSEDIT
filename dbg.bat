@@ -63,6 +63,7 @@ IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\edcfg.
 IF EXIST "%BUILDDIR%\misc.ovl"  COPY /Y "%BUILDDIR%\misc.ovl"  "%PROGDIR%\misc.ovl"  >NUL
 IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\tview.ovl" >NUL
 IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\picker.ovl" >NUL
+IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\menus.ovl" >NUL
 IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\edit.md"  >NUL
 IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\basload.md" >NUL
 

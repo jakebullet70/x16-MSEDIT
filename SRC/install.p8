@@ -31,7 +31,7 @@ main {
     ; picker, edit.md / basload.md = the help text files the viewer shows. All are loaded/opened at
     ; runtime; without them EDIT still runs and the affected menu items just report the file missing.
     ; edit.cfg is the user's settings, PRESERVED.
-    str[8] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "edit.md", "basload.md", "edit.cfg"]
+    str[9] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "menus.ovl", "edit.md", "basload.md", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
     ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "/MSEDIT/EDIT.PRG"

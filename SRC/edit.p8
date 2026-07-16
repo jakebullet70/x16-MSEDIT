@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 126         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 129         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -205,6 +205,17 @@ main {
     extsub @bank 9 $A003 = ovl_view(uword nameptr @R0, ubyte theme_id @R1)
     bool tview_ok                       ; tview.ovl loaded OK -> the viewer is available
     str  tviewovl = "tview.ovl"
+
+    ; CODE OVERLAY: the dropdown-menu item labels + renderer (menus.ovl) in reserved bank 11. The old
+    ; local draw_item (~1.1KB of inline label literals) moved here to reclaim low RAM; main keeps all
+    ; the dropdown control/colour/layout/dispatch and just calls mnu_item() to paint each item's text.
+    ; NOT optional: without it dropdowns paint blank (bar/accelerators/shortcut keys still work).
+    ; flags bit0 = wrap_on, bit1 = hl_on, bit2 = ln_on (the three toggle-label states).
+    const ubyte MENUS_BANK = edoc.ARENA_FIRST_BANK + 5      ; overlay bank 11 for menus.ovl
+    extsub @bank 11 $A000 = menus_init()
+    extsub @bank 11 $A003 = mnu_item(ubyte active @R0, ubyte i @R1, ubyte col @R2, ubyte row @R3, ubyte flags @R4)
+    bool menus_ok                       ; menus.ovl loaded OK -> dropdown item labels are available
+    str  menusovl = "menus.ovl"
     str  keysfile = "edit.md"           ; the help / Keyboard Map text file, viewed by Help > Keyboard
     str  basloadhlp = "basload.md"      ; the BASLOAD guide, viewed by Help > BASLOAD
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen by the picker
@@ -279,7 +290,7 @@ main {
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
-        xarena.first_bank = edoc.ARENA_FIRST_BANK + 5   ; +5 past the reserved banks: picker.ovl (6), clipboard (7), misc.ovl (8), tview.ovl (9), picker records (10)
+        xarena.first_bank = edoc.ARENA_FIRST_BANK + 6   ; +6 past the reserved banks: picker.ovl (6), clipboard (7), misc.ovl (8), tview.ovl (9), picker records (10), menus.ovl (11)
         find_term[0] = 0                ; the "?"*N buffers start non-empty; clear them
         repl_term[0] = 0
         clip_has = false
@@ -323,6 +334,16 @@ main {
             picker_init()               ; extsub @bank 6: clears the overlay's in-bank BSS, ONCE
             picker_setup(&rec_peek, &rec_read, &rec_write, &rec_move, &recstage)  ; wire the bank helpers
         } else
+            void diskio.status()
+
+        ; ...and the dropdown-menu label overlay into its bank (bank 11, same pattern). Missing
+        ; menus.ovl is not fatal but degrades the UI: dropdowns paint blank; the bar + shortcuts work.
+        cx16.push_rambank(MENUS_BANK)
+        menus_ok = diskio.loadlib(theme.path_to(menusovl), $a000) != 0
+        cx16.pop_rambank()
+        if menus_ok
+            menus_init()                ; extsub @bank 11: clears the overlay's in-bank BSS, ONCE
+        else
             void diskio.status()
         bool reloaded = restore_run_state()
         if not reloaded {               ; fresh launch (no BASLOAD reload pending):
@@ -1393,75 +1414,17 @@ main {
 
     ; ---------- dropdown menus ----------
 
-    sub draw_item(ubyte active, ubyte i, ubyte col, ubyte row) {
-        when active {
-            0 -> {                          ; File
-                when i {
-                    0 -> put_str_at(col, row, "New        Ctrl+N")
-                    1 -> put_str_at(col, row, "Open...    Ctrl+O")
-                    2 -> put_str_at(col, row, "View...")
-                    3 -> put_str_at(col, row, "Save       F2")
-                    4 -> put_str_at(col, row, "Save As...")
-                    else -> put_str_at(col, row, "Exit")
-                }
-            }
-            1 -> {                          ; Edit
-                when i {
-                    0 -> put_str_at(col, row, "Undo         Ctrl+Z")
-                    1 -> put_str_at(col, row, "Redo         Ctrl+U")
-                    2 -> put_str_at(col, row, "Cut Line     Ctrl+X")   ; Ctrl+X or Shift+Del (Sh+Del not shown)
-                    3 -> put_str_at(col, row, "Copy         Ctrl+C")
-                    4 -> put_str_at(col, row, "Paste        Ctrl+V/F4")
-                    5 -> put_str_at(col, row, "Delete Line  Ctrl+E")
-                    6 -> put_str_at(col, row, "Duplicate Line")
-                    7 -> put_str_at(col, row, "Move Up      Ctrl+Up")
-                    8 -> put_str_at(col, row, "Move Down    Ctrl+Dn")
-                    else -> {
-                        if wrap_on
-                            put_str_at(col, row, "Word Wrap    On ")
-                        else
-                            put_str_at(col, row, "Word Wrap    Off")
-                    }
-                }
-            }
-            2 -> {                          ; Search
-                when i {
-                    0 -> put_str_at(col, row, "Find...     Ctrl+F/F6")
-                    1 -> put_str_at(col, row, "Find Next   Ctrl+G")
-                    2 -> put_str_at(col, row, "Replace...  Ctrl+R/F8")
-                    else -> put_str_at(col, row, "Go to Line  Ctrl+J")
-                }
-            }
-            3 -> {                          ; Dev
-                when i {
-                    0 -> put_str_at(col, row, "Run BASLOAD  F5")
-                    1 -> put_str_at(col, row, "Make Backup")
-                    2 -> put_str_at(col, row, "Toggle Comment  Ctrl+L")
-                    3 -> put_str_at(col, row, "Comment Block   Ctrl+K")
-                    4 -> put_str_at(col, row, "Uncomment Block Ctrl+W")
-                    5 -> {
-                        if hl_on
-                            put_str_at(col, row, "Syntax Color On ")
-                        else
-                            put_str_at(col, row, "Syntax Color Off")
-                    }
-                    else -> {
-                        if ln_on
-                            put_str_at(col, row, "Line Numbers On ")
-                        else
-                            put_str_at(col, row, "Line Numbers Off")
-                    }
-                }
-            }
-            else -> {                       ; Help
-                when i {
-                    0 -> put_str_at(col, row, "Keyboard...")
-                    1 -> put_str_at(col, row, "BASLOAD...")
-                    2 -> put_str_at(col, row, "Config...")
-                    else -> put_str_at(col, row, "About      F1")
-                }
-            }
-        }
+    sub menu_flags() -> ubyte {
+        ; pack the three toggle states menus.ovl needs for its dynamic item labels:
+        ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers.
+        ubyte f = 0
+        if wrap_on
+            f |= 1
+        if hl_on
+            f |= 2
+        if ln_on
+            f |= 4
+        return f
     }
 
     sub dropdown_row(ubyte active, ubyte i) -> ubyte {
@@ -1479,7 +1442,8 @@ main {
         ubyte row = dropdown_row(active, i)
         ubyte base = theme.CB_BAR
         set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
-        draw_item(active, i, x0 + 2, row)
+        if menus_ok
+            mnu_item(active, i, x0 + 2, row, menu_flags())      ; item label text lives in menus.ovl
         if i == sel {
             set_color_run(x0 + 1, x1 - 1, row, theme.CB_MENUSEL)   ; selected row: reverse so it pops
             base = theme.CB_MENUSEL
