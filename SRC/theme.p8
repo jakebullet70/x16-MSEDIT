@@ -94,7 +94,7 @@ theme {
         ; behind coloured tokens on the white page).
         ;
         ; Body text is DARK GREY (not pure black) for a softer page, on the white field. Syntax palette
-        ; is a VS Code "light+" look: purple keywords, blue functions, red strings, green numbers, grey
+        ; is a VS Code "light+" look: purple keywords, blue functions, red strings, orange numbers, green
         ; comments, dark-grey default (operators / variables / punctuation). Only the DARK half of the
         ; X16 palette is used - on a white field the light tones (cyan, yellow, light blue/green/grey)
         ; wash out, so VS Code's teal/gold become the nearest readable blue/purple.
@@ -103,7 +103,7 @@ theme {
         ; menu bar). The accelerator letter keeps its row's background and only recolours the fg, so it
         ; must read on BOTH the blue bar and the light-grey selected row: ORANGE does (yellow vanished
         ; on light grey, and any dark colour vanished on the blue bar).
-         11, 1, $1b, $61, $10, $16, $61, $f0, $0f, $61, $cc, $c0, $c6, $f0,  8, $1b, $14, $16, $12, $15, $1b
+         11, 1, $1b, $61, $10, $16, $61, $f0, $0f, $61, $cc, $c0, $c6, $f0,  8, $1b, $14, $16, $12, $18, $15
     ]
 
     sub apply(ubyte id) {
