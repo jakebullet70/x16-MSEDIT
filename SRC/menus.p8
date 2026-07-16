@@ -94,10 +94,10 @@ main {
             }
             else -> {                       ; Help
                 when i {
-                    0 -> put_str_at(col, row, "Keyboard...")
+                    0 -> put_str_at(col, row, "Help...    F1")
                     1 -> put_str_at(col, row, "BASLOAD...")
                     2 -> put_str_at(col, row, "Config...")
-                    else -> put_str_at(col, row, "About      F1")
+                    else -> put_str_at(col, row, "About")
                 }
             }
         }

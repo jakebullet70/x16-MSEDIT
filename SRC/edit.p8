@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 142         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 143         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -250,7 +250,7 @@ main {
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
-            else -> when key { 'k' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }
+            else -> when key { 'h' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }   ; Help 'H'@0, BASLOAD 'B', Config 'C', About 'A'
         }
         return 255
     }
@@ -1492,7 +1492,7 @@ main {
     sub run_dropdown(ubyte active) -> ubyte {
         ; returns the chosen item index, or 255=esc, 254=prev menu, 253=next menu
         ubyte n = 4
-        ubyte boxw = 13                     ; Help ("Keyboard.../BASLOAD.../Config.../About F1")
+        ubyte boxw = 13                     ; Help ("Help... F1/BASLOAD.../Config.../About")
         when active {
             0 -> { n = 6  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
@@ -3863,7 +3863,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             15 -> act_open()                ; Ctrl+O  open
             137 -> void save_now()          ; F2  save
             135 -> act_run_basload()        ; F5  save + run through BASLOAD
-            133 -> act_about()              ; F1  help
+            133 -> act_keymap()             ; F1  Help (keyboard map / edit.md)
             else -> {
                 if (k >= 32 and k <= 126) or (k >= 160) {
                     if sel_active

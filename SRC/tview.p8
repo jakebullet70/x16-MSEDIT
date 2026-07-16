@@ -175,7 +175,16 @@ main {
         ubyte plen = lsb(strings.length(view_find))
         long mend = view_match + plen
         bool line_head = false             ; the line being drawn starts with '#' (markdown heading)
-        ubyte head_col = theme.C_KEYWORD   ; its colour: C_KEYWORD for '#', C_FUNCTION for '##'+
+        ubyte head_col = theme.C_KEYWORD   ; its colour: h1_col for '#', h2_col for '##'+
+        ; markdown heading colours, precomputed once. Normally '#'=C_KEYWORD, '##'+=C_FUNCTION; the
+        ; CLASSIC theme (id 1) SWAPS the two here, per user preference, without touching the palette
+        ; (so BASIC keyword/function syntax colouring is unaffected).
+        ubyte h1_col = theme.C_KEYWORD
+        ubyte h2_col = theme.C_FUNCTION
+        if theme.current == 1 {
+            h1_col = theme.C_FUNCTION
+            h2_col = theme.C_KEYWORD
+        }
         repeat {
             uword n = diskio.f_read(&viewbuf, 250)
             if n == 0 {
@@ -208,9 +217,9 @@ main {
                         txt.setchr(col, VTOP + row, scr_of(ch))
                         if col == 0 {
                             line_head = ch == '#'                ; markdown heading: first char '#'
-                            head_col = theme.C_KEYWORD
+                            head_col = h1_col
                             if line_head and j < cnt-1 and viewbuf[j+1] == '#'
-                                head_col = theme.C_FUNCTION      ; '##' (or deeper): different colour
+                                head_col = h2_col                ; '##' (or deeper): different colour
                         }
                         if line_head
                             txt.setclr(col, VTOP + row, head_col)
