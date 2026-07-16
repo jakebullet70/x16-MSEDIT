@@ -59,25 +59,32 @@ main {
         theme.apply(theme_id)              ; paint in EDIT's current scheme (our own theme.p8 copy)
         SCR_W = txt.width()
         SCR_H = txt.height()
-        const ubyte w = 34
-        ubyte x0 = (SCR_W - w) / 2
+        const ubyte w = 46                 ; box width (was 34: +12 wider)
+        ubyte x0 = 1                        ; centre horizontally; the guard keeps x0 sane on a 40-col
+        if SCR_W > w + 1                    ; screen where the wide box can't fit (would underflow)
+            x0 = (SCR_W - w) / 2
         ubyte x1 = x0 + w - 1
         ubyte tx = x0 + 3
-        draw_box_frame(x0, 9, x1, 18)
-        draw_box_shadow(x0, 9, x1, 18)
-        draw_box_title(x0, x1, 9, " About ")                   ; XFMGR-style solid title bar
-        put_str_at(tx, 11, "EDIT  -  X16 Text Editor")
-        put_str_at(tx, 12, "Text stored in banked RAM")
+        const ubyte y0 = 8                  ; box top/bottom rows (was 9..18 = 10 tall; now 8..21 = 14, +4)
+        const ubyte y1 = 21
+        draw_box_frame(x0, y0, x1, y1)
+        draw_box_shadow(x0, y0, x1, y1)
+        draw_box_title(x0, x1, y0, " About ")                  ; XFMGR-style solid title bar
+        put_str_at(tx, 10, "EDIT - X16 Text Editor & BASLOAD IDE")
+        put_str_at(tx, 12, "A DOS EDIT-style text editor for")
+        put_str_at(tx, 13, "the Commander X16, with live BASIC")
+        put_str_at(tx, 14, "syntax colouring and F5 BASLOAD run.")
         if emu != 0
-            put_str_at(tx, 13, "Running on:  Emulator")
+            put_str_at(tx, 16, "Running on:  Emulator")
         else
-            put_str_at(tx, 13, "Running on:  Hardware")
-        put_str_at(tx, 15,     "(c)sadLogic 2026 v0.9.")       ; version = v0.9.<build>
-        void put_uw_at(tx + 22, 15, build)                     ; 22 = len("(c)sadLogic 2026 v0.9.")
-        put_str_at(tx, 16,     "Open Source! play, have fun!")
-        ubyte fcol = x0 + (w - 13) / 2
-        put_str_at(fcol, 18, " Press any key ")
-        set_color_run(fcol, fcol + 14, 18, theme.CB_BOX)
+            put_str_at(tx, 16, "Running on:  Hardware")
+        put_str_at(tx, 17,     "Version:     v0.9.")            ; version = v0.9.<build>
+        void put_uw_at(tx + 18, 17, build)                     ; 18 = len("Version:     v0.9.")
+        put_str_at(tx, 19,     "(c) sadLogic 2026  -  Open Source")
+        ;put_str_at(tx, 20,     "Play, have fun!")
+        ubyte fcol = x0 + (w - 15) / 2                          ; centre " Press any key " (15 wide)
+        put_str_at(fcol, y1, " Press any key ")
+        set_color_run(fcol, fcol + 14, y1, theme.CB_BOX)
         void wait_key()
     }
 
