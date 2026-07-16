@@ -32,6 +32,7 @@ main {
     str edprog = "edit.prg"             ; EDIT, chain-loaded on the way out; theme.path_to()
                                         ; prefixes the install folder from the root ED launcher
     ubyte[24] cfg_line                  ; cfg write buffer ("theme=N\r tab=W\r ...")
+    str savename = "?" * 48             ; scratch: builds the chdir target (progdir minus trailing slash)
 
     ubyte SCR_W, SCR_H
     ubyte saved_mode                    ; screen mode we were launched in; restored on the way out
@@ -118,20 +119,36 @@ main {
     }
 
     sub cfg_write(ubyte id) -> bool {
-        ; overwrite the cfg with one "key=<value>\r" line per setting (delete-then-create: a portable
-        ; overwrite). Kept in step with theme.cfg_read()'s parser - same keys, same order.
-        uword cfg = theme.path_to(theme.CFG_FILE)   ; (a uword: prog8 only lets a `str` var hold a literal)
-        diskio.delete(cfg)
-        void diskio.status()                        ; deleting a file that isn't there parks an error on the
-                                                    ; DOS channel (blinking activity LED) - read it and drop it
-        if not diskio.f_open_w(cfg)
-            return false
-        ubyte n = 0
-        n = append_kv(n, "theme=", id)
-        n = append_kv(n, "tab=", theme.tab_width)
-        n = append_kv(n, "cmt=", theme.cmt_indent)
-        bool ok = diskio.f_write(cfg_line, n)
-        diskio.f_close_w()
+        ; Overwrite the cfg with one "key=<value>\r" line per setting. Kept in step with
+        ; theme.cfg_read()'s parser - same keys, same order.
+        ;
+        ; Host-FS overwrite is finicky: f_open_w's ",w" open does NOT truncate an existing file, and a
+        ; scratch / "@:" replace addressed by an ABSOLUTE path silently no-ops - so the stale file
+        ; survives and the write fails (or lands past leftover bytes). The one sequence that works is
+        ; exactly what the installer's copy_one does: chdir into the folder, delete the BARE name, then
+        ; create it fresh. We restore the cwd afterwards (chdir back to the fsroot root) because the
+        ; chain-load into EDIT reads ed.run / the /ed launcher from there.
+        bool moved = theme.progdir[0] != 0          ; empty progdir = cfg is already in the cwd
+        if moved {
+            void strings.copy(theme.progdir, savename)   ; "/msedit/" -> strip the trailing slash
+            ubyte pl = lsb(strings.length(savename))
+            if pl > 1 and savename[pl - 1] == '/'
+                savename[pl - 1] = 0
+            diskio.chdir(savename)                  ; cd /msedit
+        }
+        diskio.delete(theme.CFG_FILE)               ; remove the old "edit.cfg" (bare name, in the cwd)
+        void diskio.status()                        ; drop FILE NOT FOUND if it wasn't there (LED blink)
+        bool ok = false
+        if diskio.f_open_w(theme.CFG_FILE) {        ; create fresh - bare name, no "@:" / no path
+            ubyte n = 0
+            n = append_kv(n, "theme=", id)
+            n = append_kv(n, "tab=", theme.tab_width)
+            n = append_kv(n, "cmt=", theme.cmt_indent)
+            ok = diskio.f_write(cfg_line, n)
+            diskio.f_close_w()
+        }
+        if moved
+            diskio.chdir("/")                       ; back to the fsroot root (ed.run + /ed live there)
         return ok
     }
 

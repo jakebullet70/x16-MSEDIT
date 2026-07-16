@@ -6,7 +6,7 @@
 ; library overlay loaded into its own reserved HIRAM bank and called via `extsub @bank`.
 ;
 ; Controls:  PgDn/PgUp page   T/Home top   B bottom   H hex<->text   F find   N/Space next   Q/Esc quit
-; Text mode caches up to 64 page-tops for backward paging; hex mode uses a 32-bit offset (any size).
+; Text mode caches up to 48 page-tops for backward paging; hex mode uses a 32-bit offset (any size).
 ; Hex mode needs >= 72 columns, so it is disabled in 40-column mode.
 ;
 ; Call contract: the caller keeps the screen in its text mode and passes view_file(nameptr, theme_id);
@@ -48,7 +48,7 @@ main {
     ubyte c_find                       ; found-text highlight (combined setclr byte)
 
     ; --- viewer state ---
-    long[64] view_pages                ; text-mode page-top offsets (prog8 caps long arrays at 64)
+    long[48] view_pages                ; text-mode page-top offsets (backward-paging cache; <= 64/prog8)
     bool view_eof                      ; the last rendered page reached end-of-file
     bool view_hex                      ; showing hex dump (vs text)
     long view_off                      ; hex-mode current page top offset
@@ -174,6 +174,8 @@ main {
         bool full = false
         ubyte plen = lsb(strings.length(view_find))
         long mend = view_match + plen
+        bool line_head = false             ; the line being drawn starts with '#' (markdown heading)
+        ubyte head_col = theme.C_KEYWORD   ; its colour: C_KEYWORD for '#', C_FUNCTION for '##'+
         repeat {
             uword n = diskio.f_read(&viewbuf, 250)
             if n == 0 {
@@ -204,8 +206,16 @@ main {
                         ch = '.'
                     if draw {
                         txt.setchr(col, VTOP + row, scr_of(ch))
+                        if col == 0 {
+                            line_head = ch == '#'                ; markdown heading: first char '#'
+                            head_col = theme.C_KEYWORD
+                            if line_head and j < cnt-1 and viewbuf[j+1] == '#'
+                                head_col = theme.C_FUNCTION      ; '##' (or deeper): different colour
+                        }
+                        if line_head
+                            txt.setclr(col, VTOP + row, head_col)
                         if plen != 0 and consumed-1 >= view_match and consumed-1 < mend
-                            txt.setclr(col, VTOP + row, c_find)
+                            txt.setclr(col, VTOP + row, c_find)  ; find-highlight wins over heading
                     }
                     col++
                     if col >= VWIDTH {
@@ -432,7 +442,7 @@ main {
                 break
             if target < nxt
                 break
-            if view_page + 1 >= 64
+            if view_page + 1 >= 48
                 break
             view_pages[view_page+1] = nxt
             view_known = view_page + 1
@@ -475,7 +485,7 @@ main {
                         view_page--
                     break
                 }
-                if view_page + 1 >= 64
+                if view_page + 1 >= 48
                     break
                 view_pages[view_page+1] = nxt
                 view_known = view_page + 1
@@ -588,7 +598,7 @@ main {
                         if view_hex {
                             view_off += HEXPAGE
                         } else if view_page >= view_known {
-                            if view_page + 1 < 64 {
+                            if view_page + 1 < 48 {
                                 view_pages[view_page+1] = nxt
                                 view_known = view_page + 1
                                 view_page++

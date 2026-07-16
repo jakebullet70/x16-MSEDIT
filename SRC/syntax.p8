@@ -91,6 +91,26 @@ syntax {
         return 0
     }
 
+    sub classify_md(uword src, ubyte slen, uword dest) {
+        ; Markdown colouring: minimal, two colours. A line whose FIRST character is '#' (so '#',
+        ; '##', '###' ... all count) is a heading and the whole line gets C_KEYWORD; every other
+        ; line is plain body text (C_DEFAULT). Line-oriented and stateless, like the BASIC path.
+        ;
+        ; '#' (H1) and '##'-or-deeper (H2) get DIFFERENT colours. The "/#" ESCAPE needs no special
+        ; case: an escaped heading starts with '/', not '#', so the first-char test leaves it body-
+        ; coloured. The '/' is kept verbatim - this is an editor, so what is on disk is what is shown;
+        ; dropping a real byte belongs to a rendered view, not here.
+        ubyte col = theme.C_DEFAULT
+        if slen != 0 and @(src) == '#' {
+            col = theme.C_KEYWORD                       ; '#'  heading
+            if slen > 1 and @(src + 1) == '#'
+                col = theme.C_FUNCTION                  ; '##' (or deeper) subheading
+        }
+        ubyte i
+        for i in 0 to slen - 1
+            @(dest + i) = col
+    }
+
     sub classify(uword src, ubyte slen, uword dest) {
         ; fill dest[0..slen) with a per-column colour byte for the PETSCII line at src.
         ubyte i = 0

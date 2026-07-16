@@ -37,8 +37,8 @@ COPY /Y "%BUILDDIR%\edcfg.prg"   "%DISTDIR%\EDCFG.PRG"   >NUL
 COPY /Y "%BUILDDIR%\misc.ovl"    "%DISTDIR%\MISC.OVL"    >NUL
 COPY /Y "%BUILDDIR%\tview.ovl"   "%DISTDIR%\TVIEW.OVL"   >NUL
 COPY /Y "%BUILDDIR%\picker.ovl"  "%DISTDIR%\PICKER.OVL"  >NUL
-COPY /Y "%~dp0SRC\edit.hlp"      "%DISTDIR%\EDIT.HLP"    >NUL
-COPY /Y "%~dp0SRC\basload.hlp"   "%DISTDIR%\BASLOAD.HLP" >NUL
+COPY /Y "%~dp0SRC\edit.md"       "%DISTDIR%\EDIT.MD"     >NUL
+COPY /Y "%~dp0SRC\basload.md"    "%DISTDIR%\BASLOAD.MD"  >NUL
 COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\INSTALL.PRG" >NUL
 ECHO   staged release: %DISTDIR%
 

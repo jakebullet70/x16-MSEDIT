@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 119         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 126         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -77,8 +77,11 @@ main {
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
     uword g_wbuf                        ; scratch: pointer to the line buffer last resolved for wrap math
-    bool hl_on = false                  ; BASIC syntax colouring: default OFF, auto-on for BASIC
-                                        ; files on open (has_basic_ext); toggle in the Edit menu
+    bool hl_on = false                  ; syntax colouring: default OFF, auto-on by extension on open
+                                        ; (has_basic_ext / .md); toggle in the Edit menu
+    const ubyte HL_BASIC = 0            ; hl_mode values: which classifier hl_on drives
+    const ubyte HL_MD    = 1
+    ubyte hl_mode = HL_BASIC            ; set from the file extension on open (see apply_syntax_mode)
     bool ww_on = false                  ; search "whole word only": default OFF, toggle in Search menu
     bool ln_on = false                  ; line-number gutter: default OFF, toggle in the Edit menu
     ubyte gutter_w = 0                  ; current gutter width in columns (0 = off); text starts here
@@ -194,7 +197,7 @@ main {
     str  miscovl = "misc.ovl"
 
     ; CODE OVERLAY: the read-only text/hex file viewer (tview.ovl) in its own reserved bank 9.
-    ; Used by Help > Keyboard (views the shipped edit.hlp) and File > View (any picked file). Same
+    ; Used by Help > Keyboard (views the shipped edit.md) and File > View (any picked file). Same
     ; loadlib + extsub @bank pattern as misc.ovl; it carries its own theme.p8 copy, so we pass the
     ; theme id and it paints in EDIT's colours. $A003 = view_file(nameptr, theme_id).
     const ubyte TVIEW_BANK = edoc.ARENA_FIRST_BANK + 3      ; overlay bank 9 for tview.ovl
@@ -202,8 +205,8 @@ main {
     extsub @bank 9 $A003 = ovl_view(uword nameptr @R0, ubyte theme_id @R1)
     bool tview_ok                       ; tview.ovl loaded OK -> the viewer is available
     str  tviewovl = "tview.ovl"
-    str  keysfile = "edit.hlp"          ; the help / Keyboard Map text file, viewed by Help > Keyboard
-    str  basloadhlp = "basload.hlp"     ; the BASLOAD guide, viewed by Help > BASLOAD
+    str  keysfile = "edit.md"           ; the help / Keyboard Map text file, viewed by Help > Keyboard
+    str  basloadhlp = "basload.md"      ; the BASLOAD guide, viewed by Help > BASLOAD
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen by the picker
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
 
@@ -617,7 +620,7 @@ main {
         ; syntax colouring: classify the whole line once into hlcol[] (one colour per doc
         ; column), then the cell loop reads it. Display-only; selection/cursor still override.
         if hl_on and blen != 0
-            syntax.classify(bufptr, blen, &hlcol)
+            run_syntax(bufptr, blen)
         draw_gutter(r)                          ; line-number strip in cols [0, gutter_w)
         ; single pass: each text cell (screen col gutter_w+c) gets its char + colour
         ubyte textw = SCR_W - gutter_w
@@ -694,7 +697,7 @@ main {
             }
         }
         if hl_on and blen != 0
-            syntax.classify(bufptr, blen, &hlcol)
+            run_syntax(bufptr, blen)
         draw_gutter_dl(r, dl, shownum)
         ubyte textw = SCR_W - gutter_w
         ubyte c
@@ -1778,8 +1781,7 @@ main {
         undo_clear()                        ; fresh document -> old snapshots are invalid
         if edoc.load_file(fnbuf) {
             void strings.copy(fnbuf, filename)
-            hl_on = has_basic_ext(fnbuf)    ; auto-colour BASIC source (.basl/.bl/.bas.txt), else off
-            ln_on = hl_on                   ; and show line numbers for BASIC source too
+            apply_syntax_mode(fnbuf)        ; colour + gutter by extension (BASIC / .md / plain)
             cur_row = 0
             cur_col = 0
             top_line = 0
@@ -1792,8 +1794,7 @@ main {
             ; sets oom). Show the lines that fit, but DON'T adopt the filename - that way
             ; a later Save prompts for a new name instead of overwriting the big original.
             filename[0] = 0
-            hl_on = has_basic_ext(fnbuf)    ; still colour by the picked name's extension
-            ln_on = hl_on                   ; and show line numbers to match
+            apply_syntax_mode(fnbuf)        ; still colour by the picked name's extension
             cur_row = 0
             cur_col = 0
             top_line = 0
@@ -2099,8 +2100,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         if not edoc.load_file(fnbuf)
             return false
         void strings.copy(fnbuf, filename)
-        hl_on = has_basic_ext(fnbuf)            ; BASIC source -> colour + line numbers, like Open
-        ln_on = hl_on
+        apply_syntax_mode(fnbuf)                ; colour + gutter by extension (BASIC / .md / plain)
         if basload_err_line != 0                ; a BASLOAD error scraped off the boot screen wins over the
             line = basload_err_line - 1         ; saved cursor: jump to it. BASLOAD line#s are 1-based.
         if line >= edoc.line_count
@@ -2248,20 +2248,20 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     }
 
     sub act_keymap() {
-        ; the Keyboard Map is a shipped text file (edit.hlp) shown in the viewer, so the key list is
+        ; the Keyboard Map is a shipped text file (edit.md) shown in the viewer, so the key list is
         ; editable data instead of hand-drawn code.
         view_help(keysfile)
     }
 
     sub act_basload_help() {
-        ; the BASLOAD guide (basload.hlp), shown in the same viewer as the Keyboard Map
+        ; the BASLOAD guide (basload.md), shown in the same viewer as the Keyboard Map
         view_help(basloadhlp)
     }
 
     sub view_help(str fname) {
         ; open a shipped help text file (in the install folder) read-only in the viewer
         if not tview_ok {
-            flash_status("help viewer needs tview.ovl + the .hlp file")
+            flash_status("help viewer needs tview.ovl + the .md file")
             return
         }
         cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
@@ -2384,6 +2384,32 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     sub has_basic_ext(uword name) -> bool {
         ; the BASIC source extensions that should auto-enable syntax colouring on load
         return ends_with_ci(name, ".bas") or ends_with_ci(name, ".basl") or ends_with_ci(name, ".bl") or ends_with_ci(name, ".bas.txt")
+    }
+
+    sub run_syntax(uword buf, ubyte blen) {
+        ; classify one line into hlcol[] with the classifier hl_mode selected on open.
+        if hl_mode == HL_MD
+            syntax.classify_md(buf, blen, &hlcol)
+        else
+            syntax.classify(buf, blen, &hlcol)
+    }
+
+    sub apply_syntax_mode(uword name) {
+        ; pick the syntax mode from the file's extension: BASIC source, Markdown, or none. Also
+        ; drives the line-number gutter - on for BASIC (lines are referenced), off for Markdown prose.
+        if has_basic_ext(name) {
+            hl_on = true
+            hl_mode = HL_BASIC
+            ln_on = true
+        } else if ends_with_ci(name, ".md") {
+            hl_on = true
+            hl_mode = HL_MD
+            ln_on = false
+        } else {
+            hl_on = false
+            hl_mode = HL_BASIC
+            ln_on = false
+        }
     }
 
     sub line_match(uword src, ubyte at, ubyte tlen) -> bool {

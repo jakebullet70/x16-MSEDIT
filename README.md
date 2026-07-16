@@ -13,7 +13,7 @@ the ROM's BASLOAD tool.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.119** · © sadLogic 2026 · Open source
+> **Version 0.9.126** · © sadLogic 2026 · Open source
 
 ---
 
@@ -155,7 +155,7 @@ stands as its own word — bounded by non-alphanumeric characters — so searchi
 **File → View...** opens any picked file read-only in a scrollable text/hex viewer (a banked
 overlay, `tview.ovl`) without loading it into the document — handy for peeking at a file that's
 too big to edit. Inside the viewer: PgUp/PgDn page, `T`/`B` top/bottom, `H` toggles hex, `F` finds,
-`N`/Space find-next, `Q`/Esc quits. **Help → Keyboard** shows the `edit.hlp` help file in the same
+`N`/Space find-next, `Q`/Esc quits. **Help → Keyboard** shows the `edit.md` help file in the same
 viewer.
 
 > **Note for emulator users:** `x16emu` intercepts a few Ctrl chords before they reach the
@@ -270,7 +270,7 @@ Everything the compiler emits — the `.prg`, the `misc.ovl` / `tview.ovl` / `pi
 listing and the `.vice-mon-list` symbol file — goes into `build\`, which is gitignored. The project
 root stays source-only: no binaries are kept or committed there (the build number auto-increments,
 so a tracked `.prg` would churn on every compile). `run.bat`, `dbg.bat` and `dist.bat` all stage
-straight out of `build\` (plus the tracked `SRC\edit.hlp` / `SRC\basload.hlp` help text).
+straight out of `build\` (plus the tracked `SRC\edit.md` / `SRC\basload.md` help text).
 
 Paths to Java and 64tass are set near the top of `build.bat`; adjust them for your machine.
 After a successful build it prints a memory-usage summary (image / variables / slabs and the
@@ -284,13 +284,13 @@ run.bat              :: build, stage into run\, and launch x16emu
 
 `run.bat` builds, then stages the runtime files — `edit.prg`, the settings program `edcfg.prg`,
 the `misc.ovl` (About), `tview.ovl` (file viewer) and `picker.ovl` (Open/View file picker) overlays,
-and the `edit.hlp` help text — into
+and the `edit.md` help text — into
 `run\MSEDIT\`, while `run\` itself becomes the emulator's host filesystem root (so sample files
 there are visible to Open/Save), and boots straight into the editor. The emulator path comes from
 `LOCAL.BAT` — point `%x16%` at your `x16emu` install.
 
 On hardware, run `dist.bat` and copy the files it stages (`install.prg` plus `edit.prg`,
-`edcfg.prg`, `misc.ovl`, `tview.ovl`, `picker.ovl`, `edit.hlp`, `basload.hlp`) into one folder on the SD card, then `CD` into it
+`edcfg.prg`, `misc.ovl`, `tview.ovl`, `picker.ovl`, `edit.md`, `basload.md`) into one folder on the SD card, then `CD` into it
 and `^INSTALL`. The installer creates `/MSEDIT`, copies the programs in and writes the `/ED`
 launcher, so the editor starts from anywhere with `^/ED`.
 

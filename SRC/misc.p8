@@ -6,7 +6,7 @@
 ; so it lives here in banked RAM rather than EDIT's scarce low RAM. Named "misc" (like XFMGR2's
 ; miscutil.ovl) as the home for small cold overlay screens as more are added.
 ;
-; (The Keyboard Map used to live here too; it is now shipped as a plain-text file, edit.hlp, shown
+; (The Keyboard Map used to live here too; it is now shipped as a text file, edit.md, shown
 ; in the tview.ovl viewer - so the key list is editable data instead of hand-drawn code.)
 ;
 ; SELF-CONTAINED by design. An overlay cannot call back into main's subs (separate compilation
