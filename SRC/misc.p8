@@ -14,10 +14,16 @@
 ; shared either: the overlay imports theme.p8 and gets its own set of the colour vars, and the caller
 ; passes the theme ID so theme.apply() here paints them the same as main's.
 ;
-; Fixed entry offsets via %jmptable: $A000 = init, $A003 = help_about.
+; Also hosts ovl_prompt: the modal status-row TEXT INPUT (Save-As / Find / Replace / Go-to). It is
+; cold (only runs while a dialog is open, JSRFAR once per prompt - the key loop stays IN the overlay)
+; and was ~200 B of edit.p8's scarce low RAM. All its data (prompt string, dest buffer, ww_on flag)
+; lives in main's low RAM, which stays mapped when bank 10 is at $A000, so the overlay reads/writes it
+; directly through the pointers the caller passes - no callback trampolines needed.
 ;
-; The caller repaints the editor (full_redraw) after we return - we only draw the box and block
-; until a key.
+; Fixed entry offsets via %jmptable: $A000 = init, $A003 = help_about, $A006 = ovl_prompt.
+;
+; The caller repaints the editor (full_redraw) after we return - we only draw the box/prompt and
+; block until a key.
 
 %import textio
 %import strings
@@ -34,7 +40,7 @@ main {
     ; a module-level initialized var is emitted BEFORE the code and would shove the jump table off
     ; its fixed offsets. The screen text below is all inline literals inside subs - those are fine;
     ; it is only main's init-data that moves the table.
-    %jmptable ( main.help_about )
+    %jmptable ( main.help_about, main.ovl_prompt )
 
     const ubyte SPACE_SC = sc:' '
     const ubyte SC_TL = sc:'┌'
@@ -88,6 +94,77 @@ main {
         void wait_key()
     }
 
+    sub ovl_prompt(uword promptmsg @R0, uword dest @R1, ubyte maxlen @R2, ubyte flags @R3,
+                   ubyte theme_id @R4, uword wwptr @R5) -> ubyte {
+        ; Modal text input on the status row - the moved-out body of edit.p8's prompt_str. Returns 1 on
+        ; Enter (0 if empty and not allow_empty), 0 on Esc/Stop. Pre-fills from whatever dest holds.
+        ;   flags bit0 = allow_empty, bit1 = ww_hint (show/toggle the whole-word label).
+        ;   wwptr -> main's ww_on byte: read to draw the label, written on Commodore+W (bit0 toggle).
+        ; promptmsg/dest/wwptr all point into main's low RAM (stays mapped under bank 10) - read direct.
+        theme.apply(theme_id)                   ; our own theme.p8 copy, painted to match main
+        SCR_W = txt.width()
+        SCR_H = txt.height()
+        ubyte statusrow = SCR_H - 1
+        bool allow_empty = (flags & 1) != 0
+        bool ww_hint     = (flags & 2) != 0
+        bar_fill(statusrow, $21)                 ; one red flash so the prompt draws the eye
+        put_str_at(1, statusrow, promptmsg)
+        sys.wait(18)                             ; ~0.3s (was flash_status in main)
+        bar_fill(statusrow, theme.CB_BAR)        ; settle to the normal bar
+        put_str_at(1, statusrow, promptmsg)
+        if ww_hint
+            draw_ww_label(statusrow, wwptr)
+        ubyte base = lsb(strings.length(promptmsg)) + 2
+        ubyte n = 0                              ; pre-fill length: scan dest up to maxlen
+        while n < maxlen and @(dest + n) != 0
+            n++
+        repeat {
+            ubyte c = base
+            ubyte i = 0
+            while i < n {
+                txt.setchr(c, statusrow, txt.petscii2scr(@(dest + i)))
+                c++
+                i++
+            }
+            txt.setchr(c, statusrow, SPACE_SC)
+            txt.setclr(c, statusrow, theme.CB_CUR)
+            ubyte k = wait_key()
+            txt.setclr(c, statusrow, theme.CB_BAR)
+            when k {
+                13 -> {
+                    @(dest + n) = 0
+                    if allow_empty
+                        return 1
+                    if n != 0
+                        return 1
+                    return 0
+                }
+                27, 3 -> {
+                    @(dest) = 0
+                    return 0
+                }
+                20 -> {
+                    if n > 0 {
+                        n--
+                        txt.setchr(base + n, statusrow, SPACE_SC)
+                    }
+                }
+                179 -> {                         ; Commodore+W (ALT+W): toggle whole-word live
+                    if ww_hint {                 ; (search prompts only; 179 = alt_letter['w'])
+                        @(wwptr) ^= 1            ; flip main's ww_on (bool stored 0/1)
+                        draw_ww_label(statusrow, wwptr)
+                    }
+                }
+                else -> {
+                    if n < maxlen and k >= 32 and k <= 126 {
+                        @(dest + n) = k
+                        n++
+                    }
+                }
+            }
+        }
+    }
+
     ; ------------------------------------------------------------------ drawing (copies of edit.p8's)
 
     sub put_str_at(ubyte col, ubyte row, str s) {
@@ -125,6 +202,25 @@ main {
         ubyte c
         for c in c0 to c1
             txt.setclr(c, row, color)
+    }
+
+    sub bar_fill(ubyte row, ubyte color) {
+        ubyte c
+        for c in 0 to SCR_W - 1 {
+            txt.setclr(c, row, color)
+            txt.setchr(c, row, SPACE_SC)
+        }
+    }
+
+    sub draw_ww_label(ubyte statusrow, uword wwptr) {
+        ; whole-word On/Off indicator with the W accelerator highlighted (the live=true form of
+        ; edit.p8's draw_ww_label - the only form the input prompts use).
+        ubyte c = SCR_W - 16                    ; "Whole Word  Off" = 15 chars + a 1-col right margin
+        if @(wwptr) != 0
+            put_str_at(c, statusrow, "Whole Word  On ")
+        else
+            put_str_at(c, statusrow, "Whole Word  Off")
+        txt.setclr(c, statusrow, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
     }
 
     sub draw_box_frame(ubyte x0, ubyte y0, ubyte x1, ubyte y1) {

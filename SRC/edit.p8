@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 177         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 182         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -62,7 +62,8 @@ main {
     str filename = "?" * 40
     str fnbuf    = "?" * 42             ; input scratch for prompts
     str savebuf  = "?" * 44             ; "@:" + filename for overwrite
-    str bakname  = "?" * 44             ; "<name>.bak" built by act_make_backup
+    ; bakname (was a str*44 module buffer here) now aliases workbuf INSIDE act_make_backup - that sub
+    ; never runs a Replace, so the 256B Replace scratch is dead there. Saves 44 B of low RAM.
     str untitled = "untitled"
     bool run_basload = false            ; F5 armed the BASLOAD hand-off; the start() tail chains to it
     bool run_config = false             ; Help>Config armed the hand-off to the EDCFG settings program
@@ -242,7 +243,11 @@ main {
     const ubyte MISC_BANK = 10      ; reserved bank 10 for misc.ovl
     extsub @bank 10 $A000 = misc_init()
     extsub @bank 10 $A003 = ovl_about(ubyte theme_id @R0, uword build @R1, ubyte emu @R2)
-    bool misc_ok                        ; misc.ovl loaded OK -> the About screen is available
+    ; ovl_prompt ($A006): the modal status-row text input, moved out of low RAM into misc.ovl. Its key
+    ; loop runs entirely in-bank (one JSRFAR per prompt); prompt_str() below is a thin main-side wrapper.
+    ; flags bit0 = allow_empty, bit1 = ww_hint; wwptr -> ww_on (toggled live on Commodore+W). -> 1/0.
+    extsub @bank 10 $A006 = ovl_prompt(uword promptmsg @R0, uword dest @R1, ubyte maxlen @R2, ubyte flags @R3, ubyte theme_id @R4, uword wwptr @R5) -> ubyte @A
+    bool misc_ok                        ; misc.ovl loaded OK -> About + the input prompts are available
     str  miscovl = "misc.ovl"
 
     ; CODE OVERLAY: the read-only text/hex file viewer (tview.ovl) in its own reserved bank 11.
@@ -301,7 +306,7 @@ main {
     sub item_accel(ubyte active, ubyte key) -> ubyte {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   'v' -> return 2   's' -> return 3   'a' -> return 4   'l' -> return 5   'x' -> return 6 }
+            0 -> when key { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'x' -> return 6 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
@@ -320,7 +325,7 @@ main {
     sub accel_off(ubyte active, ubyte i) -> ubyte {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
-            0 -> when i { 4 -> return 5   5 -> return 6   6 -> return 1 }   ; Save As 'A'@5, Save All 'l'@6, Exit 'x'@1 (New/Open/View/Save @0 default)
+            0 -> when i { 2 -> return 3   4 -> return 5   5 -> return 2   6 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Exit 'x'@1 (New/Open/Save @0 default)
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
             3 -> when i { 1 -> return 5 }                       ; Dev: Make Backup 'B'@5 (Run BASLOAD 'R'@0 default)
@@ -1367,61 +1372,21 @@ main {
     }
 
     sub prompt_str(str promptmsg, uword dest, ubyte maxlen, bool allow_empty, bool ww_hint) -> bool {
-        ; modal text input on the status row. Enter -> true (false if empty and not
-        ; allow_empty); Esc/Stop -> false. Pre-fills with whatever is already in dest.
-        ; ww_hint: show the whole-word toggle on the bar and let Commodore+W flip it live.
-        flash_status(promptmsg)                 ; one red flash so the prompt draws the eye
-        bar_fill(STATUS_ROW, theme.CB_BAR)
-        put_str_at(1, STATUS_ROW, promptmsg)
+        ; modal text input on the status row. Enter -> true (false if empty and not allow_empty);
+        ; Esc/Stop -> false. Pre-fills with whatever is already in dest. ww_hint: show the whole-word
+        ; toggle on the bar and let Commodore+W flip it live.
+        ; The body lives in misc.ovl (ovl_prompt) to save low RAM - this wrapper hides the editor cursor,
+        ; packs the two bools, and JSRFARs in. All state (dest, promptmsg, ww_on) is low RAM the overlay
+        ; reads through pointers. If misc.ovl is missing the prompt is unavailable -> treat as cancelled.
+        if not misc_ok
+            return false
+        cursor_sprite_off()                     ; hide the editor cursor for the modal (was in wait_key)
+        ubyte flags = 0
+        if allow_empty
+            flags |= 1
         if ww_hint
-            draw_ww_label(true)
-        ubyte base = lsb(strings.length(promptmsg)) + 2
-        ubyte n = 0                          ; pre-fill length: scan dest up to maxlen
-        while n < maxlen and @(dest + n) != 0
-            n++
-        repeat {
-            ubyte c = base
-            ubyte i = 0
-            while i < n {
-                txt.setchr(c, STATUS_ROW, txt.petscii2scr(@(dest + i)))
-                c++
-                i++
-            }
-            txt.setchr(c, STATUS_ROW, SPACE_SC)
-            txt.setclr(c, STATUS_ROW, theme.CB_CUR)
-            ubyte k = wait_key()
-            txt.setclr(c, STATUS_ROW, theme.CB_BAR)
-            when k {
-                13 -> {
-                    @(dest + n) = 0
-                    if allow_empty
-                        return true
-                    return n != 0
-                }
-                27, 3 -> {
-                    @(dest) = 0
-                    return false
-                }
-                20 -> {
-                    if n > 0 {
-                        n--
-                        txt.setchr(base + n, STATUS_ROW, SPACE_SC)
-                    }
-                }
-                179 -> {                         ; Commodore+W (ALT+W): toggle whole-word live
-                    if ww_hint {                 ; (search prompts only; 179 = alt_letter['w'])
-                        ww_on = not ww_on
-                        draw_ww_label(true)
-                    }
-                }
-                else -> {
-                    if n < maxlen and k >= 32 and k <= 126 {
-                        @(dest + n) = k
-                        n++
-                    }
-                }
-            }
-        }
+            flags |= 2
+        return ovl_prompt(promptmsg, dest, maxlen, flags, theme.current, &ww_on) != 0
     }
 
     sub flash_status(str m) {
@@ -1554,12 +1519,15 @@ main {
     }
 
     const ubyte WIN_NAME_MAX = 16       ; Window menu: max filename chars shown after "A - "
-    str winname = "?" * 16              ; scratch for the doc name currently being drawn (<=16 chars + NUL)
+    ; winname (was a str*16 module buffer here): the doc name being drawn now aliases tmpbuf inside
+    ; window_doc_name + draw_window_item. Both alias the SAME buffer, so the name one writes the other
+    ; reads; the Window menu draws modally so tmpbuf (render scratch) isn't live then. Saves 16 B low RAM.
 
     sub window_doc_name(ubyte slot) {
         ; copy slot's filename (truncated to WIN_NAME_MAX, NUL-terminated) into winname. The ACTIVE slot's
         ; name is live in `filename`; the two INACTIVE slots keep theirs in their context block in CLIP_BANK
         ; (frozen while a doc is inactive), so read those straight from the bank.
+        alias winname = tmpbuf              ; shared render scratch (see the note above the sub)
         ubyte j = 0
         if slot == g_active_slot {
             while filename[j] != 0 and j < WIN_NAME_MAX {
@@ -1585,6 +1553,7 @@ main {
         ; paint one Window-menu row. Item 0 = "Next"; items 1..3 = documents A/B/C (slot i-1): the slot's
         ; filename, or "Open" when it has no file loaded. Drawn here (not the banked menus.ovl) because the
         ; inactive docs' names live in CLIP_BANK, which the $A000 overlay cannot map.
+        alias winname = tmpbuf              ; same buffer window_doc_name fills (see its note)
         if i == 0 {
             put_str_at(col, row, "Next         F7")
             return
@@ -2203,6 +2172,8 @@ main {
         ; the name has none). Backs up what is loaded in the editor - including unsaved edits - and
         ; deliberately leaves the document's own modified/saved state untouched: the .bak is a side
         ; copy, not a Save. An existing .bak triggers a Y/N overwrite prompt.
+        alias bakname = workbuf                 ; reuse the dead 256B Replace scratch (no Replace here)
+                                                ; instead of a dedicated 44B module buffer
         if filename[0] == 0 {
             flash_status("Open or save a file first")
             bar_fill(STATUS_ROW, theme.CB_BAR)
