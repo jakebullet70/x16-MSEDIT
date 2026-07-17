@@ -146,7 +146,11 @@ theme {
     ; The bytes inside ED are the same PETSCII our string literals compile to, so the path can be
     ; copied straight out with no re-encoding.
 
-    str  ED_NAME  = "ed"                ; the launcher, at the fsroot
+    str  ED_NAME  = "/ed"               ; the launcher, at the fsroot ROOT. ABSOLUTE ("/ed", not "ed"):
+                                        ; it must be read no matter what folder we were launched from -
+                                        ; ^/ed run from a subdir leaves cwd in that subdir, and a bare
+                                        ; "ed" would then miss the root launcher, lose the real install
+                                        ; path, and the overlays/cfg (loaded via path_to) wouldn't be found.
     str  DEF_DIR  = "/msedit/"          ; fallback when ED is missing/unparsable (absolute, like ED's path)
     str  CFG_FILE = "edit.cfg"
     str  progdir  = "?" * 32            ; install folder incl. trailing slash (empty = programs at root)
@@ -155,11 +159,12 @@ theme {
     ubyte[24] cfg_line                  ; cfg load buffer (holds the whole file: theme=N\r tab=W\r ...)
     bool dir_known = false
 
-    ; There is deliberately NO save/restore of the working directory around the disk calls below.
-    ; Both programs read the cfg while their cwd is still the fsroot they were launched from, and
-    ; the paths built by path_to() are relative to it. The chdir dance that used to guard these cost
-    ; an 84-byte path buffer in EDIT, which has under 1KB of low RAM to spare. If a caller ever needs
-    ; to read the cfg after chdir'ing away, it must hop back itself before calling.
+    ; There is deliberately NO save/restore of the working directory around the disk calls below, and
+    ; none is needed: find_progdir reads the launcher via an ABSOLUTE path ("/ed") and parses an
+    ; absolute install folder out of it (e.g. "/msedit/"), so every path path_to() builds is absolute
+    ; too - they resolve the same no matter what cwd we were launched in (^/ed from a subdir included).
+    ; The chdir dance that used to guard these cost an 84-byte path buffer in EDIT, which has under 1KB
+    ; of low RAM to spare.
 
     sub find_progdir() {
         ; parse the install folder out of the root ED launcher; called once, before the first cfg use.
