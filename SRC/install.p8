@@ -28,10 +28,10 @@ main {
     str TARGET_DIR = "msedit"                   ; install folder at the drive root
     ; edit.prg is mandatory; the rest are copied when present. misc.ovl = About screen, tview.ovl =
     ; the text/hex viewer (File>View and Help>Keyboard/BASLOAD), picker.ovl = the Open/View file
-    ; picker, edit.md / basload.md = the help text files the viewer shows. All are loaded/opened at
-    ; runtime; without them EDIT still runs and the affected menu items just report the file missing.
-    ; edit.cfg is the user's settings, PRESERVED.
-    str[9] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "menus.ovl", "edit.md", "basload.md", "edit.cfg"]
+    ; picker, menus.ovl = dropdown labels, edit.md / basload.md / hints.md = the help text files the
+    ; viewer shows. All are loaded/opened at runtime; without them EDIT still runs and the affected
+    ; menu items just report the file missing. edit.cfg is the user's settings, PRESERVED.
+    str[10] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "menus.ovl", "edit.md", "basload.md", "hints.md", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
     ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "/MSEDIT/EDIT.PRG"
