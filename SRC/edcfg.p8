@@ -29,6 +29,13 @@ main {
     const ubyte NSET = 4                ; number of setting rows (grows as settings are added)
     ubyte[4] SET_ROW = [7, 8, 10, 11]   ; GUI: Color scheme@7, Dev menu@8 (hdr row 6); Editor: Tab@10, Comment@11 (hdr row 9)
 
+    const ubyte SC_TL = sc:'┌'          ; box-drawing screen codes for the centred alert (e.g. "Saving")
+    const ubyte SC_TR = sc:'┐'
+    const ubyte SC_BL = sc:'└'
+    const ubyte SC_BR = sc:'┘'
+    const ubyte SC_H  = sc:'─'
+    const ubyte SC_V  = sc:'│'
+
     str edprog = "edit.prg"             ; EDIT, chain-loaded on the way out; theme.path_to()
                                         ; prefixes the install folder from the root ED launcher
     ubyte[24] cfg_line                  ; cfg write buffer ("theme=N\r tab=W\r ...")
@@ -36,11 +43,14 @@ main {
 
     ubyte SCR_W, SCR_H
     ubyte saved_mode                    ; screen mode we were launched in; restored on the way out
+    ubyte saved_charset                 ; charset we were launched in (1=ISO 2=upper/gfx 3=lower); restored on exit
     ubyte sel = 0                       ; highlighted setting row
     ubyte orig                          ; the theme we opened with - "dirty" is current != orig
 
     sub start() {
         saved_mode, cx16.r0L, cx16.r0H = cx16.get_screen_mode()
+        saved_charset = cx16.get_charset()  ; capture BEFORE set_screen_mode's CINT resets it (mirror EDIT),
+                                            ; so leave() can hand the original lower/upper font back to EDIT
         cx16.set_screen_mode($01)       ; 80x30 - the setting rows are laid out for the wide screen
         SCR_W = txt.width()
         SCR_H = txt.height()
@@ -67,6 +77,8 @@ main {
                 29, ' ' -> change(true)             ; cursor right / space: next value
                 157 -> change(false)                ; cursor left: previous value
                 21 -> {                             ; F10 ($15): write the settings, back to EDIT
+                    alert_box("Saving...")          ; centred alert so the save is visible before we chain out
+                    sys.wait(30)                    ; hold it ~0.5s (the write itself is near-instant)
                     if not cfg_write(theme.current) {
                         put_str_at(2, SCR_H - 3, "could not write the settings file!")
                         void wait_key()
@@ -179,6 +191,8 @@ main {
         ; chain-load EDIT: print the LOAD line, then feed CR + RUN + CR through the keyboard queue so
         ; BASIC re-reads it. Same hand-off EDIT used to get here (edit.p8 chain_load).
         cx16.set_screen_mode(saved_mode)            ; put the machine back the way we found it
+        if saved_charset >= 1 and saved_charset <= 3
+            cx16.screen_set_charset(saved_charset, 0)   ; restore the lower/upper font (CINT reset it); 0 = ROM charset
         txt.color2(1, 6)                            ; hand it back in stock BASIC colours
         txt.chrout($93)                             ; clear screen, cursor home
         txt.nl()
@@ -258,6 +272,46 @@ main {
         put_str_at(2, row, s)
         set_color_run(2, 2 + strings.length(s) - 1, row, theme.CB_MENUSEL)
     }
+
+    sub alert_box(str msg) {
+        ; a small centred message box (e.g. "Saving...") drawn over the settings screen, in the box
+        ; colours of the current theme (same look as EDIT's popups).
+        ubyte mlen = lsb(strings.length(msg))
+        ubyte w = mlen + 18                         ; msg + 2 spaces + 1 border each side, + 12 wider
+        ubyte x0 = (SCR_W - w) / 2
+        ubyte x1 = x0 + w - 1
+        ubyte y0 = SCR_H / 2 - 2
+        ubyte y1 = y0 + 4                            ; 5 rows tall
+        ubyte r
+        ubyte c
+        for r in y0 to y1 {                          ; fill
+            set_color_run(x0, x1, r, theme.CB_BOX)
+            for c in x0 to x1
+                txt.setchr(c, r, sc:' ')
+        }
+        txt.setchr(x0, y0, SC_TL)                    ; corners + edges
+        txt.setchr(x1, y0, SC_TR)
+        txt.setchr(x0, y1, SC_BL)
+        txt.setchr(x1, y1, SC_BR)
+        for c in x0 + 1 to x1 - 1 {
+            txt.setchr(c, y0, SC_H)
+            txt.setchr(c, y1, SC_H)
+        }
+        for r in y0 + 1 to y1 - 1 {
+            txt.setchr(x0, r, SC_V)
+            txt.setchr(x1, r, SC_V)
+        }
+        set_color_run(x0, x1, y0, theme.CB_BORDER)
+        set_color_run(x0, x1, y1, theme.CB_BORDER)
+        for r in y0 + 1 to y1 - 1 {
+            txt.setclr(x0, r, theme.CB_BORDER)
+            txt.setclr(x1, r, theme.CB_BORDER)
+        }
+        ubyte mcol = x0 + (w - mlen) / 2                        ; centred message...
+        ubyte mrow = (y0 + y1) / 2
+        put_str_at(mcol, mrow, msg)
+        set_color_run(mcol, mcol + mlen - 1, mrow, theme.CB_BOX)   ; ...recoloured to the box colour
+    }                                                           ; (txt.print stamped it with the body colour)
 
     sub put_str_at(ubyte col, ubyte row, str s) {
         txt.plot(col, row)
