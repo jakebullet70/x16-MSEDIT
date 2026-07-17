@@ -50,6 +50,14 @@ xarena {
         high_bank = first_bank
     }
 
+    sub set_bounds(ubyte lo, ubyte hi) {
+        ; Point the allocator at a document's content sub-range. Used by the multi-document
+        ; switch: each doc owns a fixed [first_bank..max_bank] third of the content banks. The
+        ; bump POSITION (cur_bank/cur_ptr/high_bank) is saved/restored separately per document.
+        first_bank = lo
+        max_bank   = hi
+    }
+
     sub alloc(uword nbytes) -> bool {
         ; Reserve nbytes; on success result_bank/result_off point at the space.
         ; nbytes must be <= (WIN_END - WIN_START); callers only store small records.
