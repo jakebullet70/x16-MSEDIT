@@ -38,7 +38,12 @@ operator and the model. If you're curious what it looks like to steer an LLM thr
 - **Document lives in banked RAM.** The text isn't capped by the ~38 KB of low RAM — lines
   are stored in the X16's banked HIRAM (`$A000+`) through a small storage layer (`edoc` +
   `xarena`), so documents grow into the extra RAM banks the machine has installed.
-- **MS-DOS EDIT look & feel** — menu bar, dropdown menus (File / Edit / Search / Dev / Help),
+- **Three documents at once.** Hold three files open together — **A** (up to 6000 lines) plus
+  **B** and **C** (up to 2500 each) — and switch between them with **F7** or the **Window** menu.
+  Each document keeps its own cursor, scroll position, undo history and view settings, and they
+  share the clipboard so you can copy in one and paste in another (see
+  [Multiple documents](#multiple-documents)).
+- **MS-DOS EDIT look & feel** — menu bar, dropdown menus (File / Edit / Search / Dev / Window / Help),
   drop-shadowed popups, and a live status bar (line, column, INS/OVR, total lines).
 - **Adopts your screen mode** — boots into 80×30 or 40×30 to match however the machine
   started, and lays the UI out to fit.
@@ -147,6 +152,7 @@ stands as its own word — bounded by non-alphanumeric characters — so searchi
 | Ctrl+O | Open (file picker) |
 | F2 | Save |
 | F5 | Run through BASLOAD |
+| F7 | Next document (cycle A / B / C) |
 | F1 | About |
 
 **Save As** asks before overwriting an existing file. Prompts that appear on the status bar
@@ -156,7 +162,8 @@ stands as its own word — bounded by non-alphanumeric characters — so searchi
 overlay, `tview.ovl`) without loading it into the document — handy for peeking at a file that's
 too big to edit. Inside the viewer: PgUp/PgDn page, `T`/`B` top/bottom, `H` toggles hex, `F` finds,
 `N`/Space find-next, `Q`/Esc quits. **Help → Keyboard** shows the `edit.md` help file in the same
-viewer.
+viewer, and **Help → Hints-Tips** (shown when the Dev menus are enabled) opens a `hints.md` tips
+file the same way.
 
 > **Note for emulator users:** `x16emu` intercepts a few Ctrl chords before they reach the
 > program — `Ctrl+F` (fullscreen), `Ctrl+V` (host paste) and `Ctrl+R` (reset). EDIT provides
@@ -179,8 +186,8 @@ A few things worth knowing about how it works:
 - **Undo survives a Save.** Saving no longer discards the history — you can save and still walk
   your edits back afterward.
 - **Stored in banked RAM.** Snapshots live in the same banked-RAM arena as the document (up to
-  32 steps deep), so a deep history costs no scarce low RAM. A Replace-all or paste that changes
-  more than 32 lines at once is the one case that can't be fully tracked, so it clears history.
+  24 steps deep), so a deep history costs no scarce low RAM. A Replace-all or paste that changes
+  more than 24 lines at once is the one case that can't be fully tracked, so it clears history.
 - **A fresh edit clears the redo stack** — the usual editor behaviour.
 - **History is cleared only when the whole document is replaced** — starting a **New** document
   or **Opening** a file. After that, Ctrl+Z reports *"Nothing to undo."*
@@ -218,6 +225,32 @@ disk is never changed (no newlines are inserted). Instead of scrolling sideways,
 line stacked. Arrow keys move by the **visual** rows you see, so Up/Down step through a wrapped
 line's pieces, and the current line's highlight band covers all of its wrapped rows. Turn it off to
 go back to single-row lines with horizontal scrolling.
+
+## Multiple documents
+
+EDIT can hold **three documents open at once** — **A**, **B** and **C** — instead of just one.
+Press **F7** (or use the **Window** menu) to cycle **A → B → C → A**. Only one is on screen at a
+time, but the other two stay fully loaded in RAM, so switching is instant and nothing is written to
+disk in between.
+
+- **Asymmetric capacity.** Document **A** holds up to **6000 lines**; **B** and **C** up to **2500**
+  each. The three get their own disjoint banks for line storage, so a big main file and two smaller
+  side files coexist. (On a 512 KB machine the split is tight; a 2 MB machine has room to spare.)
+- **Each document is independent.** Every slot keeps its own **cursor and scroll position**, its own
+  **undo / redo history**, and its own **view settings** (syntax color, line numbers, word wrap) and
+  **selection**. **New**, **Open** and **Save** act only on the document you're looking at — the other
+  two are untouched.
+- **The Window menu** lists all three by filename (or *"Open"* when a slot is still empty); choosing an
+  empty slot drops you straight into the Open picker. The status bar marks which document is active and
+  flags any of the others that have unsaved changes.
+- **Shared clipboard.** Cut/copy in one document and paste into another — the clipboard is common to
+  all three.
+- **Quitting checks all three.** **File ▸ Exit** walks every modified document and prompts to save it,
+  so unsaved work in a background slot isn't lost; cancelling any prompt aborts the quit.
+
+Under the hood only the active document's state is "live"; the other two are parked as compact
+**context blocks in banked RAM**, so a second and third document cost essentially no scarce low RAM.
+Because each slot owns separate content banks, the three undo histories are isolated for free.
 
 ## Run through BASLOAD
 
@@ -290,7 +323,8 @@ there are visible to Open/Save), and boots straight into the editor. The emulato
 `LOCAL.BAT` — point `%x16%` at your `x16emu` install.
 
 On hardware, run `dist.bat` and copy the files it stages (`install.prg` plus `edit.prg`,
-`edcfg.prg`, `misc.ovl`, `tview.ovl`, `picker.ovl`, `edit.md`, `basload.md`) into one folder on the SD card, then `CD` into it
+`edcfg.prg`, `misc.ovl`, `tview.ovl`, `picker.ovl`, `menus.ovl`, `edit.md`, `basload.md`, `hints.md`)
+into one folder on the SD card, then `CD` into it
 and `^INSTALL`. The installer creates `/MSEDIT`, copies the programs in and writes the `/ED`
 launcher, so the editor starts from anywhere with `^/ED`.
 
