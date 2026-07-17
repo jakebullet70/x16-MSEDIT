@@ -28,10 +28,11 @@
 
 main {
     const ubyte TEXT_TOP   = 1          ; first text-area row (row 0 is the menu bar)
-    const ubyte NMENU      = 5
+    const ubyte NMENU       = 6          ; File Edit Search Dev Window Help
+    const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 161         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 174         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -186,6 +187,9 @@ main {
     uword g_ctxp                                 ; running pointer into the context bank during a transfer
     const uword CTX_BASE = $A400                 ; context blocks sit above the 1KB clipboard ($A000-$A3FF)
     const uword CTX_SIZE = 512                   ; bytes reserved per doc context (actual 466 at depth 24)
+    const ubyte CTX_FNAME_OFF = 18               ; byte offset of the 41-byte filename WITHIN a context block
+                                                 ; (= sum of CTX_LEN[0..12]); the Window menu reads inactive
+                                                 ; docs' names from here - keep in sync if the CTX order changes
     ; the per-document context is this ordered list of (address, byte-length) fields. save_ctx/load_ctx
     ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 466.
     const ubyte NCTXF = 42
@@ -266,8 +270,8 @@ main {
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen by the picker
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
 
-    ubyte[NMENU] menu_col = [2, 9, 16, 25, 31]   ; start column of each top-menu title
-    ubyte[NMENU] menu_len = [4, 4, 6, 3, 4]       ; File, Edit, Search, Dev, Help
+    ubyte[NMENU] menu_col = [1, 7, 13, 21, 26, 34]  ; start col of each title: File@1, 2 spaces between titles
+    ubyte[NMENU] menu_len = [4, 4, 6, 3, 6, 4]       ; File, Edit, Search, Dev, Window, Help
 
     ; ALT is the Commodore key, so ALT+letter arrives as a graphics code $A1..$BF (161..191);
     ; this maps each (indexed by code-161) back to its base letter. 0 = not a letter.
@@ -277,7 +281,7 @@ main {
         'a','e','r','w','h','j','l','y','u','o', 0 ,'f','c','x','v','b' ]
 
     sub menu_for_letter(ubyte letter) -> ubyte {
-        ; top-menu accelerator: F/E/S/D/H -> menu index 0..4, else 255
+        ; top-menu accelerator: F/E/S/D/W/H -> menu index, else 255
         when letter {
             'f' -> return 0
             'e' -> return 1
@@ -287,7 +291,8 @@ main {
                     return 3
                 return 255
             }
-            'h' -> return 4
+            'w' -> return 4
+            'h' -> return 5
         }
         return 255
     }
@@ -299,6 +304,7 @@ main {
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
+            4 -> when key { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
             else -> {                        ; Help. Dev shown: H/B/C/A -> 0/1/2/3. Dev hidden (no BASLOAD): H/C/A -> 0/1/2
                 if theme.show_dev {
                     when key { 'h' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }
@@ -326,15 +332,10 @@ main {
         scan_basload_error(cx16.r0L, cx16.r0H)  ; read the still-intact boot screen (X=width,Y=height) for a
                                                 ; BASLOAD error line BEFORE the mode switch below wipes it
         snapshot_machine_state()                ; capture charset + text colour while still in the booted mode
-        ; adopt the column width the machine booted in: 40-col -> 40x30, else 80x30.
-        ; both normalize to a 30-row layout; the UI lays itself out from SCR_W/SCR_H below.
-        ; NOTE: use the booted MODE byte, not txt.width() - at startup conio still reports
-        ; its 80-col default even when VERA is in a 40-col mode. X16 40-col text modes are
-        ; $02 (40x60), $03 (40x30), $04 (40x15).
-        if saved_mode >= $02 and saved_mode <= $04
-            cx16.set_screen_mode($03)           ; 40x30
-        else
-            cx16.set_screen_mode($01)           ; 80x30
+        ; 80-column only: force 80x30 regardless of the booted mode (40-col is NOT supported). The
+        ; original mode is captured above (saved_mode) and put back on exit, so a machine booted in
+        ; 40-col still returns to it. The UI lays itself out from SCR_W/SCR_H below.
+        cx16.set_screen_mode($01)               ; 80x30
         SCR_W = txt.width()
         SCR_H = txt.height()
         TEXT_ROWS  = SCR_H - 2
@@ -359,10 +360,12 @@ main {
         theme.apply(theme.cfg_read())   ; colour scheme from the install folder's edit.cfg (missing -> Classic).
                                         ; Read here, while the cwd is still the fsroot we launched in - theme's
                                         ; paths are relative to it and it does no chdir of its own.
-        if not theme.show_dev
-            menu_col[4] = menu_col[3]    ; Dev menu hidden -> slide Help left into Dev's slot (no bar gap).
-                                        ; show_dev is fixed for the session (only EDCFG changes it), so this
-                                        ; one-time column overwrite is safe; Dev(3) is then never drawn/opened.
+        if not theme.show_dev {
+            menu_col[4] = menu_col[3]                     ; Dev hidden -> Window slides into Dev's slot, and
+            menu_col[5] = menu_col[4] + menu_len[4] + 2   ; Help follows Window (2-space gap). show_dev
+        }                                                 ; is fixed for the session (only EDCFG changes it),
+                                                          ; so this one-time overwrite is safe; Dev(3) is then
+                                                          ; never drawn/opened.
 
         ; load the misc overlay (About) into its reserved bank, from the install folder (same place
         ; edit.cfg came from - we are still in the launch cwd). A missing misc.ovl is not fatal:
@@ -1195,7 +1198,7 @@ main {
         if fl == 0
             dl = lsb(strings.length(untitled))
         ubyte startcol = SCR_W - dl - extra - 1
-        ; don't overwrite the menu titles when the bar is narrow (40-col)
+        ; don't overwrite the menu titles when the filename is long
         if startcol < menu_col[NMENU - 1] + menu_len[NMENU - 1]
             return
         if fl == 0
@@ -1212,8 +1215,9 @@ main {
         put_str_at(menu_col[1], 0, "Edit")
         put_str_at(menu_col[2], 0, "Search")
         if theme.show_dev
-            put_str_at(menu_col[3], 0, "Dev")      ; hidden when show_dev is off (Help sits at its column)
-        put_str_at(menu_col[4], 0, "Help")
+            put_str_at(menu_col[3], 0, "Dev")      ; hidden when show_dev is off (Window/Help slide left)
+        put_str_at(menu_col[4], 0, "Window")
+        put_str_at(menu_col[5], 0, "Help")
         draw_filename_title()
         if active != 255 {
             ubyte x
@@ -1221,7 +1225,8 @@ main {
                 txt.setclr(x, 0, theme.CB_MENUSEL)
         }
         ; highlight each title's accelerator letter (F/E/S/D/H, always the first char); skip Dev if hidden
-        ubyte mi
+        ;ubyte mi
+        alias mi = x
         for mi in 0 to NMENU - 1 {
             if theme.show_dev or mi != 3 {
                 ubyte base = theme.CB_BAR
@@ -1241,10 +1246,6 @@ main {
         put_str_at(col, STATUS_ROW, "  Col ")
         col += 6
         col = put_uw_at(col, STATUS_ROW, cur_col + 1)
-        if modified {
-            put_str_at(col, STATUS_ROW, " *")
-            col += 2
-        }
         if ovr_mode
             put_str_at(col, STATUS_ROW, "  OVR")
         else
@@ -1262,29 +1263,37 @@ main {
                 txt.setclr(col + d, STATUS_ROW, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
         }
         col += 4
-        ; right-side menu hint (short form when narrow)
-        ubyte hint_col
-        if SCR_W >= 80 {
-            hint_col = SCR_W - 13
-            put_str_at(hint_col, STATUS_ROW, "Esc/Alt=Menu")
-        } else {
-            hint_col = SCR_W - 9
-            put_str_at(hint_col, STATUS_ROW, "Alt=Menu")
-        }
-        ; document line count, centered on the bar (drawn only if it clears the cursor
-        ; info on the left and the menu hint on the right)
-        uword lc = edoc.line_count
-        ubyte digits = 1
-        uword t = lc
+        ; right-side menu hint
+        ubyte hint_col = SCR_W - 13
+        put_str_at(hint_col, STATUS_ROW, "Esc/Alt=Menu")
+        ; "Total lines <doc lines> of <slot capacity>", centered on the bar (drawn only if it clears the
+        ; cursor info on the left and the menu hint on the right). A '*' sits 2 columns to its left when
+        ; modified. NOT the current line (the gutter shows that) - this is the doc's size vs its cap.
+        uword lcnt = edoc.line_count
+        uword lmax = edoc.max_lines         ; active slot's cap: 6000 for Doc A, 2500 for B/C
+        alias cdig = d              ; reuse the ABC-loop counter's byte (dead now) - saves scarce low RAM
+        cdig = 1
+        uword t = lcnt
         while t >= 10 {
-            digits++
+            cdig++
             t /= 10
         }
-        ubyte lwidth = 12 + digits          ; "Total Lines " + the number
-        ubyte lstart = (SCR_W - lwidth) / 2
+        ubyte tdig = 1
+        t = lmax
+        while t >= 10 {
+            tdig++
+            t /= 10
+        }
+        ubyte lwidth = 16 + cdig + tdig     ; "Total lines " (12) + count + " of " (4) + cap
+        ubyte lstart = (SCR_W - lwidth) / 2 + 5      ; nudged 5 cols right of centre
+        alias c2 = lwidth           ; reuse lwidth's byte (dead after the guard below) - saves scarce low RAM
         if lstart > col + 1 and lstart + lwidth < hint_col {
-            put_str_at(lstart, STATUS_ROW, "Total Lines ")
-            void put_uw_at(lstart + 12, STATUS_ROW, lc)
+            if modified
+                put_str_at(lstart - 2, STATUS_ROW, "*")     ; modified marker, 2 cols left of the block
+            put_str_at(lstart, STATUS_ROW, "Total lines ")
+            c2 = put_uw_at(lstart + 12, STATUS_ROW, lcnt)
+            put_str_at(c2, STATUS_ROW, " of ")
+            void put_uw_at(c2 + 4, STATUS_ROW, lmax)
         }
     }
 
@@ -1538,13 +1547,64 @@ main {
         return row
     }
 
+    const ubyte WIN_NAME_MAX = 16       ; Window menu: max filename chars shown after "A - "
+    str winname = "?" * 16              ; scratch for the doc name currently being drawn (<=16 chars + NUL)
+
+    sub window_doc_name(ubyte slot) {
+        ; copy slot's filename (truncated to WIN_NAME_MAX, NUL-terminated) into winname. The ACTIVE slot's
+        ; name is live in `filename`; the two INACTIVE slots keep theirs in their context block in CLIP_BANK
+        ; (frozen while a doc is inactive), so read those straight from the bank.
+        ubyte j = 0
+        if slot == g_active_slot {
+            while filename[j] != 0 and j < WIN_NAME_MAX {
+                winname[j] = filename[j]
+                j++
+            }
+        } else {
+            uword src = CTX_BASE + (slot as uword) * CTX_SIZE + CTX_FNAME_OFF
+            cx16.push_rambank(CLIP_BANK)
+            while j < WIN_NAME_MAX {
+                ubyte ch = @(src + j)
+                if ch == 0
+                    break
+                winname[j] = ch
+                j++
+            }
+            cx16.pop_rambank()
+        }
+        winname[j] = 0
+    }
+
+    sub draw_window_item(ubyte i, ubyte col, ubyte row) {
+        ; paint one Window-menu row. Item 0 = "Next"; items 1..3 = documents A/B/C (slot i-1): the slot's
+        ; filename, or "Open" when it has no file loaded. Drawn here (not the banked menus.ovl) because the
+        ; inactive docs' names live in CLIP_BANK, which the $A000 overlay cannot map.
+        if i == 0 {
+            put_str_at(col, row, "Next         F7")
+            return
+        }
+        ubyte slot = i - 1
+        when slot {
+            0 -> put_str_at(col, row, "A - ")
+            1 -> put_str_at(col, row, "B - ")
+            else -> put_str_at(col, row, "C - ")
+        }
+        window_doc_name(slot)
+        if winname[0] == 0
+            put_str_at(col + 4, row, "Open")
+        else
+            put_str_at(col + 4, row, winname)
+    }
+
     sub draw_dropdown_item(ubyte active, ubyte x0, ubyte x1, ubyte i, ubyte sel) {
         ; paint ONE dropdown item row in its current selected/unselected state. Used both by the
         ; full draw and by the up/down navigation, which repaints only the two rows that change.
         ubyte row = dropdown_row(active, i)
         ubyte base = theme.CB_BAR
         set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
-        if menus_ok
+        if active == WINDOW_MENU
+            draw_window_item(i, x0 + 2, row)                    ; dynamic A/B/C doc names - drawn by main
+        else if menus_ok
             mnu_item(active, i, x0 + 2, row, menu_flags())      ; item label text lives in menus.ovl
         if i == sel {
             set_color_run(x0 + 1, x1 - 1, row, theme.CB_MENUSEL)   ; selected row: reverse so it pops
@@ -1576,6 +1636,7 @@ main {
         when active {
             1 -> return 8       ; Edit: line ops (Undo..Move Down) | display toggle (Word Wrap)
             3 -> return 4       ; Dev:  actions (Run BASLOAD, Make Backup, comment ops) | view toggles (Syntax, Line#)
+            WINDOW_MENU -> return 0   ; Window: Next | documents A/B/C
         }
         return 255
     }
@@ -1589,13 +1650,14 @@ main {
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
             3 -> { n = 7  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
+            WINDOW_MENU -> { n = 4  boxw = 20 }   ; Window (Next + docs A/B/C: "A - <name>")
         }
-        if active == 4 and not theme.show_dev
+        if active == 5 and not theme.show_dev
             n = 3                           ; Dev hidden -> Help drops BASLOAD, leaving Help/Config/About
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
         ubyte x1 = x0 + boxw + 3
-        if x1 > SCR_W - 1 {                 ; shift left so the box stays on screen (40-col)
+        if x1 > SCR_W - 1 {                 ; safety: keep a wide dropdown box on screen
             ubyte over = x1 - (SCR_W - 1)
             x0 -= over
             x1 = SCR_W - 1
@@ -1688,6 +1750,12 @@ main {
                     4 -> comment_apply(2)       ; uncomment the selected block (strip REM)
                     5 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
                     else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
+                }
+            }
+            WINDOW_MENU -> {                ; Window
+                when choice {
+                    0 -> switch_doc()                       ; Next: cycle A->B->C->A
+                    else -> act_window_goto(choice - 1)     ; A/B/C -> slot 0/1/2 (opens the picker if empty)
                 }
             }
             else -> {                       ; Help (choice is a displayed row; map past a hidden BASLOAD)
@@ -1893,6 +1961,14 @@ main {
         ; cycle forward until `target` is the active doc (switch_doc only advances). No-op if already there.
         while g_active_slot != target
             switch_doc()
+    }
+
+    sub act_window_goto(ubyte slot) {
+        ; Window menu: make `slot` the active document. If that doc has no file loaded (untitled), drop
+        ; straight into the Open picker so the "Open" row does what it says.
+        goto_slot(slot)
+        if filename[0] == 0
+            act_open()
     }
 
     sub act_new() {
@@ -2327,8 +2403,10 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     sub restore_run_state() -> bool {
         ; if the restart-state file exists (from a BASLOAD hand-off), reopen that document at the
         ; saved cursor line and consume the file. Returns true if it reopened a document.
-        if not diskio.f_open(runstate)
-            return false
+        if not diskio.f_open(runstate) {
+            void diskio.status()        ; no ed.run on a normal launch: drop the FILE NOT FOUND DOS error,
+            return false                ; else the drive error LED blinks (as the overlay loads above do)
+        }
         uword n = diskio.f_read(&tmpbuf, 255)
         diskio.f_close()
         diskio.delete(runstate)                 ; one-shot
