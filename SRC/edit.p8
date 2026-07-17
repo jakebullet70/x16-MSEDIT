@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 147         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 149         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -374,7 +374,11 @@ main {
             editor_key(k)
         }
 
-        if startdir[0] != 0             ; restore the working dir we started in
+        ; Restore the launch dir ONLY on a normal exit. The BASLOAD/Config hand-offs must keep the cwd
+        ; at the DOCUMENT's directory: a file opened from a subfolder leaves the picker's cwd there with
+        ; a BARE filename, and BASLOAD"name" / ed.run are resolved relative to the cwd - chdir'ing back
+        ; to startdir here would make BASLOAD (and the F8 return-trip reload) look in the wrong folder.
+        if startdir[0] != 0 and not run_config and not run_basload
             diskio.chdir(startdir)
         cursor_sprite_off()                     ; don't leave our cursor sprite on for the next program
         txt.clear_screen()
@@ -2091,7 +2095,9 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         tmpbuf[2] = msb(cur_row)
         void diskio.f_write(&tmpbuf, 3)
         void diskio.f_write(&fksnap, 99)        ; carry the fkey snapshot across the reload
-        diskio.f_close_w()
+        ubyte sdl = lsb(strings.length(startdir))   ; ...then the ORIGINAL launch dir (NUL-terminated) so
+        void diskio.f_write(startdir, sdl + 1)      ; the reload restores IT on exit, not the subfolder the
+        diskio.f_close_w()                          ; document was opened from (cwd stays there for BASLOAD)
     }
 
     sub restore_run_state() -> bool {
@@ -2122,6 +2128,19 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
             while f < 99 {
                 fksnap[f] = tmpbuf[fk + f]
                 f++
+            }
+            ; the ORIGINAL launch dir (NUL-terminated) follows the fkey snapshot. Override the startdir
+            ; captured from the current cwd - which, after a BASLOAD/Config hand-off, is the document's
+            ; subfolder - so the final exit returns the shell to where EDIT was FIRST launched.
+            ubyte sd = fk + 99
+            if sd < n {                         ; guard old files that predate the launch-dir field
+                ubyte s = 0
+                while sd < n and tmpbuf[sd] != 0 and s < 81 {
+                    startdir[s] = tmpbuf[sd]
+                    s++
+                    sd++
+                }
+                startdir[s] = 0
             }
         } else {
             snapshot_fkeys()                    ; old/short file: fall back to the live table
