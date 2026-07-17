@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 160         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 161         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -145,7 +145,8 @@ main {
     bool clip_line
 
     ; ---------- undo / redo (per-line snapshots kept in banked RAM) ----------
-    const ubyte UNDO_DEPTH = 32
+    const ubyte UNDO_DEPTH = 24         ; per-doc undo/redo history depth (trimmed from 32 to reclaim low
+                                        ; RAM - each level costs 16 B across the two rings, ~128 B for 8)
     const ubyte OP_REPLACE = 1          ; line content changed; snapshot = old content
     const ubyte OP_ADDLINE = 2          ; a line was inserted; apply => delete it (no snapshot)
     const ubyte OP_DELLINE = 3          ; a line was deleted; snapshot = its old content
@@ -184,9 +185,9 @@ main {
     ubyte g_active_slot = 0                      ; the live document: 0=A, 1=B, 2=C
     uword g_ctxp                                 ; running pointer into the context bank during a transfer
     const uword CTX_BASE = $A400                 ; context blocks sit above the 1KB clipboard ($A000-$A3FF)
-    const uword CTX_SIZE = 640                   ; bytes reserved per doc context (actual 594)
+    const uword CTX_SIZE = 512                   ; bytes reserved per doc context (actual 466 at depth 24)
     ; the per-document context is this ordered list of (address, byte-length) fields. save_ctx/load_ctx
-    ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 594.
+    ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 466.
     const ubyte NCTXF = 42
     uword[NCTXF] CTX_ADDR = [
         &edoc.line_count, &edoc.oom, &xarena.cur_bank, &xarena.cur_ptr, &xarena.high_bank,
@@ -206,8 +207,8 @@ main {
         1, 1, 2, 1, 2, 2, 1, 1,
         2, 1,
         2, 1, 1,
-        32, 64, 64, 32, 64,
-        32, 64, 64, 32, 64 ]
+        UNDO_DEPTH, UNDO_DEPTH*2, UNDO_DEPTH*2, UNDO_DEPTH, UNDO_DEPTH*2,
+        UNDO_DEPTH, UNDO_DEPTH*2, UNDO_DEPTH*2, UNDO_DEPTH, UNDO_DEPTH*2 ]
 
     ; CODE OVERLAY: the Open/View file picker (picker.ovl) in reserved bank 8. Its directory-record
     ; store lives in a SEPARATE dedicated bank (RECORDS_BANK) - an overlay running at $A000 can't map a

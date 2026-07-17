@@ -37,7 +37,8 @@ edoc {
     uword line_count
     bool  oom                           ; set if an allocation failed (document full)
 
-    uword iobuf = memory("iobuf", 512, 0)   ; disk read chunk buffer (main RAM)
+    uword iobuf = memory("iobuf", 256, 0)   ; disk read chunk buffer (main RAM). 256 = the load_file
+                                            ; read size below; was 512 (over-allocated - only 256 used).
     ubyte[256] linebuf                       ; scratch: assembling / reading one line
 
     ; result of the last store(): far pointer to the new record
