@@ -19,23 +19,28 @@ SET BUILDDIR=%~dp0build
 SET RUNDIR=%~dp0run
 SET PROGDIR=%RUNDIR%\MSEDIT
 IF NOT EXIST "%PROGDIR%" MKDIR "%PROGDIR%"
-COPY /Y "%BUILDDIR%\edit.prg" "%PROGDIR%\edit.prg" >NUL
+REM Stage with UPPERCASE names so the X16 DIR listing matches the release (and how the X16 itself
+REM writes files: lowercase source literals encode to upper-case host names). COPY onto an existing
+REM lower-case entry keeps the OLD case, so wipe the staged program files first to force the rename.
+REM EDIT.CFG (user settings, app-written = already upper) is deliberately NOT deleted.
+DEL /Q "%PROGDIR%\*.prg" "%PROGDIR%\*.ovl" "%PROGDIR%\*.md" 2>NUL
+COPY /Y "%BUILDDIR%\edit.prg" "%PROGDIR%\EDIT.PRG" >NUL
 REM    ...the misc overlay - About screen (EDIT loads MSEDIT/misc.ovl into bank 8 at startup)...
-IF EXIST "%BUILDDIR%\misc.ovl" COPY /Y "%BUILDDIR%\misc.ovl" "%PROGDIR%\misc.ovl" >NUL
+IF EXIST "%BUILDDIR%\misc.ovl" COPY /Y "%BUILDDIR%\misc.ovl" "%PROGDIR%\MISC.OVL" >NUL
 REM    ...the text/hex viewer overlay (bank 9)...
-IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\tview.ovl" >NUL
+IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\TVIEW.OVL" >NUL
 REM    ...the Open/View file-picker overlay (bank 6)...
-IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\picker.ovl" >NUL
+IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\PICKER.OVL" >NUL
 REM    ...the dropdown-menu label overlay (bank 11)...
-IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\menus.ovl" >NUL
+IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\MENUS.OVL" >NUL
 REM    ...and the help text files the viewer shows for Help > Keyboard / Help > BASLOAD.
-IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\edit.md"    >NUL
-IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\basload.md" >NUL
+IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\EDIT.MD"    >NUL
+IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\BASLOAD.MD" >NUL
 
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
 CALL "%~dp0build.bat" edcfg.p8
 IF ERRORLEVEL 1 GOTO :EOF
-COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\edcfg.prg" >NUL
+COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\EDCFG.PRG" >NUL
 
 REM 2b) write the /ED root launcher (a tokenized `10 LOAD"/MSEDIT/EDIT.PRG"`), if absent.
 REM     After File>Run BASLOAD (F5), EDIT arms SHIFT+RUN to the DOS-wedge command ^/ED, which

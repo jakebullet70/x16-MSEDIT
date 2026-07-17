@@ -58,14 +58,20 @@ REM    the editor sees, holding the documents and ed.run)
 SET RUNDIR=%~dp0run
 SET PROGDIR=%RUNDIR%\MSEDIT
 IF NOT EXIST "%PROGDIR%" MKDIR "%PROGDIR%"
-COPY /Y "%PRGFILE%" "%PROGDIR%\%NAME%.prg" >NUL
-IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\edcfg.prg" >NUL
-IF EXIST "%BUILDDIR%\misc.ovl"  COPY /Y "%BUILDDIR%\misc.ovl"  "%PROGDIR%\misc.ovl"  >NUL
-IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\tview.ovl" >NUL
-IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\picker.ovl" >NUL
-IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\menus.ovl" >NUL
-IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\edit.md"  >NUL
-IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\basload.md" >NUL
+REM Stage with UPPERCASE names (match the release + how the X16 writes files). COPY keeps an existing
+REM entry's case, so wipe the staged program files first; EDIT.CFG (user settings) is left alone.
+DEL /Q "%PROGDIR%\*.prg" "%PROGDIR%\*.ovl" "%PROGDIR%\*.md" 2>NUL
+REM uppercase %NAME% for the .prg target (batch has no upper-case operator - substitute letter by letter)
+SET "UNAME=%NAME%"
+FOR %%A IN ("a=A" "b=B" "c=C" "d=D" "e=E" "f=F" "g=G" "h=H" "i=I" "j=J" "k=K" "l=L" "m=M" "n=N" "o=O" "p=P" "q=Q" "r=R" "s=S" "t=T" "u=U" "v=V" "w=W" "x=X" "y=Y" "z=Z") DO CALL SET "UNAME=%%UNAME:%%~A%%"
+COPY /Y "%PRGFILE%" "%PROGDIR%\%UNAME%.PRG" >NUL
+IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\EDCFG.PRG" >NUL
+IF EXIST "%BUILDDIR%\misc.ovl"  COPY /Y "%BUILDDIR%\misc.ovl"  "%PROGDIR%\MISC.OVL"  >NUL
+IF EXIST "%BUILDDIR%\tview.ovl" COPY /Y "%BUILDDIR%\tview.ovl" "%PROGDIR%\TVIEW.OVL" >NUL
+IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\PICKER.OVL" >NUL
+IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\MENUS.OVL" >NUL
+IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\EDIT.MD"  >NUL
+IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\BASLOAD.MD" >NUL
 
 REM 2b) the /ED root launcher, same as run.bat (SHIFT+RUN after F5 BASLOAD reloads EDIT)
 IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,25,8,10,0,147,34,47,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"
