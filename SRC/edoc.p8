@@ -19,23 +19,26 @@
 edoc {
     %option ignore_unused
 
-    const uword MAX_LINES = 10000
+    uword max_lines = 6000              ; per-doc line cap. A VARIABLE now (was const 10000): the three
+                                        ; documents have different caps (6000 / 2500 / 2500) and the editor
+                                        ; sets this per slot on every switch (see edit.p8 SLOT_MAX_LINES).
     const ubyte MAX_LEN   = 250         ; max chars per line (1-byte length prefix)
 
     ; The line-pointer table lives in BANKED RAM (not scarce low RAM): 3 bytes per
     ; line - [bank][off_lo][off_hi]. 2048 entries per 8KB bank (a power of 2, so
     ; idx -> bank/offset is a cheap shift/mask and an entry never straddles a bank).
-    ; 10000 lines -> 5 table banks (1..5); xarena.first_bank is bumped to 6 so the
-    ; line CONTENT is stored in the banks above the table.
-    const uword TBL_PER_BANK     = 2048                        ; must stay a power of 2
-    const ubyte TBL_FIRST_BANK   = 1
-    const ubyte TBL_BANKS        = 5                           ; ceil(MAX_LINES / 2048)
-    const ubyte ARENA_FIRST_BANK = TBL_FIRST_BANK + TBL_BANKS  ; first content bank (6)
-    const uword TBL_WIN          = $a000
+    ; With three documents, each table sits in its OWN bank region: tbl_first_bank is
+    ; a VARIABLE the editor points at the active doc's first table bank on switch
+    ; (Doc A banks 1-3 = up to 6144 slots, Doc B 4-5, Doc C 6-7). Line CONTENT lives in
+    ; the banks above all three table regions + the reserved overlay banks (see edit.p8).
+    const uword TBL_PER_BANK   = 2048   ; must stay a power of 2
+    ubyte tbl_first_bank       = 1      ; first table bank of the ACTIVE doc (set per slot on switch)
+    const uword TBL_WIN        = $a000
     uword line_count
     bool  oom                           ; set if an allocation failed (document full)
 
-    uword iobuf = memory("iobuf", 512, 0)   ; disk read chunk buffer (main RAM)
+    uword iobuf = memory("iobuf", 256, 0)   ; disk read chunk buffer (main RAM). 256 = the load_file
+                                            ; read size below; was 512 (over-allocated - only 256 used).
     ubyte[256] linebuf                       ; scratch: assembling / reading one line
 
     ; result of the last store(): far pointer to the new record
@@ -74,20 +77,20 @@ edoc {
     ; slot within it (both derived from TBL_PER_BANK=2048). Switch to that bank, then
     ; the 3-byte record sits in the $A000 window.
     sub set_entry(uword idx, ubyte bank, uword off) {
-        cx16.push_rambank(TBL_FIRST_BANK + lsb(idx >> 11))
+        cx16.push_rambank(tbl_first_bank + lsb(idx >> 11))
         uword p = TBL_WIN + (idx & $07ff) * 3
         @(p) = bank
         pokew(p + 1, off)
         cx16.pop_rambank()
     }
     sub ent_bank(uword idx) -> ubyte {
-        cx16.push_rambank(TBL_FIRST_BANK + lsb(idx >> 11))
+        cx16.push_rambank(tbl_first_bank + lsb(idx >> 11))
         ubyte b = @(TBL_WIN + (idx & $07ff) * 3)
         cx16.pop_rambank()
         return b
     }
     sub ent_off(uword idx) -> uword {
-        cx16.push_rambank(TBL_FIRST_BANK + lsb(idx >> 11))
+        cx16.push_rambank(tbl_first_bank + lsb(idx >> 11))
         uword o = peekw(TBL_WIN + (idx & $07ff) * 3 + 1)
         cx16.pop_rambank()
         return o
@@ -171,7 +174,7 @@ edoc {
 
     sub append(uword src, ubyte slen) -> bool {
         ; add a new line at the end
-        if line_count >= MAX_LINES {
+        if line_count >= max_lines {
             oom = true
             return false
         }
@@ -184,7 +187,7 @@ edoc {
     sub insert_line(uword idx) -> bool {
         ; open a gap at idx by shifting entries idx..count-1 up one slot, high-to-low so
         ; each source entry is read before it is overwritten. slot idx is left unset.
-        if line_count >= MAX_LINES {
+        if line_count >= max_lines {
             oom = true
             return false
         }
