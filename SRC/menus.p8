@@ -33,7 +33,7 @@ main {
         ; paint dropdown item `i` of menu `active` at (col,row). TEXT ONLY - the caller (main's
         ; draw_dropdown_item) laid the row colour first and re-colours the accelerator afterwards.
         ; flags: bit0 = word-wrap on, bit1 = syntax-colour on, bit2 = line-numbers on (the 3 toggles),
-        ; bit3 = Dev menu shown (when clear, the Help menu drops BASLOAD and its rows compact up).
+        ; bit3 = Dev menu shown (when clear, the Help menu drops BASLOAD + Hints-Tips and rows compact up).
         when active {
             0 -> {                          ; File
                 when i {
@@ -96,12 +96,13 @@ main {
             }
             else -> {                       ; Help
                 ubyte hi = i
-                if (flags & 8) == 0 and hi >= 1     ; Dev hidden -> skip BASLOAD (logical index 1)
-                    hi++
+                if (flags & 8) == 0 and hi >= 1     ; Dev hidden -> skip BASLOAD (1) + Hints-Tips (2)
+                    hi += 2
                 when hi {
                     0 -> put_str_at(col, row, "Help...    F1")
                     1 -> put_str_at(col, row, "BASLOAD...")
-                    2 -> put_str_at(col, row, "Config...")
+                    2 -> put_str_at(col, row, "Hints-Tips")
+                    3 -> put_str_at(col, row, "Config...")
                     else -> put_str_at(col, row, "About")
                 }
             }

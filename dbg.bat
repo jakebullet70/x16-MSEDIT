@@ -72,6 +72,7 @@ IF EXIST "%BUILDDIR%\picker.ovl" COPY /Y "%BUILDDIR%\picker.ovl" "%PROGDIR%\PICK
 IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\MENUS.OVL" >NUL
 IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\EDIT.MD"  >NUL
 IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\BASLOAD.MD" >NUL
+IF EXIST "%~dp0SRC\hints.md"   COPY /Y "%~dp0SRC\hints.md"   "%PROGDIR%\HINTS.MD" >NUL
 
 REM 2b) the /ED root launcher, same as run.bat (SHIFT+RUN after F5 BASLOAD reloads EDIT)
 IF NOT EXIST "%RUNDIR%\ED" powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes('%RUNDIR%\ED',[byte[]](1,8,25,8,10,0,147,34,47,77,83,69,68,73,84,47,69,68,73,84,46,80,82,71,34,0,0,0))"

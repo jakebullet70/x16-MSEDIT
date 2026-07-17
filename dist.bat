@@ -40,6 +40,7 @@ COPY /Y "%BUILDDIR%\picker.ovl"  "%DISTDIR%\PICKER.OVL"  >NUL
 COPY /Y "%BUILDDIR%\menus.ovl"    "%DISTDIR%\MENUS.OVL"   >NUL
 COPY /Y "%~dp0SRC\edit.md"       "%DISTDIR%\EDIT.MD"     >NUL
 COPY /Y "%~dp0SRC\basload.md"    "%DISTDIR%\BASLOAD.MD"  >NUL
+COPY /Y "%~dp0SRC\hints.md"      "%DISTDIR%\HINTS.MD"    >NUL
 COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\INSTALL.PRG" >NUL
 ECHO   staged release: %DISTDIR%
 

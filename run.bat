@@ -36,6 +36,7 @@ IF EXIST "%BUILDDIR%\menus.ovl" COPY /Y "%BUILDDIR%\menus.ovl" "%PROGDIR%\MENUS.
 REM    ...and the help text files the viewer shows for Help > Keyboard / Help > BASLOAD.
 IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\EDIT.MD"    >NUL
 IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\BASLOAD.MD" >NUL
+IF EXIST "%~dp0SRC\hints.md"   COPY /Y "%~dp0SRC\hints.md"   "%PROGDIR%\HINTS.MD"   >NUL
 
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
 CALL "%~dp0build.bat" edcfg.p8

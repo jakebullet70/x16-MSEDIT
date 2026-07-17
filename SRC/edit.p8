@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 174         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 177         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -267,6 +267,7 @@ main {
     str  menusovl = "menus.ovl"
     str  keysfile = "edit.md"           ; the help / Keyboard Map text file, viewed by Help > Keyboard
     str  basloadhlp = "basload.md"      ; the BASLOAD guide, viewed by Help > BASLOAD
+    str  hintshlp   = "hints.md"        ; the Hints-Tips file, viewed by Help > Hints-Tips (Dev-only)
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen by the picker
     str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
 
@@ -305,9 +306,9 @@ main {
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
             4 -> when key { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
-            else -> {                        ; Help. Dev shown: H/B/C/A -> 0/1/2/3. Dev hidden (no BASLOAD): H/C/A -> 0/1/2
+            else -> {                        ; Help. Dev shown: H/B/T/C/A -> 0/1/2/3/4. Dev hidden (no BASLOAD/Hints): H/C/A -> 0/1/2
                 if theme.show_dev {
-                    when key { 'h' -> return 0   'b' -> return 1   'c' -> return 2   'a' -> return 3 }
+                    when key { 'h' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'a' -> return 4 }
                 } else {
                     when key { 'h' -> return 0   'c' -> return 1   'a' -> return 2 }
                 }
@@ -323,6 +324,10 @@ main {
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
             3 -> when i { 1 -> return 5 }                       ; Dev: Make Backup 'B'@5 (Run BASLOAD 'R'@0 default)
+            5 -> {                                              ; Help
+                if theme.show_dev and i == 2                    ; Hints-Tips 'T'@6 (Dev-only row; all other Help items @0)
+                    return 6
+            }
         }
         return 0
     }
@@ -1517,7 +1522,7 @@ main {
     sub menu_flags() -> ubyte {
         ; pack the states menus.ovl needs for its dynamic item labels:
         ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers, bit3 = Dev menu shown
-        ; (when Dev is hidden, the Help menu also drops its BASLOAD item and compacts).
+        ; (when Dev is hidden, the Help menu also drops its BASLOAD + Hints-Tips items and compacts).
         ubyte f = 0
         if wrap_on
             f |= 1
@@ -1531,10 +1536,11 @@ main {
     }
 
     sub help_logical(ubyte i) -> ubyte {
-        ; map a DISPLAYED Help-menu row to its logical action index. When Dev is hidden the BASLOAD
-        ; item (logical index 1) is removed, so displayed rows 1.. shift up past it.
+        ; map a DISPLAYED Help-menu row to its logical action index. When Dev is hidden the two Dev-only
+        ; items - BASLOAD (logical 1) and Hints-Tips (logical 2) - are removed, so displayed rows 1..
+        ; shift up past both of them.
         if not theme.show_dev and i >= 1
-            return i + 1
+            return i + 2
         return i
     }
 
@@ -1643,8 +1649,8 @@ main {
 
     sub run_dropdown(ubyte active) -> ubyte {
         ; returns the chosen item index, or 255=esc, 254=prev menu, 253=next menu
-        ubyte n = 4
-        ubyte boxw = 13                     ; Help ("Help... F1/BASLOAD.../Config.../About")
+        ubyte n = 5                         ; Help default: Keyboard/BASLOAD/Hints-Tips/Config/About (Dev shown)
+        ubyte boxw = 13                     ; Help ("Help... F1/BASLOAD.../Hints-Tips/Config.../About")
         when active {
             0 -> { n = 7  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
@@ -1653,7 +1659,7 @@ main {
             WINDOW_MENU -> { n = 4  boxw = 20 }   ; Window (Next + docs A/B/C: "A - <name>")
         }
         if active == 5 and not theme.show_dev
-            n = 3                           ; Dev hidden -> Help drops BASLOAD, leaving Help/Config/About
+            n = 3                           ; Dev hidden -> Help drops BASLOAD + Hints-Tips, leaving Help/Config/About
         ubyte x0 = menu_col[active] - 1
         ubyte y0 = 1
         ubyte x1 = x0 + boxw + 3
@@ -1758,11 +1764,12 @@ main {
                     else -> act_window_goto(choice - 1)     ; A/B/C -> slot 0/1/2 (opens the picker if empty)
                 }
             }
-            else -> {                       ; Help (choice is a displayed row; map past a hidden BASLOAD)
+            else -> {                       ; Help (choice is a displayed row; map past hidden Dev-only items)
                 when help_logical(choice) {
                     0 -> act_keymap()
                     1 -> act_basload_help()
-                    2 -> act_config()
+                    2 -> act_hints_help()
+                    3 -> act_config()
                     else -> act_about()
                 }
             }
@@ -2606,6 +2613,11 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
     sub act_basload_help() {
         ; the BASLOAD guide (basload.md), shown in the same viewer as the Keyboard Map
         view_help(basloadhlp)
+    }
+
+    sub act_hints_help() {
+        ; the Hints-Tips file (hints.md), shown in the same viewer as the Keyboard Map
+        view_help(hintshlp)
     }
 
     sub view_help(str fname) {
