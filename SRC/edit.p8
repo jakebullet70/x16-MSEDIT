@@ -31,7 +31,7 @@ main {
     const ubyte NMENU      = 5
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 149         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 154         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -1773,6 +1773,16 @@ main {
         cx16.pop_rambank()
     }
 
+    sub pick_theme() -> ubyte {
+        ; the theme id handed to the picker, with bit7 = Dev-menu-shown. The picker's Basl filter is a
+        ; Dev feature, so it rides with the menu: hidden when the Dev menu is off. theme.current is 1..3,
+        ; so the high bit is free to carry the flag.
+        ubyte t = theme.current
+        if theme.show_dev
+            t |= $80
+        return t
+    }
+
     sub act_open() {
         if modified {
             ubyte r = confirm_save()
@@ -1789,7 +1799,7 @@ main {
             return
         }
         cursor_sprite_off()             ; the overlay owns the screen: hide our cursor sprite
-        if pick(&fnbuf, theme.current, &pick_blocks) == 0 {
+        if pick(&fnbuf, pick_theme(), &pick_blocks) == 0 {
             full_redraw()
             return
         }
@@ -2330,7 +2340,7 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         }
         fnbuf[0] = 0
         cursor_sprite_off()                     ; both overlays own the screen: hide our cursor sprite
-        if pick(&fnbuf, theme.current, &pick_blocks) == 0 {
+        if pick(&fnbuf, pick_theme(), &pick_blocks) == 0 {
             full_redraw()
             return
         }

@@ -62,6 +62,9 @@ main {
     uword g_stage                           ; address of main's low-RAM recstage buffer (FNREC bytes)
     ubyte file_count
     ubyte SCR_W, SCR_H
+    bool  hide_dirs                     ; footer toggles (BSS; reset at the top of each pick() call).
+    bool  basl_only                     ; hide_dirs = skip sub-dirs; basl_only = only BASLOAD source files
+    bool  basl_avail                    ; caller's Dev-menu-shown flag: hide the Basl filter when Dev is off
 
     sub start() {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
@@ -107,9 +110,16 @@ main {
         uword destp = dest
         ubyte tid   = theme_id
         uword blkp  = blkptr
+        basl_avail = (tid & $80) != 0           ; bit7 of theme_id carries EDIT's Dev-menu-shown flag
+        tid &= $7f                              ; (the Basl filter is a Dev feature - it rides with the menu)
         theme.apply(tid)
         SCR_W = txt.width()
         SCR_H = txt.height()
+        ; hide_dirs / basl_only PERSIST between popups (module BSS, zeroed once at overlay load): the view
+        ; you left is the view you get back this session. Only force Basl off when the Dev feature is
+        ; unavailable, so a filter that can't be shown can't silently keep filtering.
+        if not basl_avail
+            basl_only = false
 
         scan_files()                            ; scan_files always adds ".." first, so file_count >= 1
 
@@ -124,12 +134,15 @@ main {
             y0++
             y1--
         }
-        ubyte rows = y1 - y0 - 1             ; visible file rows
+        ubyte first_row = y0 + 2             ; first file row: one blank pad row below the title bar
+        ubyte rows = y1 - y0 - 3             ; visible file rows (one blank pad row above the footer too)
         ubyte namew = w - 5                  ; name field (marker col + 1 right margin)
         ubyte cursor = 0
         ubyte top = 0
+        ubyte prev_cursor = 0                ; last painted cursor / top - lets us repaint only what changed
+        ubyte prev_top = 0
+        bool  full = true                    ; force a full list paint on the first pass (and after rescans)
         ubyte nav_depth = 0                  ; sub-dirs descended below the start dir
-        uword rw
         ubyte i
         ubyte is_dir                         ; type + size pulled out of the chosen record on Enter
         ubyte blk
@@ -138,38 +151,74 @@ main {
         draw_box_frame(x0, y0, x1, y1)
         if x1 + 1 < SCR_W and y1 + 1 < SCR_H
             draw_box_shadow(x0, y0, x1, y1)
-        put_str_at(x0 + (w - 10) / 2, y0, " Open File ")
-        set_color_run(x0 + (w - 10) / 2, x0 + (w - 10) / 2 + 10, y0, theme.CB_BOX)
-        put_str_at(x0 + (w - 11) / 2, y1, " Esc to exit ")
-        set_color_run(x0 + (w - 11) / 2, x0 + (w - 11) / 2 + 12, y1, theme.CB_BOX)
+        draw_title_bar(x0, x1, y0, " Open File ")   ; solid header bar (About/XFMGR style)
+        draw_footer(x0, x1, y1)                      ; solid footer bar with the action + toggle hotkeys
         repeat {
             if cursor < top
                 top = cursor
             if cursor >= top + rows
                 top = cursor - rows + 1
-            ubyte r
-            for r in 0 to rows - 1 {
-                ubyte rr = y0 + 1 + r
-                set_color_run(x0 + 1, x1 - 1, rr, theme.CB_BOX)   ; clear the row (colour + chars)
-                ubyte cc
-                for cc in x0 + 1 to x1 - 1
-                    txt.setchr(cc, rr, SPACE_SC)
-                ubyte idx = top + r
-                if idx < file_count {
-                    do_read(WINBASE + (idx as uword) * FNREC, FNREC)   ; record -> the low-RAM stage
-                    if @(g_stage) != 0                          ; directory: "/" marker
-                        txt.setchr(x0 + 2, rr, sc:'/')
-                    put_mem_trunc(x0 + 3, rr, g_stage + 1, namew)
-                    if idx == cursor
-                        set_color_run(x0 + 1, x1 - 1, rr, theme.CB_SEL)
-                }
+            if top != prev_top
+                full = true                         ; the window scrolled - every row's content shifts
+            if full {
+                ubyte r
+                for r in 0 to rows - 1
+                    paint_row(r, x0, x1, first_row, top, cursor, namew)
+            } else {                                ; no scroll: repaint only the de-selected + new cursor row
+                paint_row(prev_cursor - top, x0, x1, first_row, top, cursor, namew)
+                if cursor != prev_cursor
+                    paint_row(cursor - top, x0, x1, first_row, top, cursor, namew)
             }
-            if top != 0
-                txt.setchr(x1 - 1, y0 + 1, sc:'^')
+            if top != 0                             ; scroll hints ride the first / last visible file row
+                txt.setchr(x1 - 1, first_row, sc:'^')
             if top + rows < file_count
-                txt.setchr(x1 - 1, y1 - 1, sc:'v')
+                txt.setchr(x1 - 1, first_row + rows - 1, sc:'v')
+            prev_cursor = cursor
+            prev_top = top
+            full = false
             ubyte k = wait_key()
+            if k >= $c1 and k <= $da            ; fold SHIFTed letters so D/F/B match either case
+                k -= $80
             when k {
+                'f' -> {                        ; toggle Hide Dirs, then rescan with the new filter
+                    hide_dirs = not hide_dirs
+                    scan_files()
+                    cursor = 0
+                    top = 0
+                    full = true                 ; list content changed - repaint every row
+                    draw_footer(x0, x1, y1)
+                }
+                'b' -> {                        ; toggle BASLOAD-only files (a Dev feature)
+                    if basl_avail {
+                        basl_only = not basl_only
+                        scan_files()
+                        cursor = 0
+                        top = 0
+                        full = true
+                        draw_footer(x0, x1, y1)
+                    }
+                }
+                'd' -> {                        ; delete the highlighted FILE (dirs and ".." are skipped)
+                    do_read(WINBASE + (cursor as uword) * FNREC, FNREC)
+                    if @(g_stage) == 0 {        ; type 0 = a file
+                        i = 0
+                        while @(g_stage + 1 + i) != 0 {   ; name -> caller buffer as delete/display scratch
+                            @(destp + i) = @(g_stage + 1 + i)
+                            i++
+                        }
+                        @(destp + i) = 0
+                        if confirm_delete(x0, x1, y1, destp) {
+                            diskio.delete(destp)
+                            void diskio.status()            ; clear the channel (LED / stale error)
+                            scan_files()
+                            if cursor >= file_count
+                                cursor = file_count - 1
+                            top = 0
+                            full = true                     ; a file vanished - repaint every row
+                        }
+                        draw_footer(x0, x1, y1)             ; restore the footer the confirm overwrote
+                    }
+                }
                 145 -> {                        ; up
                     if cursor != 0
                         cursor--
@@ -214,6 +263,7 @@ main {
                         scan_files()
                         cursor = 0
                         top = 0
+                        full = true             ; new directory listing - repaint every row
                     } else {
                         @(blkp) = blk
                         return 1                ; file -> destp holds the chosen name
@@ -290,6 +340,13 @@ main {
             ubyte etype = 0
             if diskio.list_filetype == "dir"
                 etype = 1
+            if etype != 0 {
+                if hide_dirs
+                    continue                     ; Hide Dirs: skip sub-directories ("../" was added above)
+            } else {
+                if basl_only and not is_basl(&diskio.list_filename)
+                    continue                     ; Basl only: skip non-BASLOAD files
+            }
             add_entry(etype, &diskio.list_filename, diskio.list_blocks)
             if file_count >= FILE_CAP
                 break
@@ -298,7 +355,131 @@ main {
         sort_dirs_first()                        ; group directories above files
     }
 
+    ; ------------------------------------------------------------------ filter / footer / confirm
+
+    sub fold(ubyte b) -> ubyte {
+        ; PETSCII uppercase $C1-$DA -> $41-$5A, so extension matching is case-insensitive
+        if b >= $c1 and b <= $da
+            return b - $80
+        return b
+    }
+
+    sub ends_ci(uword name, str suffix) -> bool {
+        ; true if NUL-terminated `name` ends with `suffix`, folding letters to one case
+        ubyte nl = 0
+        while @(name + nl) != 0
+            nl++
+        ubyte sl = lsb(strings.length(suffix))
+        if sl > nl
+            return false
+        ubyte i = 0
+        while i < sl {
+            if fold(@(name + nl - sl + i)) != fold(suffix[i])
+                return false
+            i++
+        }
+        return true
+    }
+
+    sub is_basl(uword name) -> bool {
+        ; the BASLOAD source extensions (same set as edit.p8's has_basic_ext)
+        return ends_ci(name, ".bas") or ends_ci(name, ".basl") or ends_ci(name, ".bl") or ends_ci(name, ".bas.txt")
+    }
+
+    sub draw_title_bar(ubyte x0, ubyte x1, ubyte row, str title) {
+        ; solid title bar across the top border (mirrors misc.ovl's About box): fill the interior with
+        ; spaces, centre the title, colour the whole run CB_BAR so it reads as one bar, not text on a line.
+        ubyte c
+        for c in x0 + 1 to x1 - 1
+            txt.setchr(c, row, SPACE_SC)
+        ubyte tlen = lsb(strings.length(title))
+        put_str_at(x0 + 1 + (x1 - x0 - 1 - tlen) / 2, row, title)
+        set_color_run(x0 + 1, x1 - 1, row, theme.CB_BAR)
+    }
+
+    sub draw_footer(ubyte x0, ubyte x1, ubyte y1) {
+        ; solid footer bar with the action + toggle hotkeys (reads hide_dirs / basl_only). Each hotkey is
+        ; the highlighted FIRST letter of its word - Del / Folders / Basl - not a separate key prefix.
+        ; Toggle state shows On/Off: Folders:On = sub-folders shown, Basl:On = only BASLOAD files listed.
+        ; The Basl filter is a Dev feature: when EDIT's Dev menu is off (basl_avail=false) it is omitted.
+        ubyte c
+        for c in x0 + 1 to x1 - 1
+            txt.setchr(c, y1, SPACE_SC)
+        ubyte tw = 21                              ; "Del  Folders:XXX  Esc"
+        if basl_avail
+            tw = 31                                ; ...plus "  Basl:XXX"
+        ubyte w = x1 - x0 + 1
+        ubyte fs = x0 + (w - tw) / 2               ; centre the bar text
+        put_str_at(fs, y1, "Del  Folders:")
+        if hide_dirs
+            put_str_at(fs + 13, y1, "Off")
+        else
+            put_str_at(fs + 13, y1, "On ")
+        ubyte escoff = fs + 16
+        if basl_avail {
+            put_str_at(fs + 16, y1, "  BASL:")
+            if basl_only
+                put_str_at(fs + 23, y1, "On ")
+            else
+                put_str_at(fs + 23, y1, "Off")
+            escoff = fs + 26
+        }
+        put_str_at(escoff, y1, "  Esc")
+        set_color_run(x0 + 1, x1 - 1, y1, theme.CB_BAR)     ; whole interior = one solid bar
+        ubyte acc = (theme.CB_BAR & $f0) | theme.ACCEL_FG   ; highlight D(el) / F(olders) [ / B(asl) ]
+        txt.setclr(fs, y1, acc)
+        txt.setclr(fs + 5, y1, acc)
+        if basl_avail
+            txt.setclr(fs + 18, y1, acc)
+    }
+
+    sub confirm_delete(ubyte x0, ubyte x1, ubyte y1, uword name) -> bool {
+        ; "Del <name>? Y/N" on the footer bar; y = delete, anything else = keep
+        ubyte c
+        for c in x0 + 1 to x1 - 1
+            txt.setchr(c, y1, SPACE_SC)
+        ubyte fs = x0 + 2
+        put_str_at(fs, y1, "Del ")
+        ubyte nw = x1 - x0 - 12                     ; leave room for "Del " + "? Y/N"
+        put_mem_trunc(fs + 4, y1, name, nw)
+        ubyte nl = 0
+        while @(name + nl) != 0 and nl < nw
+            nl++
+        put_str_at(fs + 4 + nl, y1, "? Y/N")
+        set_color_run(x0 + 1, x1 - 1, y1, theme.CB_BAR)
+        repeat {
+            ubyte k = wait_key()
+            if k == 27 or k == 3
+                return false
+            if k >= $c1 and k <= $da
+                k -= $80
+            if k == 'y'
+                return true
+            if k == 'n'
+                return false
+        }
+    }
+
     ; ------------------------------------------------------------------ drawing (copies of edit.p8's)
+
+    sub paint_row(ubyte r, ubyte x0, ubyte x1, ubyte first_row, ubyte top, ubyte cursor, ubyte namew) {
+        ; paint one visible file row (relative index r): clear it, draw entry top+r (blank past the end of
+        ; the list), and invert it when it is the cursor row. The picker repaints only the rows that change.
+        ubyte rr = first_row + r
+        set_color_run(x0 + 1, x1 - 1, rr, theme.CB_BOX)   ; clear the row (colour + chars)
+        ubyte cc
+        for cc in x0 + 1 to x1 - 1
+            txt.setchr(cc, rr, SPACE_SC)
+        ubyte idx = top + r
+        if idx < file_count {
+            do_read(WINBASE + (idx as uword) * FNREC, FNREC)   ; record -> the low-RAM stage
+            if @(g_stage) != 0                          ; directory: "/" marker
+                txt.setchr(x0 + 2, rr, sc:'/')
+            put_mem_trunc(x0 + 3, rr, g_stage + 1, namew)
+            if idx == cursor
+                set_color_run(x0 + 1, x1 - 1, rr, theme.CB_SEL)
+        }
+    }
 
     sub put_str_at(ubyte col, ubyte row, str s) {
         ubyte i = 0
