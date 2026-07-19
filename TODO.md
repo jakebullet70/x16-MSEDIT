@@ -38,14 +38,11 @@
   decides whether "Total lines" is drawn at all, so drop those `col +=` steps rather than leaving them.
   Also check the header repaints on a slot switch and on the first edit that sets `slot_modified` —
   today those paths call `draw_status()`, not the menu-bar draw.
-- **PRG2BASLOAD: flag 2-character variable collisions** — the one converter hazard that produces a
-  program which assembles and then misbehaves. Tokenized BASIC has 2 significant characters, BASLOAD
-  has 64, so `COUNT` and `CO` are the SAME variable in the original and DIFFERENT after conversion.
-  Detect rather than rewrite (auto-shortening to 2 chars would be correct but would wreck readability):
-  walk 1 keys every identifier on first-two-chars + sigil into a bit table in banked RAM, sets a second
-  "collided" bit when a key recurs with a different name, and walk 2 emits `REM TODO` on any line using
-  a collided key. Bit tables, not a BASIC string array — under GPC the whole program plus variables has
-  to fit below the runtime at `$7300`, and a few hundred name strings would not.
+- **PRG2BASLOAD: 2-character variable collisions — NOT WORTH BUILDING.** Noted only so it does not get
+  "discovered" and designed a third time. BASIC 2.0 uses the first 2 characters of a name and BASLOAD
+  uses 64, so in theory `VAR1`/`VAR2` are one variable before conversion and two after. In practice
+  people writing Commodore BASIC knew the 2-char rule and named accordingly, so real programs do not
+  contain the collision. Do not spend a detector on it.
 - **PRG2BASLOAD: auto-quote DATA items containing spaces** — BASLOAD lexes DATA content as identifiers,
   so `DATA HELLO WORLD` becomes `DATA HELLOWORLD` (see docs/basload-findings.md). The converter emits a
   `REM TODO` and leaves it. Better: split the DATA content on commas and wrap any unquoted item that
