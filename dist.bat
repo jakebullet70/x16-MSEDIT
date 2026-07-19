@@ -47,13 +47,20 @@ REM tokenises SRC\PRG2BASLOAD.BASL into run\PRG2BASLOAD.PRG, and that is then CO
 REM inside the emulator, which writes run\C.PRG2BASLOAD.PRG. The COMPILED one is what ships - it
 REM is ~6.7x faster than the tokenised build - renamed here to drop GPC's "C." prefix, which is
 REM also why it cannot just be copied from build\ like everything else above.
-REM Both of those steps are manual and run\ is gitignored, so a fresh clone will not have this
-REM file. Warn loudly rather than let a release go out quietly missing a program.
+REM Both of those steps are manual and run\ is gitignored, so bin\PRG2BASLOAD.PRG is a TRACKED
+REM copy of the compiled binary - it is what lets a fresh clone stage a complete release. A newly
+REM compiled run\C.PRG2BASLOAD.PRG is promoted into bin\ below, so "recompile, then dist" leaves
+REM the tracked copy current: commit bin\ whenever git reports it changed.
+IF NOT EXIST "%~dp0bin" MKDIR "%~dp0bin"
 IF EXIST "%RUNDIR%\C.PRG2BASLOAD.PRG" (
-    COPY /Y "%RUNDIR%\C.PRG2BASLOAD.PRG" "%DISTDIR%\PRG2BASLOAD.PRG" >NUL
+    COPY /Y "%RUNDIR%\C.PRG2BASLOAD.PRG" "%~dp0bin\PRG2BASLOAD.PRG" >NUL
+    ECHO   converter: promoted a fresh GPC build out of run\ into bin\
+)
+IF EXIST "%~dp0bin\PRG2BASLOAD.PRG" (
+    COPY /Y "%~dp0bin\PRG2BASLOAD.PRG" "%DISTDIR%\PRG2BASLOAD.PRG" >NUL
 ) ELSE (
-    ECHO   *** WARNING: run\C.PRG2BASLOAD.PRG not found - release will NOT include the converter.
-    ECHO   ***          Rebuild it with:  buildbasl.bat PRG2BASLOAD    then compile with GPC.
+    ECHO   *** WARNING: no converter binary - release will NOT include PRG2BASLOAD.
+    ECHO   ***          Build it: buildbasl.bat PRG2BASLOAD    then compile it with GPC.
 )
 ECHO   staged release: %DISTDIR%
 

@@ -38,10 +38,10 @@ IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\EDIT.MD"
 IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\BASLOAD.MD" >NUL
 IF EXIST "%~dp0SRC\hints.md"   COPY /Y "%~dp0SRC\hints.md"   "%PROGDIR%\HINTS.MD"   >NUL
 REM    ...and the stand-alone PRG-to-BASLOAD converter, so the dev folder matches what the
-REM    installer lays down. This one comes from run\ (GPC's compiled output, "C." prefix dropped),
-REM    NOT from build\ - see the longer note in dist.bat. Absent on a fresh clone; that is fine
-REM    here, it just means the converter is missing from the dev copy.
-IF EXIST "%RUNDIR%\C.PRG2BASLOAD.PRG" COPY /Y "%RUNDIR%\C.PRG2BASLOAD.PRG" "%PROGDIR%\PRG2BASLOAD.PRG" >NUL
+REM    installer lays down. This one comes from the TRACKED bin\ copy, not from build\ - it is
+REM    GPC-compiled inside the emulator and no part of build.bat produces it. See dist.bat, which
+REM    is where a freshly compiled run\C.PRG2BASLOAD.PRG gets promoted into bin\.
+IF EXIST "%~dp0bin\PRG2BASLOAD.PRG" COPY /Y "%~dp0bin\PRG2BASLOAD.PRG" "%PROGDIR%\PRG2BASLOAD.PRG" >NUL
 
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
 CALL "%~dp0build.bat" edcfg.p8

@@ -9,3 +9,8 @@
 build/
 .vscode/settings.json
 run/*
+
+# bin\ is the exception to *.prg: it holds the one shipped binary that the build system
+# cannot reproduce. PRG2BASLOAD.PRG is BASLOAD-tokenised and then GPC-compiled, both inside
+# the emulator by hand, so without a tracked copy a fresh clone cannot stage a full release.
+!bin/*.prg
