@@ -41,9 +41,11 @@ main {
     ; edit.prg is mandatory; the rest are copied when present. misc.ovl = About screen, tview.ovl =
     ; the text/hex viewer (File>View and Help>Keyboard/BASLOAD), picker.ovl = the Open/View file
     ; picker, menus.ovl = dropdown labels, edit.md / basload.md / hints.md = the help text files the
-    ; viewer shows. All are loaded/opened at runtime; without them EDIT still runs and the affected
-    ; menu items just report the file missing. edit.cfg is the user's settings, PRESERVED.
-    str[10] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "menus.ovl", "edit.md", "basload.md", "hints.md", "edit.cfg"]
+    ; viewer shows. prg2basload.prg is the stand-alone PRG-to-BASLOAD-source converter - a separate
+    ; program, not called by EDIT, installed alongside it so it is on hand. All are loaded/opened at
+    ; runtime; without them EDIT still runs and the affected menu items just report the file missing.
+    ; edit.cfg is the user's settings, PRESERVED.
+    str[11] FILES = ["edit.prg", "edcfg.prg", "prg2basload.prg", "misc.ovl", "tview.ovl", "picker.ovl", "menus.ovl", "edit.md", "basload.md", "hints.md", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
     ubyte[80] cur                ; folder we were launched from (copied out of curdir's transient buffer)
@@ -214,7 +216,8 @@ main {
                 build_src(FILES[i])
                 txt.print("  ")
                 txt.print(FILES[i])
-                pad_to(FILES[i], 14)
+                pad_to(FILES[i], 17)        ; 17, not 14: "prg2basload.prg" is 15 chars and would
+                                            ; otherwise run straight into the status word
                 if test_mode {
                     txt.print("test (skipped)\n")
                 } else if strings.compare_nocase(FILES[i], CFG) == 0 and dest_exists(CFG) {

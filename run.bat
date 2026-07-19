@@ -37,6 +37,11 @@ REM    ...and the help text files the viewer shows for Help > Keyboard / Help > 
 IF EXIST "%~dp0SRC\edit.md"    COPY /Y "%~dp0SRC\edit.md"    "%PROGDIR%\EDIT.MD"    >NUL
 IF EXIST "%~dp0SRC\basload.md" COPY /Y "%~dp0SRC\basload.md" "%PROGDIR%\BASLOAD.MD" >NUL
 IF EXIST "%~dp0SRC\hints.md"   COPY /Y "%~dp0SRC\hints.md"   "%PROGDIR%\HINTS.MD"   >NUL
+REM    ...and the stand-alone PRG-to-BASLOAD converter, so the dev folder matches what the
+REM    installer lays down. This one comes from run\ (GPC's compiled output, "C." prefix dropped),
+REM    NOT from build\ - see the longer note in dist.bat. Absent on a fresh clone; that is fine
+REM    here, it just means the converter is missing from the dev copy.
+IF EXIST "%RUNDIR%\C.PRG2BASLOAD.PRG" COPY /Y "%RUNDIR%\C.PRG2BASLOAD.PRG" "%PROGDIR%\PRG2BASLOAD.PRG" >NUL
 
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
 CALL "%~dp0build.bat" edcfg.p8

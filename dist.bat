@@ -42,6 +42,19 @@ COPY /Y "%~dp0SRC\edit.md"       "%DISTDIR%\EDIT.MD"     >NUL
 COPY /Y "%~dp0SRC\basload.md"    "%DISTDIR%\BASLOAD.MD"  >NUL
 COPY /Y "%~dp0SRC\hints.md"      "%DISTDIR%\HINTS.MD"    >NUL
 COPY /Y "%BUILDDIR%\install.prg" "%DISTDIR%\INSTALL.PRG" >NUL
+REM The stand-alone PRG-to-BASLOAD-source converter. NOT produced by build.bat: buildbasl.bat
+REM tokenises SRC\PRG2BASLOAD.BASL into run\PRG2BASLOAD.PRG, and that is then COMPILED with GPC
+REM inside the emulator, which writes run\C.PRG2BASLOAD.PRG. The COMPILED one is what ships - it
+REM is ~6.7x faster than the tokenised build - renamed here to drop GPC's "C." prefix, which is
+REM also why it cannot just be copied from build\ like everything else above.
+REM Both of those steps are manual and run\ is gitignored, so a fresh clone will not have this
+REM file. Warn loudly rather than let a release go out quietly missing a program.
+IF EXIST "%RUNDIR%\C.PRG2BASLOAD.PRG" (
+    COPY /Y "%RUNDIR%\C.PRG2BASLOAD.PRG" "%DISTDIR%\PRG2BASLOAD.PRG" >NUL
+) ELSE (
+    ECHO   *** WARNING: run\C.PRG2BASLOAD.PRG not found - release will NOT include the converter.
+    ECHO   ***          Rebuild it with:  buildbasl.bat PRG2BASLOAD    then compile with GPC.
+)
 ECHO   staged release: %DISTDIR%
 
 CALL "%~dp0LOCAL.BAT"
