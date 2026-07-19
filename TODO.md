@@ -16,12 +16,15 @@
   key that removes the highlighted file from disk (with a Y/N confirm) and drops it from the list. Both
   act on the existing `filelist` records in FLIST_BANK; delete uses `diskio.delete` + `void diskio.status()`
   (clear the channel), then re-reads the directory or compacts the list in place.
-- **Test the installer** — `dist.bat` has never been exercised end to end since the overlays joined the
-  release. Run it, then in the emulator at the BASIC prompt: `CD"DIST"` + `^INSTALL` (answer `T` first
-  for the dry run, then `Y`). Check: /MSEDIT is created with all six files (edit.prg, edcfg.prg,
-  misc.ovl, tview.ovl, edit.md, edit.cfg), the /ED launcher works (`^/ED` from any folder),
-  Help>Keyboard opens edit.md in the viewer, Help>About and File>View work, a REINSTALL keeps an
-  existing edit.cfg, and running the installer from INSIDE /msedit skips the copy instead of truncating.
+- **Installer: the run-from-inside-/msedit case is still untested** — install.p8 is meant to skip the
+  copy when the folder it was launched from IS the install folder, rather than copy each file onto
+  itself and truncate it. It does not arise in normal use (INSTALL.PRG is not one of the installed
+  FILES, so it never lands in /msedit), which is exactly why it has never been hit: reproducing it
+  means deliberately copying the release into /MSEDIT and running it there. Worth doing once, since
+  the failure mode is destroying the install rather than merely looking wrong.
+  Everything else was verified on build 200: all 11 files copied including prg2basload.prg, a
+  REINSTALL preserved the existing edit.cfg, `^/ED` launches from any folder, and the help .md files
+  display in the viewer.
 - **File menu: Close file / Close all** — close the current document (and a Close-all that walks every
   open doc), each prompting to save when the doc is dirty. Reuse the existing `confirm_save` flash
   prompt rather than a new popup. Decide what "closed" means for the 3-doc model: leave the slot empty
