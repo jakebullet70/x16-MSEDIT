@@ -3,21 +3,32 @@
 ; A normal $0801 PRG. The user copies the release files (edit.prg, edcfg.prg, the .ovl overlays) plus this installer
 ; into ONE folder on their SD card, boots the X16, CDs into that folder and runs it. It:
 ;   * reports the folder it is running from,
-;   * creates /MSEDIT on the drive root,
+;   * works out where EDIT should go (see below),
+;   * creates that folder on the drive root,
 ;   * copies the program files into it (255-byte stream copy),
-;   * writes the tiny root launcher /ED  ("10 LOAD \"MSEDIT/EDIT.PRG\""),
+;   * writes the tiny root launcher /ED  ("10 LOAD \"/MSEDIT/EDIT.PRG\""),
 ; so EDIT can then be started from anywhere with the caret-run command:  ^/ed
 ;
 ; /ED is not just a convenience: EDIT reads the path back OUT of it to learn where it was installed
-; (theme.find_progdir), and that is how edit.cfg and edcfg.prg are located at runtime. So the
-; launcher and the install folder must agree - change TARGET_DIR and ED_BYTES together.
+; (theme.find_progdir), and that is how edit.cfg and edcfg.prg are located at runtime. That makes
+; /ED the AUTHORITY on where a previous install lives - and since find_progdir accepts any folder,
+; not just /msedit, an existing /ED pointing somewhere else is a real install we must not orphan.
+; So on startup we parse /ED and, when it names a folder other than the default, offer to update
+; that one in place. Installing to /msedit instead would leave the old copy on disk with /ED
+; pointing at whichever was written last. Decline and you are asked to name a folder, ENTER taking
+; /msedit. Any depth is allowed - enter_dest creates the whole chain, so /dos/basload-editor works
+; from a bare drive.
 ;
-; An existing MSEDIT/edit.cfg is PRESERVED on reinstall, so an update doesn't reset the user's
-; settings. Run from a folder that IS already /msedit and the copy step is skipped (source == dest
-; would truncate the files); only the launcher is written.
+; The launcher is therefore GENERATED to match the destination (write_ed) rather than being a fixed
+; byte literal - launcher and install folder cannot drift apart.
+;
+; An existing edit.cfg in the destination is PRESERVED on reinstall, so an update doesn't reset the
+; user's settings. Run from the destination folder itself and the copy step is skipped (source ==
+; dest would truncate the files); only the launcher is written.
 ;
 ; All filename literals are lowercase: uppercase A-Z would encode to $C1-DA, which the filesystem
-; won't match.
+; won't match. Conveniently that means a lowercase prog8 literal is already the $41-$5A ASCII the
+; BASIC text of /ED needs, so write_ed copies the path in without any case folding.
 
 %import textio
 %import diskio
@@ -25,7 +36,8 @@
 %zeropage basicsafe
 
 main {
-    str TARGET_DIR = "msedit"                   ; install folder at the drive root
+    str DEF_DIR  = "/msedit"                    ; default install folder, absolute from the drive root
+    str ED_NAME  = "/ed"                        ; the root launcher, read on startup and written at the end
     ; edit.prg is mandatory; the rest are copied when present. misc.ovl = About screen, tview.ovl =
     ; the text/hex viewer (File>View and Help>Keyboard/BASLOAD), picker.ovl = the Open/View file
     ; picker, menus.ovl = dropdown labels, edit.md / basload.md / hints.md = the help text files the
@@ -34,23 +46,28 @@ main {
     str[10] FILES = ["edit.prg", "edcfg.prg", "misc.ovl", "tview.ovl", "picker.ovl", "menus.ovl", "edit.md", "basload.md", "hints.md", "edit.cfg"]
     str CFG = "edit.cfg"                        ; preserved on reinstall (holds the user's settings)
 
-    ; the root launcher, byte-for-byte: a $0801 PRG holding  10 LOAD "/MSEDIT/EDIT.PRG"
-    ; (matches the file run.bat/dbg.bat generate for the dev tree). The path is ABSOLUTE - a
-    ; leading '/' from the drive root - so the reload works no matter what folder ^/ED is run from.
-    ; The line grew one byte vs. the old relative form, so the next-line link is $0819 not $0818
-    ; (it targets the $00,$00 end marker, which shifted up by the inserted '/').
-    ubyte[28] ED_BYTES = [
-        $01,$08, $19,$08, $0a,$00, $93,
-        $22, $2f, $4d,$53,$45,$44,$49,$54, $2f, $45,$44,$49,$54,$2e,$50,$52,$47, $22,
-        $00, $00,$00 ]
-
     ubyte[80] cur                ; folder we were launched from (copied out of curdir's transient buffer)
     ubyte[96] srcabs             ; absolute source path built per file: cur + "/" + name
     ubyte[255] cpbuf             ; stream-copy chunk buffer
+    ubyte[256] edbuf             ; raw bytes of an existing /ed (sized like EDIT's own, see read_ed_dir)
+    ubyte[40] edir               ; folder parsed out of that /ed - "" when there is no previous install
+    ubyte[40] instdir            ; where we are actually installing: DEF_DIR, or edir if the user adopts it
+    ubyte[40] typed              ; folder the user types when declining the one /ed names
+    ubyte[64] edpath             ; instdir + "/edit.prg" - the string that goes inside the new launcher
+    ubyte[64] edout              ; the generated launcher PRG
+
+    ; Longest install folder EDIT can read back: theme.find_progdir caps progdir at 31 chars and
+    ; that includes the trailing '/', so the folder itself gets 30.
+    const ubyte MAX_DIR = 30
 
     const ubyte ACT_CANCEL  = 0
     const ubyte ACT_INSTALL = 1
     const ubyte ACT_TEST    = 2
+
+    ; ...and for the "which folder?" question, which is a different choice with a different default
+    const ubyte WHERE_CANCEL = 0
+    const ubyte WHERE_ADOPT  = 1     ; the folder named by the existing /ed
+    const ubyte WHERE_DEF    = 2     ; the default /msedit
 
     sub start() {
         ; Stay in the boot (uppercase) charset and write every message in lowercase SOURCE, which
@@ -70,14 +87,71 @@ main {
         txt.print(cur)
         txt.nl()
 
-        bool already = basename_is_target(cur)  ; are we already sitting in /msedit ?
+        ; Where does EDIT already live? The root launcher is the authority - it is the same file
+        ; EDIT parses to find itself, so whatever folder it names IS the previous install.
+        bool have_ed = read_ed_dir()
+        txt.print("/ed:          ")
+        if have_ed {
+            txt.print("found -> ")
+            txt.print(edir)
+            txt.nl()
+        } else {
+            txt.print("not found\n")
+        }
+
+        void strings.copy(DEF_DIR, instdir)
+        if have_ed and strings.compare_nocase(edir, instdir) != 0 {
+            ; A previous install somewhere other than the default. Updating it in place is almost
+            ; always what's wanted: installing to /msedit instead leaves the old copy on disk and
+            ; leaves /ed pointing at only one of the two.
+            txt.print("\na previous install lives there.\n")
+            txt.print("install into it?\n\n")
+            txt.print("  y = ")
+            txt.print(edir)
+            txt.print("\n  n = somewhere else")
+            txt.print("   (esc cancels)\n\n  ")
+            ubyte where = ask_where()
+            txt.nl()
+            if where == WHERE_CANCEL {
+                txt.print("\ncancelled.\n")
+                return
+            }
+            if where == WHERE_ADOPT {
+                void strings.copy(edir, instdir)
+            } else {
+                ; Declining doesn't have to mean the default. Ask for a folder, with /msedit on
+                ; ENTER so the common answer stays a single keystroke.
+                repeat {
+                    txt.print("\n  folder [")
+                    txt.print(DEF_DIR)
+                    txt.print("]: ")
+                    if not read_line(&typed, len(typed) - 1) {
+                        txt.print("\n\ncancelled.\n")
+                        return
+                    }
+                    set_instdir(&typed)
+                    if strings.length(instdir) <= MAX_DIR
+                        break
+                    ; Refuse rather than truncate: EDIT would parse only the first MAX_DIR chars
+                    ; back out of the launcher and then look for edit.cfg in a folder that isn't
+                    ; the one we installed to.
+                    txt.print("  too long - 30 characters max.\n")
+                }
+            }
+        }
+
+        ; Exact-path test, not a basename one: /downloads/msedit is NOT the install folder, and
+        ; treating it as one would skip the copy and quietly install nothing.
+        bool already = strings.compare_nocase(cur, instdir) == 0
         bool test_mode = false
         ubyte act
 
         if already {
-            ; launched from INSIDE /msedit: source == dest would truncate the files, so skip the copy
-            ; and only (re)write the launcher.
-            txt.print("\nfiles are already in /msedit.\n")
+            ; launched from INSIDE the destination: source == dest would truncate the files, so skip
+            ; the copy and only (re)write the launcher.
+            txt.print("\nfiles are already in ")
+            txt.print(instdir)
+            txt.print(".\n")
             txt.print("write the /ed launcher?  ")
             act = ask_action(true)
             txt.print("\n\n")
@@ -96,17 +170,18 @@ main {
             }
             diskio.f_close()
 
-            ; is there a prior install? A CD onto a MISSING dir is a silent no-op, so gate on the
-            ; status code to tell "landed in /msedit" from "still where we were".
-            diskio.chdir("/msedit")
+            ; does the destination already exist? A CD onto a MISSING dir is a silent no-op, so gate
+            ; on the status code to tell "landed there" from "still where we were".
+            diskio.chdir(instdir)
             bool have_prev = diskio.status_code() == 0
             diskio.chdir(cur)                   ; back to the launch folder
 
-            txt.print("/msedit:      ")
+            txt.print("installing to ")
+            txt.print(instdir)
             if have_prev
-                txt.print("found  (reinstall - settings kept)\n")
+                txt.print("\n              (reinstall - settings kept)\n")
             else
-                txt.print("not found  (fresh install)\n")
+                txt.print("\n              (fresh install)\n")
 
             txt.nl()
             if have_prev
@@ -126,10 +201,13 @@ main {
             txt.print("** test mode - nothing written **\n\n")
 
         if not already {
-            ; create /msedit (harmless if it exists) and make it the copy destination
-            diskio.chdir("/")
-            diskio.mkdir(TARGET_DIR)
-            diskio.chdir("/msedit")
+            ; a dry run writes nothing at all, so don't create the folder either
+            if not test_mode and not enter_dest() {
+                txt.print("cannot open or create\n  ")
+                txt.print(instdir)
+                txt.print("\nnothing was installed.\n")
+                return
+            }
 
             ubyte i
             for i in 0 to len(FILES) - 1 {
@@ -167,15 +245,82 @@ main {
 
     ;====================================================================
 
-    ; case-insensitive test: is the last path component of `p` == "msedit"?
-    sub basename_is_target(str p) -> bool {
-        ubyte idx
-        bool found
-        idx, found = strings.rfind(p, '/')
-        uword bp = p
-        if found
-            bp = p + idx + 1
-        return strings.compare_nocase(bp, TARGET_DIR) == 0
+    ; Parse the install folder out of an existing root /ed into `edir`, exactly the way EDIT itself
+    ; does it (theme.find_progdir): find the quoted path in  10 LOAD "<path>"  and cut at the last
+    ; '/'. False when there is no launcher, or it names no folder, or the path is relative - a
+    ; relative one is useless to us as a destination and EDIT can't resolve it either.
+    ;
+    ; edbuf is sized like EDIT's for the same reason: load_raw has already written the whole file by
+    ; the time we see the length, so the buffer has to be comfortably bigger than any real launcher.
+    sub read_ed_dir() -> bool {
+        edir[0] = 0
+        uword endaddr = diskio.load_raw(ED_NAME, &edbuf)
+        if endaddr == 0 {
+            void diskio.status()                ; drop the FILE NOT FOUND (else the activity LED blinks)
+            return false
+        }
+        ubyte n = lsb(endaddr - &edbuf)
+        ubyte i = 0
+        while i < n and edbuf[i] != $22         ; opening quote
+            i++
+        if i >= n
+            return false
+        i++
+        ubyte j = 0
+        ubyte cut = 0                           ; chars up to and including the LAST '/'
+        while i < n and edbuf[i] != $22 and j < len(edir) - 2 {
+            edir[j] = edbuf[i]
+            j++
+            if edbuf[i] == '/'
+                cut = j
+            i++
+        }
+        if cut == 0
+            return false                        ; a bare filename names no folder
+        if cut > 1
+            cut--                               ; "/msedit/" -> "/msedit", but keep a bare root "/"
+        edir[cut] = 0
+        return edir[0] == '/'
+    }
+
+    ; Make `instdir` the current directory, creating any part of it that is missing, so a nested
+    ; destination like /dos/basload-editor works from nothing.
+    ;
+    ; Walked one component at a time from the root rather than handed over whole: CMDR-DOS MD takes
+    ; a BARE name, so "MD:/dos/basload-editor" does not create the chain. CD into each component
+    ; first and only MD when that fails, which leaves existing folders (and their contents) alone.
+    sub enter_dest() -> bool {
+        diskio.chdir("/")
+        if diskio.status_code() != 0
+            return false
+
+        ubyte at = 1                            ; instdir always starts '/' - step over it
+        while instdir[at] != 0 {
+            ; carve out the next component, temporarily terminating it in place
+            ubyte end = at
+            while instdir[end] != 0 and instdir[end] != '/'
+                end++
+            ubyte sep = instdir[end]            ; '/' or the real 0 terminator
+            instdir[end] = 0
+
+            if end != at {                      ; tolerate a doubled slash - "" is not a folder
+                diskio.chdir(&instdir + at)
+                if diskio.status_code() != 0 {
+                    diskio.mkdir(&instdir + at)
+                    diskio.chdir(&instdir + at)
+                    if diskio.status_code() != 0 {
+                        instdir[end] = sep      ; put the path back before reporting it
+                        return false
+                    }
+                }
+            }
+
+            instdir[end] = sep
+            at = end
+            if sep != 0                         ; skip the separator, unless that was the end
+                at++
+        }
+        return true
     }
 
     ; srcabs = cur + "/" + name  (cur is normalised; bare root "/" yields "/name")
@@ -227,14 +372,112 @@ main {
         return false
     }
 
-    ; write the 27-byte /ed launcher into the current dir
+    ; Assemble and write the /ed launcher into the current dir: a $0801 PRG holding
+    ;   10 LOAD "<instdir>/EDIT.PRG"
+    ; sized to the path we actually installed to. The path is ABSOLUTE, so ^/ED works from any
+    ; folder - and EDIT parses this very string back out to locate edit.cfg and the overlays
+    ; (theme.find_progdir), which is why it is generated here instead of being a fixed literal.
     sub write_ed() -> bool {
+        void strings.copy(instdir, edpath)
+        ubyte l = strings.length(edpath)
+        if l == 0 or edpath[l-1] != '/'         ; a bare root "/" already ends in one
+            void strings.append(edpath, "/")
+        void strings.append(edpath, "edit.prg")
+        ubyte n = strings.length(edpath)
+        if n > len(edout) - 12
+            return false
+
+        ; layout after the load address: link(2) linenum(2) LOAD(1) quote(1) path(n) quote(1) eol(1),
+        ; so the next-line link targets the $00,$00 end marker at $0801 + 8 + n.
+        uword link = $0809 + n
+        edout[0] = $01
+        edout[1] = $08
+        edout[2] = lsb(link)
+        edout[3] = msb(link)
+        edout[4] = $0a                          ; line number 10
+        edout[5] = $00
+        edout[6] = $93                          ; LOAD token
+        edout[7] = $22
+        ubyte i
+        for i in 0 to n - 1
+            edout[8 + i] = edpath[i]
+        edout[8 + n] = $22
+        edout[9 + n] = $00                      ; end of line
+        edout[10 + n] = $00                     ; end of program
+        edout[11 + n] = $00
+
         diskio.delete("ed")
         if not diskio.f_open_w("ed")
             return false
-        void diskio.f_write(&ED_BYTES, len(ED_BYTES))
+        void diskio.f_write(&edout, n + 12)
         diskio.f_close_w()
         return true
+    }
+
+    ; Normalise a typed folder into the absolute, trailing-slash-free form the rest of the installer
+    ; assumes. Empty input keeps the default. A missing leading '/' is added rather than rejected:
+    ; everything here is rooted at the drive root anyway, and a relative path would defeat the whole
+    ; point of the launcher - EDIT resolves it from wherever ^/ED happened to be run.
+    sub set_instdir(uword p) {
+        ubyte n = strings.length(p)
+        if n == 0 {
+            void strings.copy(DEF_DIR, instdir)
+            return
+        }
+        instdir[0] = 0
+        if @(p) != '/'
+            void strings.append(instdir, "/")
+        void strings.append(instdir, p)
+        n = strings.length(instdir)
+        while n > 1 and instdir[n-1] == '/' {   ; drop trailing slashes, but keep a bare root "/"
+            instdir[n-1] = 0
+            n--
+        }
+    }
+
+    ; Read one line into `buf`, echoing as it is typed. False = ESC. DEL rubs out.
+    sub read_line(uword buf, ubyte maxlen) -> bool {
+        ubyte n = 0
+        repeat {
+            ubyte k = getkey()
+            ; Fold shifted letters ($C1-$DA) down to $41-$5A. We are in the boot charset, so an
+            ; unshifted key already gives $41-$5A - but SHIFT is an easy slip, and the filesystem
+            ; matches only the unshifted form, so it would surface much later as "cannot open".
+            if k >= $c1 and k <= $da
+                k -= $80
+            if k == 13 {
+                @(buf + n) = 0
+                txt.nl()
+                return true
+            }
+            if k == 27
+                return false
+            if k == 20 {
+                if n != 0 {
+                    n--
+                    txt.chrout(20)
+                }
+            } else if k >= 32 and k < 128 and n < maxlen {
+                @(buf + n) = k
+                n++
+                txt.chrout(k)
+            }
+        }
+    }
+
+    ; ask whether to use the folder /ed names. No default on ENTER - the two answers write to
+    ; different places, so make the user actually pick one.
+    sub ask_where() -> ubyte {
+        txt.print("y/n ")
+        repeat {
+            ubyte k = getkey()
+            when k {
+                'y', 'Y' -> return WHERE_ADOPT
+                'n', 'N' -> return WHERE_DEF
+                27 -> return WHERE_CANCEL
+                else -> { }
+            }
+        }
     }
 
     ; print the "[y]/n  (t=dry run)" tail and read one decision key. ENTER takes `default_install`.

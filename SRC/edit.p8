@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 182         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 199         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -69,7 +69,76 @@ main {
     bool run_config = false             ; Help>Config armed the hand-off to the EDCFG settings program
     str cfgprog = "edcfg.prg"           ; the settings program; theme.path_to() prefixes the
                                         ; install folder (read out of the root ED launcher)
-    str runstate = "ed.run"             ; restart-state file at the fsroot: doc name + cursor line
+    str runstate = "ed.run"             ; session-state file at the fsroot (see the layout note below)
+    ; ---- session state (ed.run) ----
+    ; A hand-off to BASLOAD / EDCFG (and later to any of our own utility programs) reloads EDIT from
+    ; scratch, so everything in low RAM is lost. ed.run is what survives the trip. It used to carry
+    ; just the active document's name + cursor line; it now describes the whole WORKSPACE - all three
+    ; document slots, the clipboard and the search terms - so the return lands where the user left off
+    ; rather than on one reopened file.
+    ;
+    ; Documents come back by REOPENING them from disk, which is why write_run_state force-saves any
+    ; modified slot first. What deliberately does NOT survive is the undo/redo history: its snapshots
+    ; are far pointers into the xarena, so restoring them would mean re-allocating every snapshot and
+    ; rewriting both rings' bank/offset entries for three documents - a lot of fiddly code in a program
+    ; with under 1KB of low RAM free, to save something a reload can legitimately drop. The rings ride
+    ; along inside the context blocks below but are cleared on the way back in (see slot_restore).
+    ;
+    ; The per-document fields are NOT re-packed here. save_ctx already gathers all 42 of them into a
+    ; CTX_SIZE context block in CLIP_BANK, so the file carries those blocks VERBATIM - which cannot
+    ; disagree with the CTX table because it is that table's own output, and which costs ~1KB less low
+    ; RAM than hand-packing the same fields (the first cut of this did, and overflowed memtop by 1054
+    ; bytes). The trade: SES_VER MUST be bumped whenever CTX_ADDR/CTX_LEN change, or an old ed.run
+    ; would scatter the wrong bytes into the wrong globals.
+    ;
+    ; The old format had no signature, so a stale or truncated file was parsed as though it were valid
+    ; (hence its `fk + 99 <= n` length probe). This one leads with a magic + version and rejects
+    ; anything else outright - a wrong file is a clean "start fresh", never a half-restored workspace.
+    ;
+    ; The SESSION-level fields (fkeys, search terms, clipboard flags, ...) all live in LOW RAM and
+    ; stream straight to the file - the (field, length) list that defines their order lives with the
+    ; rest of the session code in misc.ovl (fields() in misc.p8).
+    ;
+    ; Layout, written and read in exactly this order:
+    ;    0   4   magic "eds1"
+    ;    4   1   format version (SES_VER)
+    ;    5  272  the session fields, in the order misc.p8's fields() streams them
+    ;   ..  3*CTX_SIZE   the three document context blocks, exactly as save_ctx left them
+    ;   ..   n           clipboard bytes (clip_len of them, 0..CLIP_MAX)
+    ;
+    ; The contexts are written at the full CTX_SIZE even though the CTX table only fills 466 of it -
+    ; padding is free on disk and it means no length constant can drift out of step with the table.
+    const ubyte SES_VER = 1             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
+    const uword CLIP_MAX = 1024         ; clipbuf is $A000-$A3FF in CLIP_BANK
+    ; magic + version as ONE record: it writes in a single f_write and verifies in a single compare
+    ; loop, so the version can never be checked separately from (or forgotten alongside) the signature
+    ubyte[5] seshdr = ['e', 'd', 's', '1', SES_VER]
+    str tmpdoc   = "ed_a.tmp"           ; a modified UNTITLED doc spills here; [3] is patched per slot
+    bool[NDOCS] ses_spill               ; that slot's document was untitled and went to a temp file
+    bool  ses_failed                    ; ed.run existed but was not a session we understand
+    ubyte ses_lost                      ; documents the session named that no longer exist on disk
+    bool  ses_ok                        ; the session overlay handshake succeeded (see start())
+    ; The session ORCHESTRATION (the old write_run_state / restore_run_state / slot_restore bodies)
+    ; lives in misc.ovl - it runs once at startup and once at exit, making it the coldest ~900 bytes
+    ; in the program, moved out when this feature left 20 bytes free. The overlay reaches main two
+    ; ways: it calls back through ONE dispatcher (ses_svc below - overlay code can't name main's subs
+    ; and must not map a bank itself), and it pokes main's globals through THIS table, by index.
+    ; The table order and the ses_svc op numbers are the overlay ABI: keep them in lock-step with the
+    ; P_*/OP_* constants in misc.p8 and bump SESOVL_VER on any change - the handshake then rejects a
+    ; stale .ovl instead of letting it scribble through outdated pointers.
+    ; @nosplit is LOAD-BEARING: prog8 stores uword arrays as separate lsb/msb halves by default, and
+    ; &SES_PTRS on a split array yields the LSB half only - the overlay's peekw(ptrs + i*2) walk then
+    ; reads pairs of ADJACENT LSBS as pointers and scribbles through garbage addresses (found the hard
+    ; way: F5 BRKed into the ML monitor). @nosplit forces the interleaved lo/hi layout the overlay
+    ; expects. Main's own indexed accesses work either way; it is only this raw cross-unit view that
+    ; needs the linear layout.
+    const ubyte SESOVL_VER = 1
+    uword[26] @nosplit SES_PTRS = [
+        &g_active_slot, &modified, &filename, &fnbuf, &ses_spill,
+        &tmpdoc, &seshdr, &tmpbuf, &clip_has, &clip_len,
+        &cur_row, &top_line, &basload_err_line, &edoc.line_count, &sel_active,
+        &sel_cleared, &cur_dirty, &ses_failed, &ses_lost, &TEXT_ROWS,
+        &fksnap, &find_term, &repl_term, &startdir, &ww_on, &clip_line ]
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     ubyte[80] berr                      ; the full BASLOAD error line (screen codes) scraped off the boot screen
     ubyte berr_len = 0                  ; length of berr (0 = no error captured)
@@ -247,6 +316,10 @@ main {
     ; loop runs entirely in-bank (one JSRFAR per prompt); prompt_str() below is a thin main-side wrapper.
     ; flags bit0 = allow_empty, bit1 = ww_hint; wwptr -> ww_on (toggled live on Commodore+W). -> 1/0.
     extsub @bank 10 $A006 = ovl_prompt(uword promptmsg @R0, uword dest @R1, ubyte maxlen @R2, ubyte flags @R3, ubyte theme_id @R4, uword wwptr @R5) -> ubyte @A
+    ; the session save/restore entries (see the SES_PTRS comment for the ABI)
+    extsub @bank 10 $A009 = ovl_ses_setup(uword svcaddr @R0, uword ptrtbl @R1) -> ubyte @A
+    extsub @bank 10 $A00C = ovl_ses_write()
+    extsub @bank 10 $A00F = ovl_ses_restore() -> ubyte @A
     bool misc_ok                        ; misc.ovl loaded OK -> About + the input prompts are available
     str  miscovl = "misc.ovl"
 
@@ -387,6 +460,19 @@ main {
             misc_init()                 ; extsub @bank 8: clears the overlay's in-bank BSS, ONCE
         else
             void diskio.status()         ; drop the FILE NOT FOUND (else the activity LED blinks)
+        ; wire up the session code in the overlay. Two guards before trusting it: the three new
+        ; jmptable entries must actually BE jumps (a stale pre-session misc.ovl is shorter - $A009
+        ; would hold arbitrary code and calling it would crash), and ses_setup must return the ABI
+        ; version this binary was built against. Either failing -> ses_ok false -> EDIT runs fine
+        ; but sessions don't survive a hand-off (same graceful degradation as the prompts).
+        ses_ok = false
+        if misc_ok {
+            cx16.push_rambank(MISC_BANK)
+            bool entries = @($a009) == $4c and @($a00c) == $4c and @($a00f) == $4c
+            cx16.pop_rambank()
+            if entries
+                ses_ok = ovl_ses_setup(&ses_svc, &SES_PTRS) == SESOVL_VER
+        }
 
         ; ...and the text/hex viewer overlay into its bank (same pattern). Missing tview.ovl is not
         ; fatal: tview_ok stays false and Help>Keyboard / File>View report it instead of jumping in.
@@ -418,16 +504,27 @@ main {
             menus_init()                ; extsub @bank 11: clears the overlay's in-bank BSS, ONCE
         else
             void diskio.status()
+        ; A session restore rebuilds ALL THREE slots itself (documents, cursors, clipboard), so the
+        ; fresh-launch path below - which blanks B and C - must not run on top of it.
         bool reloaded = restore_run_state()
-        if not reloaded {               ; fresh launch (no BASLOAD reload pending):
+        if not reloaded {               ; fresh launch (no session pending):
             snapshot_fkeys()            ;   capture the user's real fkeys before we ever hijack F8
             new_document()
+            init_doc_slots()            ;   slot 0 is the launched doc; create empty docs B and C
         }                               ; (on reload, restore_run_state loaded the snapshot from ed.run)
-        init_doc_slots()                        ; slot 0 is the launched doc; create empty docs B and C
         cursor_sprite_setup()                   ; the insert-mode underline cursor sprite (theme+mode set)
         full_redraw()
+        ; One status-row message, most specific first: a BASLOAD error names a line to fix, a rejected
+        ; session explains why the editor came up empty, missing files explain the blank slots. Silence
+        ; would read as a bug in every one of those cases.
         if reloaded and berr_len != 0           ; the Run BASLOAD came back with an error; show the full
             show_basload_error()                ; error on the bar (cursor's already on the line it named)
+        else {
+            if ses_failed
+                flash_notify("Session unreadable - started fresh")
+            else if ses_lost != 0
+                flash_notify("Session files missing")
+        }
         g_running = true
         while g_running {
             ubyte k = get_editor_key()
@@ -1140,9 +1237,33 @@ main {
         cx16.vpoke(1, CURS_ATTR + 6, $0c)               ; Z=3 -> in front of layer 1
     }
 
+    sub draw_sel_span() {
+        ; Repaint just the screen rows the cursor swept while extending a selection.
+        ; Extending only changes the row the cursor left (it now highlights to end of line)
+        ; and the row it landed on; every other highlighted row is already correct on screen.
+        ; This used to be a draw_all_text() -- 58 banked edoc.load calls and 58 run_syntax
+        ; passes per Shift+arrow, which is why marking text crawled.
+        uword lo = cur_row
+        uword hi = prev_cur_row
+        if lo > hi {
+            lo = prev_cur_row
+            hi = cur_row
+        }
+        if lo < top_line
+            lo = top_line
+        uword last = top_line + TEXT_ROWS - 1
+        if hi > last
+            hi = last
+        uword i = lo
+        while i <= hi {
+            draw_text_row(lsb(i - top_line))
+            i++
+        }
+    }
+
     sub redraw_after_move() {
         ; Repaint after a cursor move as cheaply as the move allows:
-        ;   * selection active        -> full repaint (the highlight spans many rows)
+        ;   * selection active        -> repaint only the rows the cursor swept
         ;   * no scroll                -> repaint only the old + new cursor rows
         ;   * scrolled by exactly 1    -> shift the text window in VRAM, repaint 1-2 rows
         ;   * scrolled further (PgUp/Dn)-> full repaint
@@ -1157,17 +1278,30 @@ main {
         uword old_top = top_line
         ubyte old_left = left_col
         bool scrolled = ensure_visible()
-        if sel_active or force_full or left_col != old_left {
-            ; selection spans rows (or was just cleared), or a horizontal scroll changed every row
+        if force_full or left_col != old_left {
+            ; a selection was just cleared, or a horizontal scroll changed every row
             draw_all_text()
             draw_status()
             return
         }
         if not scrolled {
+            if sel_active {
+                draw_sel_span()                 ; only the swept rows changed, not all 58
+                prev_cur_row = cur_row
+                draw_status()
+                return
+            }
             if prev_cur_row >= top_line and prev_cur_row < top_line + TEXT_ROWS
                 draw_text_row(lsb(prev_cur_row - top_line))
             draw_text_row(lsb(cur_row - top_line))
             prev_cur_row = cur_row
+            draw_status()
+            return
+        }
+        if sel_active and cur_row != prev_cur_row + 1 and prev_cur_row != cur_row + 1 {
+            ; scrolled AND jumped more than one row with a selection up: rows between the two
+            ; positions changed highlight but the VRAM shift below only refreshes two of them
+            draw_all_text()
             draw_status()
             return
         }
@@ -2097,6 +2231,7 @@ main {
                 flash_notify("Save cancelled")
                 return false
             }
+            fold_str(&fnbuf)                    ; typed upper case -> the $41-$5A filenames use
             if not confirm_overwrite(fnbuf)     ; new name -> guard against clobbering a file
                 return false
             void strings.copy(fnbuf, filename)
@@ -2110,6 +2245,7 @@ main {
             notify("Save cancelled")            ; Esc or Enter-on-blank-line -> cancel, with feedback
             return
         }
+        fold_str(&fnbuf)                        ; typed upper case -> the $41-$5A filenames use
         if not confirm_overwrite(fnbuf)         ; guard against clobbering an existing file
             return
         void strings.copy(fnbuf, filename)
@@ -2245,9 +2381,12 @@ main {
                 keep = false                    ; discarding the edits: don't reopen a stale document
             }
         }
-        if keep
-            write_run_state()                   ; document + cursor line for the return trip
-        run_config = true
+        if not keep {
+            filename[0] = 0                     ; discarding the edits: come back to an EMPTY Doc A
+            modified = false                    ; (clearing both stops write_run_state re-saving it)
+        }
+        write_run_state()                       ; always: docs B and C are worth restoring even when
+        run_config = true                       ; the user threw away Doc A's edits
         g_running = false                       ; leave the main loop; start()'s tail chains out
         g_redrawn = true
     }
@@ -2361,88 +2500,97 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         cx16.kbdbuf_put($0d)                    ; RUN + CR
     }
 
+    sub ses_xfer(uword bankaddr, uword count, bool saving) -> bool {
+        ; move count bytes of CLIP_BANK to/from the open ed.run. diskio reads and writes STRAIGHT out
+        ; of the mapped bank - its KERNAL calls never touch the $A000-$BFFF window themselves, so the
+        ; obvious staging buffer and its chunking loop are both unnecessary (they cost ~200 bytes of
+        ; low RAM before this was noticed). false = the write failed or the file ran short.
+        cx16.push_rambank(CLIP_BANK)
+        bool ok
+        if saving
+            ok = diskio.f_write(bankaddr, count)
+        else
+            ok = diskio.f_read(bankaddr, count) == count
+        cx16.pop_rambank()
+        return ok
+    }
+
     sub write_run_state() {
-        ; file = document name + CR + cursor row (lo/hi) + the 99-byte fkey snapshot. The snapshot
-        ; rides along so the *original* (pre-hijack) fkeys survive the BASLOAD reload; restore_run_state
-        ; reads it back into fksnap on the next launch. Read back by restore_run_state.
-        if not diskio.f_open_w(runstate)
-            return
-        void diskio.f_write(filename, strings.length(filename))
-        tmpbuf[0] = 13                          ; CR separator
-        tmpbuf[1] = lsb(cur_row)
-        tmpbuf[2] = msb(cur_row)
-        void diskio.f_write(&tmpbuf, 3)
-        void diskio.f_write(&fksnap, 99)        ; carry the fkey snapshot across the reload
-        ubyte sdl = lsb(strings.length(startdir))   ; ...then the ORIGINAL launch dir (NUL-terminated) so
-        void diskio.f_write(startdir, sdl + 1)      ; the reload restores IT on exit, not the subfolder the
-        diskio.f_close_w()                          ; document was opened from (cwd stays there for BASLOAD)
+        ; Snapshot the whole workspace into ed.run. The body lives in misc.ovl (ses_write) - it is
+        ; the coldest code in the program, moved out for low RAM. No overlay -> no session file, but
+        ; EDIT still runs; the reload then just comes up fresh.
+        if ses_ok
+            ovl_ses_write()
     }
 
     sub restore_run_state() -> bool {
-        ; if the restart-state file exists (from a BASLOAD hand-off), reopen that document at the
-        ; saved cursor line and consume the file. Returns true if it reopened a document.
-        if not diskio.f_open(runstate) {
-            void diskio.status()        ; no ed.run on a normal launch: drop the FILE NOT FOUND DOS error,
-            return false                ; else the drive error LED blinks (as the overlay loads above do)
-        }
-        uword n = diskio.f_read(&tmpbuf, 255)
-        diskio.f_close()
-        diskio.delete(runstate)                 ; one-shot
-        if n < 3
+        ; Rebuild the workspace ed.run describes (body in misc.ovl: ses_restore + slot_restore).
+        ; Returns true if a session was restored - start() then skips its fresh-launch setup.
+        if not ses_ok
             return false
-        ubyte i = 0
-        while i < n and tmpbuf[i] != 13         ; filename runs up to the CR separator
-            i++
-        if i == 0 or i + 2 >= n                 ; no name, or the 2 line bytes are missing
-            return false
-        ubyte j = 0
-        while j < i {                           ; copy the name into fnbuf, NUL-terminated
-            fnbuf[j] = tmpbuf[j]
-            j++
-        }
-        fnbuf[i] = 0
-        uword line = mkword(tmpbuf[i+2], tmpbuf[i+1])   ; hi, lo
-        ubyte fk = i + 3                        ; the fkey snapshot follows the lo/hi line bytes
-        if fk + 99 <= n {                       ; new-format state file carries all 9 fkey macros
-            ubyte f = 0
-            while f < 99 {
-                fksnap[f] = tmpbuf[fk + f]
-                f++
+        return ovl_ses_restore() != 0
+    }
+
+    sub ses_svc() {
+        ; Service dispatcher for the session code in misc.ovl: op in r0L, args in r1-r3, results in
+        ; r0. The overlay cannot call main's subs by name (separate compilation units) and must NEVER
+        ; map another bank over $A000 (it would swap itself out mid-instruction) - so every main-sub
+        ; call and every CLIP_BANK access funnels through here, executing from low RAM where banking
+        ; is safe (push/pop restores bank 10 before this returns to the overlay).
+        ; Op numbers are the overlay ABI - keep in lock-step with misc.p8's OP_* constants and bump
+        ; SESOVL_VER on any change.
+        ubyte op = cx16.r0L
+        when op {
+            0 -> {                              ; begin a session write
+                commit_editbuf()
+                save_ctx(g_active_slot)
             }
-            ; the ORIGINAL launch dir (NUL-terminated) follows the fkey snapshot. Override the startdir
-            ; captured from the current cwd - which, after a BASLOAD/Config hand-off, is the document's
-            ; subfolder - so the final exit returns the shell to where EDIT was FIRST launched.
-            ubyte sd = fk + 99
-            if sd < n {                         ; guard old files that predate the launch-dir field
-                ubyte s = 0
-                while sd < n and tmpbuf[sd] != 0 and s < 81 {
-                    startdir[s] = tmpbuf[sd]
-                    s++
-                    sd++
-                }
-                startdir[s] = 0
+            1 -> save_ctx(cx16.r1L)
+            2 -> load_ctx(cx16.r1L)
+            3 -> {                              ; activate slot r1L: context + its editbuf line
+                load_ctx(cx16.r1L)
+                cur_len = edoc.load(cur_row, &editbuf)
+                cur_dirty = false
             }
-        } else {
-            snapshot_fkeys()                    ; old/short file: fall back to the live table
+            4 -> blank_slot()
+            5 -> b2r(edoc.save_file(filename))
+            6 -> {
+                b2r(edoc.load_file(filename))
+                if cx16.r0L == 0
+                    void diskio.status()        ; drop the FILE NOT FOUND (stop the drive LED)
+            }
+            7 -> {                              ; per-slot post-reload init
+                undo_clear()
+                g_group = 0
+                recompute_gutter()
+            }
+            8 -> b2r(ses_xfer(cx16.r1, cx16.r2, cx16.r3L != 0))
+            9 -> {
+                b2r(diskio.f_open(runstate))
+                if cx16.r0L == 0
+                    void diskio.status()
+            }
+            10 -> b2r(diskio.f_open_w(runstate))
+            11 -> diskio.f_close_w()
+            12 -> {                             ; finish reading: close + consume (one-shot file)
+                diskio.f_close()
+                diskio.delete(runstate)
+                void diskio.status()
+            }
+            13 -> cx16.r0 = diskio.f_read(cx16.r1, cx16.r2)
+            14 -> void diskio.f_write(cx16.r1, cx16.r2)
+            15 -> {
+                diskio.delete(fnbuf)
+                void diskio.status()
+            }
         }
-        if not edoc.load_file(fnbuf)
-            return false
-        void strings.copy(fnbuf, filename)
-        apply_syntax_mode(fnbuf)                ; colour + gutter by extension (BASIC / .md / plain)
-        if basload_err_line != 0                ; a BASLOAD error scraped off the boot screen wins over the
-            line = basload_err_line - 1         ; saved cursor: jump to it. BASLOAD line#s are 1-based.
-        if line >= edoc.line_count
-            line = edoc.line_count - 1
-        cur_row = line
-        cur_col = 0
-        left_col = 0
-        top_line = 0
-        if cur_row >= TEXT_ROWS                 ; scroll so the cursor line is on screen
-            top_line = cur_row - TEXT_ROWS + 1
-        cur_len = edoc.load(cur_row, &editbuf)
-        cur_dirty = false
-        modified = false
-        return true
+    }
+
+    sub b2r(bool b) {
+        ; bool result -> the r0L result register (the overlay tests 0 / not-0)
+        cx16.r0L = 0
+        if b
+            cx16.r0L = 1
     }
 
     ; ---- BASLOAD error read-back: scrape the failing source line off the boot screen ----
@@ -2687,6 +2835,21 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
         if b >= $c1 and b <= $da
             return b - $80
         return b
+    }
+
+    sub fold_str(uword p) {
+        ; fold a whole string's PETSCII uppercase ($C1-$DA) down to $41-$5A, in place.
+        ; Filenames only: now that the prompt accepts uppercase, a typed "TEST.BAS" would
+        ; otherwise reach the disk as $D4$C5$D3$D4..., a different byte string from the
+        ; $41-$5A the picker hands back and the installer writes - so it would not match
+        ; an existing file and would create an oddly named new one. Search terms are NOT
+        ; folded here: line_match already folds both sides, and leaving them alone keeps
+        ; the entered text displaying as the upper case the user typed.
+        ubyte i = 0
+        while @(p + i) != 0 {
+            @(p + i) = fold(@(p + i))
+            i++
+        }
     }
 
     sub is_word_char(ubyte b) -> bool {
