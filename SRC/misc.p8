@@ -193,7 +193,10 @@ main {
     ; originals, but this is the coldest code in the program and bank space is free; the originals'
     ; comments (WHY the order matters, what each guard is for) are kept next to their translations.
 
-    const ubyte SESOVL_VER = 1          ; handshake: main refuses the session feature on mismatch
+    const ubyte SESOVL_VER = 2          ; handshake: main refuses the session feature on mismatch
+                                        ; (2: fksnap/startdir moved into CLIP_BANK - their SES_PTRS
+                                        ;  slots are now bank ADDRESSES and must move via OP_XFER,
+                                        ;  so a v1 overlay would fio() them out of the wrong memory)
 
     ; architecture constants duplicated from edit.p8 - fixed for the life of the bank map
     const ubyte NDOCS    = 3
@@ -305,6 +308,13 @@ main {
             void op2r(OP_READ, pt(pi), n)
     }
 
+    sub bio(ubyte wr, ubyte pi, uword n) {
+        ; same as fio, but for a field that lives in CLIP_BANK instead of main's low RAM. fio hands
+        ; the address straight to diskio, which would read it as low RAM; OP_XFER routes it through
+        ; main's ses_xfer, which maps the bank first. The SES_PTRS slot holds the bank address.
+        void op3r(OP_XFER, pt(pi), n, wr)
+    }
+
     sub fields(ubyte wr) {
         ; the session-level fields, streamed to/from ed.run one field at a time. THIS list defines
         ; the file layout between the header and the context blocks - order and lengths are part of
@@ -312,10 +322,10 @@ main {
         ; main's low RAM; the lengths mirror the buffer declarations there.) Written as explicit
         ; calls, not a table: module-level initialized arrays would land in front of the code and
         ; shove the %jmptable off its fixed offsets.
-        fio(wr, P_FKSNAP, 99)
+        bio(wr, P_FKSNAP, 99)           ; banked (CLIP_BANK), not low RAM - see bio()
         fio(wr, P_FIND, 41)
         fio(wr, P_REPL, 41)
-        fio(wr, P_STARTDIR, 82)
+        bio(wr, P_STARTDIR, 82)         ; banked
         fio(wr, P_SPILL, NDOCS)
         fio(wr, P_WW, 1)
         fio(wr, P_CLIP_HAS, 1)

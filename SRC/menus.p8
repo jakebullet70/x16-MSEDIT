@@ -43,6 +43,8 @@ main {
                     3 -> put_str_at(col, row, "Save       F2")
                     4 -> put_str_at(col, row, "Save As...")
                     5 -> put_str_at(col, row, "Save All")
+                    6 -> put_str_at(col, row, "Close")
+                    7 -> put_str_at(col, row, "Close All")
                     else -> put_str_at(col, row, "Exit")
                 }
             }

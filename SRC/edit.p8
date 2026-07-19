@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 200         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 207         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -132,18 +132,30 @@ main {
     ; way: F5 BRKed into the ML monitor). @nosplit forces the interleaved lo/hi layout the overlay
     ; expects. Main's own indexed accesses work either way; it is only this raw cross-unit view that
     ; needs the linear layout.
-    const ubyte SESOVL_VER = 1
+    ; Two session buffers that are LIVE all session but TOUCHED only at the two ends (startup and
+    ; exit) live in CLIP_BANK rather than low RAM - 181 bytes reclaimed. They sit above the three
+    ; context blocks, which end at CTX_BASE + NDOCS*CTX_SIZE = $A400 + $600 = $AA00.
+    ; They are still streamed to ed.run in the same order and the same lengths, so the FILE format
+    ; is unchanged (SES_VER stays put) - but the overlay must move them with OP_XFER, never with
+    ; fio(), because fio() hands the address to diskio as low RAM. That is why the SES_PTRS slots
+    ; below hold these ADDRESSES rather than &fksnap / &startdir, and why SESOVL_VER is bumped: a
+    ; stale misc.ovl would fio() them and stream from the wrong memory.
+    const uword FKSNAP_ADDR   = $AA00       ; 99 bytes: the KERNAL fkey-macro snapshot
+    const uword STARTDIR_ADDR = $AA70       ; 82 bytes: the startup working directory
+    const ubyte SESOVL_VER = 2
     uword[26] @nosplit SES_PTRS = [
         &g_active_slot, &modified, &filename, &fnbuf, &ses_spill,
         &tmpdoc, &seshdr, &tmpbuf, &clip_has, &clip_len,
         &cur_row, &top_line, &basload_err_line, &edoc.line_count, &sel_active,
         &sel_cleared, &cur_dirty, &ses_failed, &ses_lost, &TEXT_ROWS,
-        &fksnap, &find_term, &repl_term, &startdir, &ww_on, &clip_line ]
+        FKSNAP_ADDR, &find_term, &repl_term, STARTDIR_ADDR, &ww_on, &clip_line ]
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
-    ubyte[80] berr                      ; the full BASLOAD error line (screen codes) scraped off the boot screen
+    const ubyte BERR_MAX = 80           ; longest BASLOAD error line kept - one full 80-column row.
+                                        ; The buffer itself is an alias of workbuf, declared with it below.
     ubyte berr_len = 0                  ; length of berr (0 = no error captured)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
-    ubyte[99] fksnap                             ; snapshot of all 9 KERNAL fkey macros, restored verbatim on exit
+    ; fksnap (the 99-byte snapshot of all 9 KERNAL fkey macros, restored verbatim on exit) lives at
+    ; FKSNAP_ADDR in CLIP_BANK - see the note on that constant.
     ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
     ubyte[256] tmpbuf                   ; scratch for rendering / line joins
     ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
@@ -199,6 +211,13 @@ main {
     str find_term = "?" * 40            ; current search term
     str repl_term = "?" * 40            ; current replacement
     ubyte[256] workbuf                  ; scratch for building a replaced line
+    ; The BASLOAD error line rides in workbuf rather than owning 80 bytes of its own. Its entire life
+    ; is inside start(): capture_err_row() scrapes it off the boot screen BEFORE the screen mode is
+    ; switched, and show_basload_error() prints it once a few lines later. Replace - workbuf's real
+    ; owner - cannot run until the editor is up and the user asks for it, so the two uses can never
+    ; overlap. Same trick as act_make_backup's `alias bakname = workbuf`. Worth 80 bytes of low RAM.
+    ; NOTE: clamp writes to BERR_MAX, not len(berr) - that now reads as workbuf's 256.
+    alias berr = workbuf
     uword found_row                     ; result of the last find
     ubyte found_col
     uword g_repl_count                  ; replacements committed in the last Replace run
@@ -347,7 +366,8 @@ main {
     str  basloadhlp = "basload.md"      ; the BASLOAD guide, viewed by Help > BASLOAD
     str  hintshlp   = "hints.md"        ; the Hints-Tips file, viewed by Help > Hints-Tips (Dev-only)
     ubyte pick_blocks                   ; size (clamped blocks) of the file last chosen by the picker
-    str startdir = "?" * 82             ; working dir at startup (restored on exit); diskio MAX_PATH_LEN=80
+    ; startdir (the working dir at startup, restored on exit; diskio MAX_PATH_LEN=80 so 82 with the
+    ; terminator) lives at STARTDIR_ADDR in CLIP_BANK - see the note on that constant.
 
     ubyte[NMENU] menu_col = [1, 7, 13, 21, 26, 34]  ; start col of each title: File@1, 2 spaces between titles
     ubyte[NMENU] menu_len = [4, 4, 6, 3, 6, 4]       ; File, Edit, Search, Dev, Window, Help
@@ -379,7 +399,7 @@ main {
     sub item_accel(ubyte active, ubyte key) -> ubyte {
         ; dropdown item accelerator: a folded letter -> item index, else 255
         when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'x' -> return 6 }
+            0 -> when key { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'c' -> return 6   'l' -> return 7   'x' -> return 8 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
             3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
@@ -398,7 +418,7 @@ main {
     sub accel_off(ubyte active, ubyte i) -> ubyte {
         ; column offset of the accelerator letter within an item label (for highlighting)
         when active {
-            0 -> when i { 2 -> return 3   4 -> return 5   5 -> return 2   6 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Exit 'x'@1 (New/Open/Save @0 default)
+            0 -> when i { 2 -> return 3   4 -> return 5   5 -> return 2   7 -> return 1   8 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Close All 'l'@1, Exit 'x'@1 (New/Open/Save/Close @0 default)
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
             3 -> when i { 1 -> return 5 }                       ; Dev: Make Backup 'B'@5 (Run BASLOAD 'R'@0 default)
@@ -436,10 +456,12 @@ main {
         clip_has = false
         ; remember the working directory so we can restore it on exit (the file picker
         ; may chdir away). curdir() needs X16 DOS R42+; 0 = unsupported/error -> skip.
-        startdir[0] = 0
+        cx16.push_rambank(CLIP_BANK)    ; startdir lives in the bank now (see FKSNAP_ADDR's note)
+        @(STARTDIR_ADDR) = 0
         cx16.r1 = diskio.curdir()
         if cx16.r1 != 0
-            void strings.copy(cx16.r1, startdir)
+            void strings.copy(cx16.r1, STARTDIR_ADDR)
+        cx16.pop_rambank()
         theme.apply(theme.cfg_read())   ; colour scheme from the install folder's edit.cfg (missing -> Classic).
                                         ; Read here, while the cwd is still the fsroot we launched in - theme's
                                         ; paths are relative to it and it does no chdir of its own.
@@ -535,8 +557,10 @@ main {
         ; at the DOCUMENT's directory: a file opened from a subfolder leaves the picker's cwd there with
         ; a BARE filename, and BASLOAD"name" / ed.run are resolved relative to the cwd - chdir'ing back
         ; to startdir here would make BASLOAD (and the F8 return-trip reload) look in the wrong folder.
-        if startdir[0] != 0 and not run_config and not run_basload
-            diskio.chdir(startdir)
+        cx16.push_rambank(CLIP_BANK)        ; startdir is banked now - diskio reads the name straight
+        if @(STARTDIR_ADDR) != 0 and not run_config and not run_basload   ; out of the mapped window
+            diskio.chdir(STARTDIR_ADDR)
+        cx16.pop_rambank()
         cursor_sprite_off()                     ; don't leave our cursor sprite on for the next program
         txt.clear_screen()
         cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
@@ -1743,6 +1767,7 @@ main {
     sub menu_divider(ubyte active) -> ubyte {
         ; the dropdown-item index that a horizontal divider follows, grouping the menu (255 = none).
         when active {
+            0 -> return 7       ; File: document actions (New..Close All) | Exit
             1 -> return 8       ; Edit: line ops (Undo..Move Down) | display toggle (Word Wrap)
             3 -> return 4       ; Dev:  actions (Run BASLOAD, Make Backup, comment ops) | view toggles (Syntax, Line#)
             WINDOW_MENU -> return 0   ; Window: Next | documents A/B/C
@@ -1755,7 +1780,7 @@ main {
         ubyte n = 5                         ; Help default: Keyboard/BASLOAD/Hints-Tips/Config/About (Dev shown)
         ubyte boxw = 13                     ; Help ("Help... F1/BASLOAD.../Hints-Tips/Config.../About")
         when active {
-            0 -> { n = 7  boxw = 17 }       ; File ("Open...    Ctrl+O")
+            0 -> { n = 9  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
             3 -> { n = 7  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
@@ -1821,6 +1846,10 @@ main {
                     3 -> void save_now()
                     4 -> act_save_as()
                     5 -> act_save_all()
+                    6 -> act_new()          ; Close: the slots are fixed, so "closed" means "emptied" -
+                                            ; that is exactly act_new. Listed separately because the
+                                            ; menu should say what the user is trying to do.
+                    7 -> act_close_all()
                     else -> act_exit()
                 }
             }
@@ -2275,6 +2304,38 @@ main {
             flash_notify("All documents already saved")
     }
 
+    sub act_close_all() {
+        ; File>Close All: empty all three slots, prompting for each one that has unsaved edits.
+        ; Same walk as act_exit (bring each doc up so the prompt matches what is on screen), but it
+        ; empties rather than quits.
+        ;
+        ; Cancel STOPS - it does not skip to the next document. Slots already emptied stay emptied,
+        ; so the loop closes each doc immediately after its own prompt rather than prompting for all
+        ; three first: that way a Cancel on doc B has not yet touched doc C.
+        ;
+        ; The switch is unconditional, so the walk turns over NDOCS times and wraps right back to the
+        ; document the user started on - cheaper than tracking the start slot and calling goto_slot,
+        ; and switch_doc's own full_redraw leaves the screen correct on the way out.
+        ubyte closed = 0
+        while closed < NDOCS {
+            if modified {
+                ubyte r = confirm_save()
+                ; Cancel (or a failed save) stops here, on the doc that was being asked about. No
+                ; repaint on these paths: menu_dispatch calls full_redraw() when g_redrawn is unset,
+                ; which is exactly how act_new's own cancel path gets the screen back.
+                if r == 2
+                    return
+                if r == 1 {
+                    if not save_now()
+                        return
+                }
+            }
+            new_document()                  ; empty THIS slot before moving on
+            closed++
+            switch_doc()                    ; next doc (the NDOCS'th switch wraps home)
+        }
+    }
+
     sub act_exit() {
         ; quitting closes ALL three documents - check each for unsaved edits. Bring each modified doc up
         ; (so the confirm/save flow and the on-screen doc match) and prompt; any Cancel aborts the quit
@@ -2429,15 +2490,23 @@ main {
         ; capture all 9 KERNAL fkey macros (fkeytb = 99 bytes at $A80E, RAM bank 0 / KVARS) so a
         ; normal exit can put them back exactly as the user had them. pfkey only writes one slot, so
         ; we read the table directly. See SRC/fktest.p8 and docs/x16/kernal-r49/cbm/editor.s.
-        cx16.r0 = &fksnap
+        ; fkeytb ($A80E, bank 0) and fksnap (CLIP_BANK) are BOTH in the $A000-$BFFF window, so only
+        ; one of them is reachable at a time - the bank has to flip per byte, with the value parked
+        ; in X across the switch. 99 bytes twice a session; the cost does not matter.
+        cx16.r0 = FKSNAP_ADDR
+        cx16.r1L = CLIP_BANK
         %asm {{
             php
             sei
             lda  $00                ; save the current RAM bank
             pha
-            stz  $00                ; select RAM bank 0 (KVARS)
             ldy  #0
-_snl:       lda  $a80e,y            ; fkeytb -> fksnap
+_snl:       stz  $00                ; bank 0 (KVARS) to read fkeytb
+            lda  $a80e,y
+            tax
+            lda  cx16.r1L           ; CLIP_BANK to write fksnap
+            sta  $00
+            txa
             sta  (cx16.r0),y
             iny
             cpy  #99
@@ -2451,15 +2520,20 @@ _snl:       lda  $a80e,y            ; fkeytb -> fksnap
     sub restore_fkeys() {
         ; write the snapshot back into fkeytb -- un-hijacks F8 and restores any custom macros the
         ; user had, verbatim (not just F8's default). The pfkey hijack otherwise persists to power-cycle.
-        cx16.r0 = &fksnap
+        cx16.r0 = FKSNAP_ADDR        ; same per-byte bank flip as snapshot_fkeys, in reverse
+        cx16.r1L = CLIP_BANK
         %asm {{
             php
             sei
             lda  $00
             pha
-            stz  $00                ; RAM bank 0 (KVARS)
             ldy  #0
-_rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
+_rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
+            sta  $00
+            lda  (cx16.r0),y
+            tax
+            stz  $00                ; bank 0 (KVARS) to write fkeytb
+            txa
             sta  $a80e,y
             iny
             cpy  #99
@@ -2636,8 +2710,8 @@ _rsl:       lda  (cx16.r0),y        ; fksnap -> fkeytb
                 last = c                        ; remember the last non-blank column
         }
         ubyte n = last + 1
-        if n > len(berr)
-            n = len(berr)
+        if n > BERR_MAX                     ; NOT len(berr): berr aliases workbuf, so that reads as 256
+            n = BERR_MAX
         c = 0
         while c < n {
             ubyte s = txt.getchr(c, row)
