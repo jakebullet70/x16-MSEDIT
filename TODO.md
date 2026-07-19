@@ -20,11 +20,6 @@
   Everything else was verified on build 200: all 11 files copied including prg2basload.prg, a
   REINSTALL preserved the existing edit.cfg, `^/ED` launches from any folder, and the help .md files
   display in the viewer.
-- **File menu: Close file / Close all** — close the current document (and a Close-all that walks every
-  open doc), each prompting to save when the doc is dirty. Reuse the existing `confirm_save` flash
-  prompt rather than a new popup. Decide what "closed" means for the 3-doc model: leave the slot empty
-  and switch to the next occupied one, or reset the slot to an untitled empty doc. Close-all should stop
-  on the first Esc/cancel instead of ploughing through the rest.
 - **Move the "ABC" doc indicator from the footer to the header** — the three-cell active-document
   indicator lives in `draw_status` ([edit.p8:1361-1371](SRC/edit.p8#L1361-L1371)), between the INS/OVR
   flag and the centred "Total lines" block. Move it up to the menu bar (`draw_menubar`), which has free
