@@ -11,11 +11,6 @@
   set and is not swallowed as Ctrl+D; (2) word-wrap mode has its own parallel renderer, so the jump has
   to land correctly there too; (3) decide whether Ctrl+Shift+Home/End should extend the selection to the
   file ends, matching the existing Shift+Home/Shift+End behaviour on 147/132.
-- **Open-file popup: filter + delete** — in the Open file picker, add (1) a filter toggle that shows
-  only BASLOAD source (the `has_basic_ext` set: `.bas` / `.basl` / `.bl` / `.bas.txt`), and (2) a Delete
-  key that removes the highlighted file from disk (with a Y/N confirm) and drops it from the list. Both
-  act on the existing `filelist` records in FLIST_BANK; delete uses `diskio.delete` + `void diskio.status()`
-  (clear the channel), then re-reads the directory or compacts the list in place.
 - **Installer: the run-from-inside-/msedit case is still untested** — install.p8 is meant to skip the
   copy when the folder it was launched from IS the install folder, rather than copy each file onto
   itself and truncate it. It does not arise in normal use (INSTALL.PRG is not one of the installed
