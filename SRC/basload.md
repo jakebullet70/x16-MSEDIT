@@ -4,9 +4,9 @@ BASLOAD abbreviated help.
 
 # Hello World Example
 
-Let's begin with a simple \"Hello World\" example in BASLOAD formatted
+Let's begin with a simple "Hello World" example in BASLOAD formatted
 source code. Open your text editor, type in the code below, and save it
-to the file \"HELLO.BAS\" on the SD card.
+to the file "HELLO.BAS" on the SD card.
 
         LOOP:
             PRINT "HELLO, WORLD!"
@@ -50,13 +50,10 @@ There are, however, four important differences between BASLOAD source
 code and the built-in BASIC:
 
 -   Line numbers are not used in BASLOAD source code.
-
 -   Labels are declared as targets for GOTOs, GOSUBs and other commands
     that normally take a line number.
-
 -   Variable names have up to 64 significant characters, compared to two
     in the built-in BASIC.
-
 -   Some whitespace is required to separate identifiers, *i.e.*
     commands, labels, and variables, from each other.
 
@@ -73,18 +70,15 @@ current time or date.
 ## Identifiers
 
 BASIC commands, labels, variables, and defined constants are commonly
-referred to as \"identifiers\" in this manual.
+referred to as "identifiers" in this manual.
 
 Identifiers must start with a letter, A through Z.
 
 Subsequent characters may be any of:
 
 -   A letter A-Z.
-
 -   A digit 0-9.
-
 -   An underscore.
-
 -   A period (.).
 
 Identifiers are not case-sensitive, and may be at most 64 characters
@@ -150,7 +144,7 @@ The following characters are recognized as whitespace:
 Examples:
 
 -   PRINTME needs to be separated if you want to PRINT the value of ME
--   PRINT\"ME\" does not need to be separated as double quote cannot be
+-   PRINT"ME" does not need to be separated as double quote cannot be
     part of an identifier name
 
 # BASLOAD Options
@@ -213,7 +207,7 @@ Example that turns on output of REM statements:
 
         #REM 1
 
-## Option: #INCLUDE \"filename\"
+## Option: #INCLUDE "filename"
 
 This option includes the content of another BASIC source file where it
 is encountered.
@@ -265,8 +259,8 @@ need to escape each of them with a backslash while this option is
 active.
 
 While the option is active it is also possible to type in characters by
-their HEX code. The HEX code is prefixed by \"\\X\". For instance,
-\"\\Xff\" outputs the PI character in PETSCII upper case mode.
+their HEX code. The HEX code is prefixed by "\\X". For instance,
+"\\Xff" outputs the PI character in PETSCII upper case mode.
 
 Examples:
 
@@ -275,7 +269,7 @@ Examples:
         PRINT "\{CLEAR} clears the screen": REM {CLEAR} unconverted
         PRINT "The cirumference of a cirle is 2 * \Xff * r"
 
-## Option: #SYMFILE \"@:filename\"
+## Option: #SYMFILE "@:filename"
 
 This option writes symbols (labels and variables) found during the
 translation of the source code to the specified symbol file.
@@ -292,12 +286,12 @@ an existing symbol file to be overwritten, which generally is what you
 want. Otherwise it is not possible to run BASLOAD multiple times without
 file exists error.
 
-Example that writes the symbol file \"MYPRG.SYM\", overwriting the file
+Example that writes the symbol file "MYPRG.SYM", overwriting the file
 if it exists:
 
         #SYMFILE "@:MYPRG.SYM"
 
-## Option: #SAVEAS \"@:filename\"
+## Option: #SAVEAS "@:filename"
 
 This option autosaves the tokenized program to the specified file name.
 Preprend the file name by @: if you always want to overwrite an existing

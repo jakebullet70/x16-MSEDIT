@@ -154,8 +154,14 @@ theme {
     str  DEF_DIR  = "/msedit/"          ; fallback when ED is missing/unparsable (absolute, like ED's path)
     str  CFG_FILE = "edit.cfg"
     str  progdir  = "?" * 32            ; install folder incl. trailing slash (empty = programs at root)
-    str  progpath = "?" * 44            ; progdir + a filename, built by path_to()
-    ubyte[32] edbuf                     ; ED launcher load buffer (the launcher is 27 bytes)
+    ; DUAL USE. Normally progdir + a filename, built by path_to(). It is ALSO the buffer
+    ; find_progdir() loads the ED launcher into - safe because find_progdir only ever writes progdir,
+    ; and its callers don't touch progpath until AFTER it has returned. That retired a separate
+    ; 32-byte edbuf which was too small: an ED is pathlen+12 bytes, so any install path over 20 chars
+    ; ("/dos/basload-editor/edit.prg" is 28, a 40-byte launcher) made load_raw run off the end of it
+    ; and scribble over cfg_line/dir_known on every startup. 64 covers a launcher path of 52 chars,
+    ; comfortably past the 31-char cap the parse below puts on progdir.
+    str  progpath = "?" * 64
     ubyte[24] cfg_line                  ; cfg load buffer (holds the whole file: theme=N\r tab=W\r ...)
     bool dir_known = false
 
@@ -170,27 +176,28 @@ theme {
         ; parse the install folder out of the root ED launcher; called once, before the first cfg use.
         dir_known = true
         void strings.copy(DEF_DIR, progdir)
-        uword endaddr = diskio.load_raw(ED_NAME, &edbuf)
+        ; load into progpath - see the note on its declaration for why that is safe here
+        uword endaddr = diskio.load_raw(ED_NAME, &progpath)
         if endaddr == 0 {
             void diskio.status()            ; drop the FILE NOT FOUND (else the activity LED blinks)
             return
         }
-        ubyte n = lsb(endaddr - &edbuf)
-        if n > 32
-            n = 32
+        ubyte n = lsb(endaddr - &progpath)
+        if n > 64
+            n = 64
         ; the quoted path inside the tokenized BASIC line: LOAD "<path>"
         ubyte i = 0
-        while i < n and edbuf[i] != $22                  ; opening quote
+        while i < n and progpath[i] != $22                ; opening quote
             i++
         if i >= n
             return                                       ; no quote -> keep the default
         i++
         ubyte j = 0
         ubyte cut = 0                                    ; chars up to and including the LAST '/'
-        while i < n and edbuf[i] != $22 and j < 31 {
-            progdir[j] = edbuf[i]
+        while i < n and progpath[i] != $22 and j < 31 {
+            progdir[j] = progpath[i]
             j++
-            if edbuf[i] == '/'
+            if progpath[i] == '/'
                 cut = j
             i++
         }
