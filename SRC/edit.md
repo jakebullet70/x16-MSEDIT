@@ -13,6 +13,7 @@
    Ctrl+Lt/Rt    Jump a word left / right
    Home / End    Start / end of the line
    PgUp / PgDn   Page up / down
+   Ctrl+PgUp/Dn  Top / bottom of the file
    Ctrl+J        Go to a line number
 
 ## SELECTING TEXT

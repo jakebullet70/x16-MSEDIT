@@ -95,6 +95,8 @@ highlighted red letter (e.g. `Alt`+`F` → File).
 | Ctrl + Left / Right | Jump a word |
 | Home / End | Start / end of line |
 | PgUp / PgDn | Page up / down |
+| Ctrl + PgUp / PgDn | Top / bottom of the file |
+| Ctrl + J | Go to a line number |
 
 ### Editing
 
