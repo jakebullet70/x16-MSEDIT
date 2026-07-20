@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 207         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 211         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -140,6 +140,12 @@ main {
     ; fio(), because fio() hands the address to diskio as low RAM. That is why the SES_PTRS slots
     ; below hold these ADDRESSES rather than &fksnap / &startdir, and why SESOVL_VER is bumped: a
     ; stale misc.ovl would fio() them and stream from the wrong memory.
+    ; SLACK WARNING: $AA00 is the FIRST byte after the context blocks, not a byte after them - slot 2
+    ; is reserved through $A9FF exactly. ctx_field walks the CTX table with no bound check against
+    ; CTX_SIZE, so the fit is arithmetic, not enforced: CTX_LEN sums to 82 + 16*UNDO_DEPTH, which is
+    ; 466 at the current depth of 24 and crosses 512 at depth 27. Raising UNDO_DEPTH past 26 would
+    ; have save_ctx(2) write straight through the fkey snapshot, which exit then commits into the
+    ; KERNAL's fkeytb. Move these two up before touching UNDO_DEPTH.
     const uword FKSNAP_ADDR   = $AA00       ; 99 bytes: the KERNAL fkey-macro snapshot
     const uword STARTDIR_ADDR = $AA70       ; 82 bytes: the startup working directory
     const ubyte SESOVL_VER = 2
@@ -542,7 +548,14 @@ main {
         if reloaded and berr_len != 0           ; the Run BASLOAD came back with an error; show the full
             show_basload_error()                ; error on the bar (cursor's already on the line it named)
         else {
-            if ses_failed
+            ; A failed overlay handshake used to be the one silent failure here, and it is the most
+            ; expensive to diagnose: sessions stop surviving a hand-off, F5 quietly discards the
+            ; workspace, and because the F8 return re-snapshots the ALREADY-HIJACKED fkey table, a
+            ; later normal exit writes EDIT's own /ED macro back into the KERNAL as if it were the
+            ; user's. Staging edit.prg without misc.ovl is exactly how that happens.
+            if not ses_ok
+                flash_notify("Session off - misc.ovl missing or stale")
+            else if ses_failed
                 flash_notify("Session unreadable - started fresh")
             else if ses_lost != 0
                 flash_notify("Session files missing")
@@ -1265,8 +1278,9 @@ main {
         ; Repaint just the screen rows the cursor swept while extending a selection.
         ; Extending only changes the row the cursor left (it now highlights to end of line)
         ; and the row it landed on; every other highlighted row is already correct on screen.
-        ; This used to be a draw_all_text() -- 58 banked edoc.load calls and 58 run_syntax
-        ; passes per Shift+arrow, which is why marking text crawled.
+        ; This used to be a draw_all_text() -- one banked edoc.load and one run_syntax pass for every
+        ; one of TEXT_ROWS rows (28 on the 80x30 screen EDIT sets) on every Shift+arrow, against the
+        ; 2 rows an unshifted arrow costs. That ~14x is why marking text crawled.
         uword lo = cur_row
         uword hi = prev_cur_row
         if lo > hi {
@@ -1358,6 +1372,21 @@ main {
     ; ---------- menu bar / status bar ----------
 
     sub draw_filename_title() {
+        ; Right end of the menu bar: the active-document indicator hard against the right margin, with
+        ; the filename immediately to its left. Both live here rather than on the status bar because
+        ; this is the row that names the document. Refresh is correct at draw_menubar's cadence (full
+        ; redraw + menu open): the active slot only moves in switch_doc, and slot_modified[] is only
+        ; written by save_ctx - both of which redraw.
+        ; Drawn BEFORE the filename's width guard below, so a long name suppresses the name, not this.
+        ubyte abc_col = SCR_W - NDOCS - 1       ; one cell per doc, plus a one-column right margin
+        put_str_at(abc_col, 0, "ABC")
+        ubyte d
+        for d in 0 to NDOCS - 1 {
+            if d == g_active_slot
+                txt.setclr(abc_col + d, 0, theme.CB_MENUSEL)
+            else if slot_modified[d]                ; inactive doc with unsaved edits -> accent
+                txt.setclr(abc_col + d, 0, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
+        }
         ubyte fl = lsb(strings.length(filename))
         ubyte extra = 0
         if modified
@@ -1365,7 +1394,7 @@ main {
         ubyte dl = fl
         if fl == 0
             dl = lsb(strings.length(untitled))
-        ubyte startcol = SCR_W - dl - extra - 1
+        ubyte startcol = abc_col - dl - extra - 1    ; one space clear of the indicator
         ; don't overwrite the menu titles when the filename is long
         if startcol < menu_col[NMENU - 1] + menu_len[NMENU - 1]
             return
@@ -1419,18 +1448,9 @@ main {
         else
             put_str_at(col, STATUS_ROW, "  INS")
         col += 5
-        ; active-document indicator: three cells "ABC" (one per doc). The active doc's cell is highlighted;
-        ; an INACTIVE doc with unsaved edits shows in the accent colour. Compact enough for 40-col.
-        col += 2
-        put_str_at(col, STATUS_ROW, "ABC")
-        ubyte d
-        for d in 0 to NDOCS - 1 {
-            if d == g_active_slot
-                txt.setclr(col + d, STATUS_ROW, theme.CB_MENUSEL)
-            else if slot_modified[d]
-                txt.setclr(col + d, STATUS_ROW, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
-        }
-        col += 4
+        ; (the active-document ABC indicator used to sit here; it lives at the right end of the MENU
+        ;  bar now, beside the filename. The col advances that reserved its width are gone with it, so
+        ;  the "Total lines" guard below sees the extra 6 columns it freed.)
         ; right-side menu hint
         ubyte hint_col = SCR_W - 13
         put_str_at(hint_col, STATUS_ROW, "Esc/Alt=Menu")
@@ -1439,8 +1459,7 @@ main {
         ; modified. NOT the current line (the gutter shows that) - this is the doc's size vs its cap.
         uword lcnt = edoc.line_count
         uword lmax = edoc.max_lines         ; active slot's cap: 6000 for Doc A, 2500 for B/C
-        alias cdig = d              ; reuse the ABC-loop counter's byte (dead now) - saves scarce low RAM
-        cdig = 1
+        ubyte cdig = 1          ; (was an alias of the ABC loop's counter, which moved to the menu bar)
         uword t = lcnt
         while t >= 10 {
             cdig++
@@ -3607,10 +3626,17 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 o++
                 i++
             }
-            @(clipbuf + o) = 13
-            o++
+            ; The terminator MUST carry the same o < 1023 guard as the content stores. Without it a
+            ; selection longer than the clipboard still wrote one $0D per line with no ceiling, so o
+            ; walked past the 1KB clipboard, through the three document context blocks at $A400, and
+            ; (since those buffers moved here) into fksnap at $AA00 and startdir at $AA70 - which exit
+            ; then commits into the KERNAL fkey table and hands to chdir as an unterminated string.
+            if o < 1023 {
+                @(clipbuf + o) = 13
+                o++
+            }
             uword r = s_row + 1
-            while r < e_row {
+            while r < e_row and o < 1023 {
                 ubyte ml = edoc.load(r, &tmpbuf)
                 ubyte j = 0
                 while j < ml and o < 1023 {
@@ -3618,8 +3644,10 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                     o++
                     j++
                 }
-                @(clipbuf + o) = 13
-                o++
+                if o < 1023 {
+                    @(clipbuf + o) = 13
+                    o++
+                }
                 r++
             }
             ubyte elen = edoc.load(e_row, &tmpbuf)
@@ -4181,6 +4209,20 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         redraw_after_move()
     }
 
+    sub ed_doc_jump(bool bottom) {
+        ; Ctrl+PgDn / Ctrl+PgUp: jump to the end / start of the whole document. The cursor lands on
+        ; column 0 at the top and on the last line's end column at the bottom. redraw_after_move()
+        ; sees a multi-row scroll and repaints in full, and handles wrap mode on its own path.
+        uword nr = 0
+        cur_col = 0
+        if bottom
+            nr = edoc.line_count - 1
+        goto_row(nr)
+        if bottom
+            cur_col = cur_len
+        redraw_after_move()
+    }
+
     sub ed_tab() {
         ; advance to the next multiple of the user's tab width (EDCFG "Tab width", read from edit.cfg)
         ubyte spaces = theme.tab_width - (cur_col % theme.tab_width)
@@ -4400,8 +4442,18 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                         ed_delete()
                 }
             }
-            2 -> ed_pgdn()
-            130 -> ed_pgup()
+            2 -> {                          ; PgDn (Ctrl = jump to end of file)
+                if (g_mod & MOD_CTRL) != 0
+                    ed_doc_jump(true)
+                else
+                    ed_pgdn()
+            }
+            130 -> {                        ; PgUp (Ctrl = jump to start of file)
+                if (g_mod & MOD_CTRL) != 0
+                    ed_doc_jump(false)
+                else
+                    ed_pgup()
+            }
             9 -> {                          ; Tab: indent the selected block, else insert spaces
                 if sel_active
                     block_shift(true)
