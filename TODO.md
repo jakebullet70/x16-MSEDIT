@@ -1,21 +1,28 @@
 # EDIT - TODO
 
-- **Low RAM: 108 bytes free** (v0.9.220, top at $9E94, `memtop` $9F00). Was 36 B; recovered by folding
-  the four ".ovl not found" literals into one `flash_no_ovl()` helper (41 B) and trimming `UNDO_DEPTH`
-  24 -> 20 (62 B, `SES_VER` bumped to 2 with it). A third change - aliasing `workbuf` onto
-  `edoc.linebuf` for 256 B - is **reverted and unproven**; see the warning at the `workbuf`
-  declaration. It was reverted while chasing a Replace bug that turned out to be unrelated (see Done),
-  so the alias was never actually cleared or convicted. The one real datum against it is that Make
-  Backup repainted the whole screen; that was never re-tested after the Replace fix and may well have
-  been the same class of bug. Worth retrying carefully - it is the single largest win left.
+- **Low RAM: 278 bytes free** (v0.9.238, top at $9DEA, `memtop` $9F00). Was 36 B at the start of the
+  2026-07-20 session. Recovered by: folding the four ".ovl not found" literals into one
+  `flash_no_ovl()` helper (41 B); trimming `UNDO_DEPTH` 24 -> 20 (62 B, `SES_VER` bumped to 2 with
+  it); aliasing `workbuf` onto `edoc.linebuf` (**+177 B net**); and folding `prompt_str`'s two bool
+  parameters into one `flags` byte (39 B - one ubyte parameter costs less than two bools plus the
+  local it replaced).
+  The `workbuf` alias is SHIPPED, and its first failure is now explained. It was tried once before
+  (v0.9.215) and backed out: the real fault was that the BASLOAD error line `berr` used to alias
+  `workbuf`, and it is scraped in `start()` BEFORE `restore_run_state()` (which `load_file`s the
+  documents) and printed AFTER it - so `load_file` overwrote it through the new alias while
+  `berr_len` stayed non-zero, and the bar printed 80 bytes of the last loaded line. `berr` now owns
+  its 80 bytes, hence +177 rather than +256. The RULE for anything parked in `workbuf` is at its
+  declaration: it must not stay live across an Open, a Save or a session restore.
   prog8 has no call stack, so every sub-local is permanently
   allocated: a single new `uword` local can fail the build. The proven moves, by yield: push text or
   labels into a banked overlay (menus.ovl freed ~1.1 KB), move a fixed-size buffer into the CLIP_BANK
   window (fksnap + startdir freed 181 B), alias a buffer whose lifetime cannot overlap another's
-  (`workbuf` = `edoc.linebuf` 256 B, `berr` = `workbuf` 80 B). The CLIP_BANK window is full to $AAC2 —
-  read the SLACK WARNING at the FKSNAP_ADDR constant before putting anything there.
+  (`workbuf` = `edoc.linebuf` 256 B, `bakname` = `workbuf` inside act_make_backup). A fifth, cheapest
+  of all: put a whole FEATURE inside an overlay whose key loop already runs in-bank - the input
+  history below cost zero. The CLIP_BANK window is full to $AAC2 — read the SLACK WARNING at the
+  FKSNAP_ADDR constant before putting anything there.
   Remaining candidates, largest first:
-  - **Merge `draw_text_row` (edit.p8:837) into `draw_wrapped_row` (edit.p8:918)** — ~500-600 B. The
+  - **Merge `draw_text_row` (edit.p8:845) into `draw_wrapped_row` (edit.p8:926)** — ~500-600 B. The
     two are ~85% identical; `draw_text_row(r)` is expressible as
     `draw_wrapped_row(r, top_line+r, left_col, left_col+textw, true)`. Watch the `uword` vs `ubyte`
     `srcidx` and the wrapped path's extra end-of-segment cursor case. It also fixes a latent bug: the
@@ -23,13 +30,13 @@
     path — check redraw speed after.
   - **Move cold prose into an overlay behind one `ovl_msg(id)`** — ~400 B of the 1044 B of interned
     strings is user-facing text that never runs in a hot loop. The three session messages
-    (edit.p8:557-561, 96 B) are the easiest: startup-only, and that orchestration already lives in
+    (edit.p8:563-571, 96 B) are the easiest: startup-only, and that orchestration already lives in
     misc.ovl. Guard the missing-overlay case — you cannot use the overlay to report the overlay is
     missing.
   - **Move the syntax keyword blobs (syntax.p8:32-34, 453 B) into a bank** — costs a bank switch per
     token in `classify()`. Cheaper variant with no speed cost: length-prefix the table and drop the
     space separators, worth ~40-60 B.
-  - Do NOT alias `savebuf` onto `workbuf` — act_make_backup (edit.p8:2419) copies `bakname`
+  - Do NOT alias `savebuf` onto `workbuf` — act_make_backup (edit.p8:2429) copies `bakname`
     (which *is* `workbuf`) into `savebuf`, so those two are live at the same instant.
 - **PRG2BASLOAD: auto-quote DATA items containing spaces** — BASLOAD lexes DATA content as identifiers,
   so `DATA HELLO WORLD` becomes `DATA HELLOWORLD` (see docs/basload-findings.md). The converter emits a
@@ -58,6 +65,16 @@
 
 ## Done
 
+- **UP/DOWN input history at the Find / Replace prompts (v0.9.238)** — 8 entries per prompt, each
+  with its own ring, re-entering a term promotes it instead of duplicating it. Cost **zero low RAM**:
+  the ring (2 x 8 x 41 B) and all its code live in misc.ovl, which is possible only because
+  `ovl_prompt`'s key loop already runs in-bank, so recall is in-place on the status row and nothing
+  has to repaint the text area. (XFMGR2 pays 51 B for the same feature because its recall is a POPUP
+  over the panes, which main has to redraw - port the idea, not the shape.) The category rides in
+  the caller's `flags` byte, bits 4-7. Deliberately NOT included: disk persistence (session-only -
+  `.his` files would mean more installed files and the host-FS overwrite hazard), Save As (the name
+  comes from the document; the picker is the way back to an old one), and Go-to-line. Find now opens
+  EMPTY unless text was selected, since the old term is one UP away.
 - **Replace blanked the match line (v0.9.219).** Long-standing bug, not from the RAM work.
   `draw_text_row` renders `cur_row` from `editbuf` and every other row from the document, so
   `editbuf` is the display source for the cursor line. `act_replace` set `cur_row = found_row` for
