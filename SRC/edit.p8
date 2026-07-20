@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 235         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 239         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -346,7 +346,8 @@ main {
     extsub @bank 10 $A003 = ovl_about(ubyte theme_id @R0, uword build @R1, ubyte emu @R2)
     ; ovl_prompt ($A006): the modal status-row text input, moved out of low RAM into misc.ovl. Its key
     ; loop runs entirely in-bank (one JSRFAR per prompt); prompt_str() below is a thin main-side wrapper.
-    ; flags bit0 = allow_empty, bit1 = ww_hint; wwptr -> ww_on (toggled live on Commodore+W). -> 1/0.
+    ; flags: bit0 = allow_empty, bit1 = ww_hint, bits 4-7 = input-history category (see the PF_*
+    ; consts at prompt_str). wwptr -> ww_on (toggled live on Commodore+W). Returns 1/0.
     extsub @bank 10 $A006 = ovl_prompt(uword promptmsg @R0, uword dest @R1, ubyte maxlen @R2, ubyte flags @R3, ubyte theme_id @R4, uword wwptr @R5) -> ubyte @A
     ; the session save/restore entries (see the SES_PTRS comment for the ABI)
     extsub @bank 10 $A009 = ovl_ses_setup(uword svcaddr @R0, uword ptrtbl @R1) -> ubyte @A
@@ -1555,21 +1556,26 @@ main {
         }
     }
 
-    sub prompt_str(str promptmsg, uword dest, ubyte maxlen, bool allow_empty, bool ww_hint) -> bool {
-        ; modal text input on the status row. Enter -> true (false if empty and not allow_empty);
-        ; Esc/Stop -> false. Pre-fills with whatever is already in dest. ww_hint: show the whole-word
-        ; toggle on the bar and let Commodore+W flip it live.
-        ; The body lives in misc.ovl (ovl_prompt) to save low RAM - this wrapper hides the editor cursor,
-        ; packs the two bools, and JSRFARs in. All state (dest, promptmsg, ww_on) is low RAM the overlay
-        ; reads through pointers. If misc.ovl is missing the prompt is unavailable -> treat as cancelled.
+    ; prompt_str flags. These used to be two bool parameters; folding them into one byte made room
+    ; for the history category at no cost (one ubyte param replacing two bools is a byte CHEAPER -
+    ; prog8 has no call stack, so every parameter is permanently allocated low RAM).
+    const ubyte PF_EMPTY = 1            ; accept an empty entry
+    const ubyte PF_WW    = 2            ; show the whole-word label; Commodore+W toggles it live
+    const ubyte PF_FIND  = $10          ; ---- history category, bits 4-7. No category = no history:
+    const ubyte PF_REPL  = $20          ;      Go-to-line (a line number is faster to retype than to
+                                        ;      arrow back to) and Save As (its name comes from the
+                                        ;      document, and the file picker is the way back to an
+                                        ;      old one) both pass 0.
+
+    sub prompt_str(str promptmsg, uword dest, ubyte maxlen, ubyte flags) -> bool {
+        ; modal text input on the status row. Enter -> true (false if empty and not PF_EMPTY);
+        ; Esc/Stop -> false. Pre-fills with whatever is already in dest. See the PF_* consts above.
+        ; The body lives in misc.ovl (ovl_prompt) to save low RAM - this wrapper hides the editor cursor
+        ; and JSRFARs in. All state (dest, promptmsg, ww_on) is low RAM the overlay reads through
+        ; pointers. If misc.ovl is missing the prompt is unavailable -> treat as cancelled.
         if not misc_ok
             return false
         cursor_sprite_off()                     ; hide the editor cursor for the modal (was in wait_key)
-        ubyte flags = 0
-        if allow_empty
-            flags |= 1
-        if ww_hint
-            flags |= 2
         if ovl_prompt(promptmsg, dest, maxlen, flags, theme.current, &ww_on) != 0
             return true
         ; Cancelled (Esc, or Enter on an empty line when allow_empty is off). Restore the footer here
@@ -2312,7 +2318,7 @@ main {
             ; either way the save is cancelled. Announce it so the empty status bar doesn't read as a
             ; silent no-op. The fnbuf[0]==0 re-check is belt-and-braces against an empty name slipping
             ; through to do_save (which would fail the write).
-            if not prompt_str("Save as:", &fnbuf, 38, false, false) or fnbuf[0] == 0 {
+            if not prompt_str("Save as:", &fnbuf, 38, 0) or fnbuf[0] == 0 {
                 flash_notify("Save cancelled")
                 return false
             }
@@ -2326,7 +2332,7 @@ main {
 
     sub act_save_as() {
         fnbuf[0] = 0
-        if not prompt_str("Save as:", &fnbuf, 38, false, false) or fnbuf[0] == 0 {
+        if not prompt_str("Save as:", &fnbuf, 38, 0) or fnbuf[0] == 0 {
             notify("Save cancelled")            ; Esc or Enter-on-blank-line -> cancel, with feedback
             return
         }
@@ -3136,9 +3142,14 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     sub sel_to_find() {
         ; If a SINGLE-LINE selection is active, copy the highlighted text into find_term so the
         ; Find / Replace prompt opens pre-filled with it (select code, hit Find, search for it).
-        ; Multi-line selections are left alone - a search term is one line - so find_term keeps its
-        ; previous value. The selection is consumed (cleared) so the located match highlights cleanly
-        ; instead of leaving a stale highlight spanning the old anchor to the new cursor.
+        ; Multi-line selections are left alone - a search term is one line.
+        ; Both callers BLANK find_term immediately before calling this, so "left alone" now means the
+        ; prompt opens EMPTY rather than holding the previous term: with UP-arrow history the old
+        ; term is one keystroke away, and starting empty saves backspacing it out every time. The
+        ; blank is deliberately not done in here - find_next (F3) must keep find_term, and it reaches
+        ; the search without going through this sub or the prompt at all.
+        ; The selection is consumed (cleared) so the located match highlights cleanly instead of
+        ; leaving a stale highlight spanning the old anchor to the new cursor.
         if not sel_active
             return
         sel_norm()
@@ -3159,8 +3170,9 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     }
 
     sub act_find() {
+        find_term[0] = 0                        ; new search starts EMPTY - see sel_to_find
         sel_to_find()
-        if not prompt_str("Find:", &find_term, 38, false, true)
+        if not prompt_str("Find:", &find_term, 38, PF_WW | PF_FIND)
             return
         commit_editbuf()
         ubyte res = find_wrap(cur_row, cur_col)
@@ -3224,10 +3236,11 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ; time. For each match, highlight it and ask Y/N/All/Esc (A = replace the rest without
         ; asking). The whole run is ONE undo group (a snapshot per touched line); if it changes
         ; more lines than the ring holds it drops history (can't undo fully).
+        find_term[0] = 0                        ; new search starts EMPTY - see sel_to_find
         sel_to_find()
-        if not prompt_str("Find:", &find_term, 38, false, true)
+        if not prompt_str("Find:", &find_term, 38, PF_WW | PF_FIND)
             return
-        if not prompt_str("Replace with:", &repl_term, 38, true, true)    ; empty = delete
+        if not prompt_str("Replace with:", &repl_term, 38, PF_EMPTY | PF_WW | PF_REPL)  ; empty = delete
             return
         commit_editbuf()
         ubyte tlen = lsb(strings.length(find_term))
@@ -3327,7 +3340,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     sub act_goto() {
         ; prompt for a line number and jump there
         fnbuf[0] = 0
-        if not prompt_str("Go to line:", &fnbuf, 5, false, false)
+        if not prompt_str("Go to line:", &fnbuf, 5, 0)
             return
         uword n = 0
         ubyte i = 0

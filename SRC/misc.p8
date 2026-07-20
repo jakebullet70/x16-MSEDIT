@@ -64,11 +64,98 @@ main {
     const ubyte SC_BR = sc:'┘'
     const ubyte SC_H  = sc:'─'
     const ubyte SC_V  = sc:'│'
+    const ubyte SC_UP = $1e             ; screen code for the PETSCII up-arrow ($5e) - the Hist hint
 
     ubyte SCR_W, SCR_H                  ; UNINITIALIZED -> BSS tail, safe for the jmptable
 
+    ; ---- input-history rings (UP/DOWN recall inside ovl_prompt) ----
+    ; The whole feature lives in this bank and costs main ZERO low RAM. That is only possible because
+    ; ovl_prompt's key loop runs in-bank: recall is in-place on the status row, so nothing has to
+    ; repaint the text area and no callback into main is needed. (XFMGR2 pays 51 B for the same
+    ; feature because its recall is a POPUP over the panes, which main has to redraw.)
+    ; One ring per category so filenames and search terms don't interleave; category comes in on
+    ; the caller's flags byte, bits 4-7 (0 = history off for that prompt).
+    const ubyte HIST_CATS = 2           ; 1 = Find, 2 = Replace
+    const ubyte HIST_N    = 8           ; entries kept per category, slot 0 = most recent
+    const ubyte HIST_W    = 41          ; bytes per slot: 40 chars + NUL (main's prompts cap at 38)
+    ; CATS*N*W = 656 B, past prog8's 256-byte array cap, so it's a memory() slab behind a pointer.
+    ; hist_buf must stay UNINITIALIZED (-> BSS, keeps the jmptable put) and is filled in start().
+    uword hist_buf                      ; slab address
+    ubyte[HIST_CATS] hist_count         ; entries held, per category (index = cat-1)
+
     sub start() {
-        ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
+        ; library init ($A000): the compiler emits the BSS-clear here (which zeroes hist_count).
+        hist_buf = memory("edithist", HIST_CATS * HIST_N * HIST_W as uword, 0)
+    }
+
+    sub hist_ptr(ubyte cat, ubyte k) -> uword {
+        ; address of slot k in category cat (1-based). Widen before the multiply - the product
+        ; runs to 943 and would wrap in a ubyte.
+        uword off = cat - 1
+        off *= HIST_N
+        off += k
+        off *= HIST_W
+        return hist_buf + off
+    }
+
+    sub hist_store(ubyte cat, uword sptr) {
+        ; insert the string at sptr as category cat's newest entry (slot 0). An exact match already
+        ; in the ring is PROMOTED, not duplicated: it is removed first (compacting the tail up one
+        ; slot) so re-running the same search doesn't fill the ring with one term.
+        if cat == 0 or @(sptr) == 0
+            return
+        ubyte ci = cat - 1
+        ubyte i
+        if hist_count[ci] != 0 {
+            for i in 0 to hist_count[ci] - 1 {
+                if strings.compare(hist_ptr(cat, i), sptr) == 0 {
+                    while i + 1 < hist_count[ci] {
+                        void strings.copy(hist_ptr(cat, i + 1), hist_ptr(cat, i))
+                        i++
+                    }
+                    hist_count[ci]--
+                    break
+                }
+            }
+        }
+        ubyte top = hist_count[ci]
+        if top >= HIST_N
+            top = HIST_N - 1                ; ring full -> the oldest entry falls off the end
+        while top != 0 {
+            void strings.copy(hist_ptr(cat, top - 1), hist_ptr(cat, top))
+            top--
+        }
+        uword d = hist_ptr(cat, 0)
+        ubyte n = 0
+        while n < HIST_W - 1 and @(sptr + n) != 0 {
+            @(d + n) = @(sptr + n)
+            n++
+        }
+        @(d + n) = 0
+        if hist_count[ci] < HIST_N
+            hist_count[ci]++
+    }
+
+    sub hist_recall(uword dest, ubyte maxlen, ubyte base, ubyte statusrow, ubyte oldn,
+                    ubyte cat, ubyte slot) -> ubyte {
+        ; load ring slot into dest and return the new length. slot 255 = clear the field.
+        ; The caller's loop repaints dest[0..n-1] every pass but never erases past it, so a shorter
+        ; entry would leave the tail of the longer one on the bar - blank the old width here first.
+        ubyte j = 0
+        while j <= oldn {                       ; <= : the extra cell is the cursor block
+            txt.setchr(base + j, statusrow, SPACE_SC)
+            j++
+        }
+        ubyte n = 0
+        if slot != 255 {
+            uword s = hist_ptr(cat, slot)
+            while n < maxlen and @(s + n) != 0 {
+                @(dest + n) = @(s + n)
+                n++
+            }
+        }
+        @(dest + n) = 0
+        return n
     }
 
     ; ------------------------------------------------------------------ public entry
@@ -122,6 +209,8 @@ main {
         ubyte statusrow = SCR_H - 1
         bool allow_empty = (flags & 1) != 0
         bool ww_hint     = (flags & 2) != 0
+        ubyte cat        = flags >> 4           ; history category, 0 = no history on this prompt
+        ubyte hidx       = 255                  ; slot currently recalled; 255 = showing live text
         bar_fill(statusrow, $21)                 ; one red flash so the prompt draws the eye
         put_str_at(1, statusrow, promptmsg)
         sys.wait(18)                             ; ~0.3s (was flash_status in main)
@@ -129,6 +218,8 @@ main {
         put_str_at(1, statusrow, promptmsg)
         if ww_hint
             draw_ww_label(statusrow, wwptr)
+        if cat != 0
+            draw_hist_hint(statusrow, ww_hint)
         ubyte base = lsb(strings.length(promptmsg)) + 2
         ubyte n = 0                              ; pre-fill length: scan dest up to maxlen
         while n < maxlen and @(dest + n) != 0
@@ -148,11 +239,30 @@ main {
             when k {
                 13 -> {
                     @(dest + n) = 0
+                    hist_store(cat, dest)       ; no-ops on cat 0 and on an empty entry
                     if allow_empty
                         return 1
                     if n != 0
                         return 1
                     return 0
+                }
+                145 -> {                        ; up-arrow -> an OLDER entry
+                    if cat != 0 and hist_count[cat - 1] != 0 {
+                        if hidx == 255
+                            hidx = 0
+                        else if hidx + 1 < hist_count[cat - 1]
+                            hidx++
+                        n = hist_recall(dest, maxlen, base, statusrow, n, cat, hidx)
+                    }
+                }
+                17 -> {                         ; down-arrow -> a NEWER entry; past the newest, blank
+                    if cat != 0 and hidx != 255 {
+                        if hidx == 0
+                            hidx = 255          ; hist_recall clears the field on 255 - the quick way
+                        else                    ; to drop the pre-filled term and start over
+                            hidx--
+                        n = hist_recall(dest, maxlen, base, statusrow, n, cat, hidx)
+                    }
                 }
                 27, 3 -> {
                     @(dest) = 0
@@ -516,6 +626,19 @@ main {
         else
             put_str_at(c, statusrow, "Whole Word  Off")
         txt.setclr(c, statusrow, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
+    }
+
+    sub draw_hist_hint(ubyte statusrow, bool ww_hint) {
+        ; "^Hist" on the right of the prompt bar, telling the user UP recalls. Drawn whenever the
+        ; prompt HAS a category, empty ring or not - otherwise it only ever appears after the user
+        ; has already found the feature without it. The arrow carries the accent colour so it reads
+        ; as an affordance rather than as part of the prompt text.
+        ubyte c = SCR_W - 6                     ; 5 wide + a 1-column right margin
+        if ww_hint
+            c -= 16                             ; clear of "Whole Word  Off", which sits at SCR_W-16
+        txt.setchr(c, statusrow, SC_UP)
+        txt.setclr(c, statusrow, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
+        put_str_at(c + 1, statusrow, "Hist")
     }
 
     sub draw_box_frame(ubyte x0, ubyte y0, ubyte x1, ubyte y1) {

@@ -44,6 +44,13 @@
    File > View   Show any file read-only in the viewer, without opening it
                  into the document (handy for files too big to edit)
 
+## AT THE FIND / REPLACE PROMPTS
+   Up / Down     Recall the last 8 terms you typed ("^Hist" on the bar
+                 marks a prompt that has history). Find and Replace
+                 each keep their own list; Down past the newest one
+                 blanks the field. Find opens EMPTY unless you had
+                 text selected - the old term is one Up away.
+
 ## SEARCH
    Ctrl+F / F6   Find (wraps around; Cmdr+W toggles whole-word on the bar)
    Ctrl+G / F3   Find next
