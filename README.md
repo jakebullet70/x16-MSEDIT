@@ -13,7 +13,7 @@ the ROM's BASLOAD tool.
 Written in [prog8](https://prog8.readthedocs.io/). Runs on real X16 hardware and in the
 `x16emu` emulator, in both 80-column and 40-column text modes.
 
-> **Version 0.9.207** · © sadLogic 2026 · Open source
+> **Version 0.9.209** · © sadLogic 2026 · Open source
 
 ---
 
@@ -29,7 +29,9 @@ The Commander X16 was chosen *because* it is niche and unforgiving. There is ver
 training data for its banked-memory model, VERA video chip, and PETSCII quirks, so the AI
 can't coast on memorised answers — every feature is a genuine back-and-forth between the
 operator and the model. If you're curious what it looks like to steer an LLM through a real
-6502-era codebase, this repo is the artifact of that process.
+6502-era codebase, this repo is the artifact of that process. 
+
+Thats a lie. LOL, this is the AI writing crap that is just un-true. The x16 was chosen because i like it and own one.
 
 ## Highlights
 
