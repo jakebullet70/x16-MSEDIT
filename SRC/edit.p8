@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 233         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 235         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -158,7 +158,7 @@ main {
         FKSNAP_ADDR, &find_term, &repl_term, STARTDIR_ADDR, &ww_on, &clip_line ]
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     const ubyte BERR_MAX = 80           ; longest BASLOAD error line kept - one full 80-column row.
-                                        ; The buffer itself is an alias of workbuf, declared with it below.
+    ubyte[BERR_MAX] berr                ; the scraped BASLOAD error line, screen codes
     ubyte berr_len = 0                  ; length of berr (0 = no error captured)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ; fksnap (the 99-byte snapshot of all 9 KERNAL fkey macros, restored verbatim on exit) lives at
@@ -217,19 +217,18 @@ main {
     ; search / replace
     str find_term = "?" * 40            ; current search term
     str repl_term = "?" * 40            ; current replacement
-    ubyte[256] workbuf                  ; scratch for building a replaced line
-    ; DO NOT alias this onto edoc.linebuf. It was tried (v0.9.215) for 256 bytes: the address resolves
-    ; correctly and Open/Save are unaffected (they never touch workbuf), but Replace crashed and
-    ; Make Backup repainted the whole screen - both workbuf users. Root cause not yet identified; the
-    ; static lifetime argument (linebuf is live only inside load_file/save_file) looks sound on paper
-    ; and is evidently wrong somewhere. Reproduce and explain it before trying this again.
-    ; The BASLOAD error line rides in workbuf rather than owning 80 bytes of its own. Its entire life
-    ; is inside start(): capture_err_row() scrapes it off the boot screen BEFORE the screen mode is
-    ; switched, and show_basload_error() prints it once a few lines later. Replace - workbuf's real
-    ; owner - cannot run until the editor is up and the user asks for it, so the two uses can never
-    ; overlap. Same trick as act_make_backup's `alias bakname = workbuf`. Worth 80 bytes of low RAM.
-    ; NOTE: clamp writes to BERR_MAX, not len(berr) - that now reads as workbuf's 256.
-    alias berr = workbuf
+    ; Scratch for building a replaced line - aliased onto edoc.linebuf for 256 bytes of low RAM.
+    ; edoc.linebuf is live ONLY inside edoc.load_file / edoc.save_file, and no workbuf holder spans
+    ; either call: act_make_backup builds bakname here but copies it into savebuf BEFORE save_file
+    ; runs; Replace, the block-comment builders and the undo capture are pure in-memory (edoc.commit
+    ; and edoc.store never touch linebuf); flash_no_ovl builds and prints in one breath.
+    ; RULE for anything new that parks data here: it must not stay live across an Open, a Save or a
+    ; session restore. That is exactly what sank the FIRST attempt at this alias (v0.9.215) - the
+    ; BASLOAD error line used to ride in workbuf, and it is scraped in start() BEFORE
+    ; restore_run_state() (which load_file's the documents) and printed AFTER it, so load_file
+    ; overwrote it while berr_len stayed non-zero and the status bar printed 80 bytes of the last
+    ; loaded line. berr now owns its 80 bytes up top; net gain here is still 176.
+    alias workbuf = edoc.linebuf
     uword found_row                     ; result of the last find
     ubyte found_col
     uword g_repl_count                  ; replacements committed in the last Replace run
@@ -2776,7 +2775,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 last = c                        ; remember the last non-blank column
         }
         ubyte n = last + 1
-        if n > BERR_MAX                     ; NOT len(berr): berr aliases workbuf, so that reads as 256
+        if n > BERR_MAX
             n = BERR_MAX
         c = 0
         while c < n {
