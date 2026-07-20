@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 211         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 233         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -108,7 +108,8 @@ main {
     ;
     ; The contexts are written at the full CTX_SIZE even though the CTX table only fills 466 of it -
     ; padding is free on disk and it means no length constant can drift out of step with the table.
-    const ubyte SES_VER = 1             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
+    const ubyte SES_VER = 2             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
+                                        ; (v2: UNDO_DEPTH 24 -> 20 shortened the context by 64 bytes)
     const uword CLIP_MAX = 1024         ; clipbuf is $A000-$A3FF in CLIP_BANK
     ; magic + version as ONE record: it writes in a single f_write and verifies in a single compare
     ; loop, so the version can never be checked separately from (or forgotten alongside) the signature
@@ -143,7 +144,7 @@ main {
     ; SLACK WARNING: $AA00 is the FIRST byte after the context blocks, not a byte after them - slot 2
     ; is reserved through $A9FF exactly. ctx_field walks the CTX table with no bound check against
     ; CTX_SIZE, so the fit is arithmetic, not enforced: CTX_LEN sums to 82 + 16*UNDO_DEPTH, which is
-    ; 466 at the current depth of 24 and crosses 512 at depth 27. Raising UNDO_DEPTH past 26 would
+    ; 402 at the current depth of 20 and crosses 512 at depth 27. Raising UNDO_DEPTH past 26 would
     ; have save_ctx(2) write straight through the fkey snapshot, which exit then commits into the
     ; KERNAL's fkeytb. Move these two up before touching UNDO_DEPTH.
     const uword FKSNAP_ADDR   = $AA00       ; 99 bytes: the KERNAL fkey-macro snapshot
@@ -217,6 +218,11 @@ main {
     str find_term = "?" * 40            ; current search term
     str repl_term = "?" * 40            ; current replacement
     ubyte[256] workbuf                  ; scratch for building a replaced line
+    ; DO NOT alias this onto edoc.linebuf. It was tried (v0.9.215) for 256 bytes: the address resolves
+    ; correctly and Open/Save are unaffected (they never touch workbuf), but Replace crashed and
+    ; Make Backup repainted the whole screen - both workbuf users. Root cause not yet identified; the
+    ; static lifetime argument (linebuf is live only inside load_file/save_file) looks sound on paper
+    ; and is evidently wrong somewhere. Reproduce and explain it before trying this again.
     ; The BASLOAD error line rides in workbuf rather than owning 80 bytes of its own. Its entire life
     ; is inside start(): capture_err_row() scrapes it off the boot screen BEFORE the screen mode is
     ; switched, and show_basload_error() prints it once a few lines later. Replace - workbuf's real
@@ -241,8 +247,9 @@ main {
     bool clip_line
 
     ; ---------- undo / redo (per-line snapshots kept in banked RAM) ----------
-    const ubyte UNDO_DEPTH = 24         ; per-doc undo/redo history depth (trimmed from 32 to reclaim low
-                                        ; RAM - each level costs 16 B across the two rings, ~128 B for 8)
+    const ubyte UNDO_DEPTH = 20         ; per-doc undo/redo history depth (trimmed 32 -> 24 -> 20 to reclaim
+                                        ; low RAM - each level costs 16 B across the two rings).
+                                        ; Changing this changes the context layout: bump SES_VER with it.
     const ubyte OP_REPLACE = 1          ; line content changed; snapshot = old content
     const ubyte OP_ADDLINE = 2          ; a line was inserted; apply => delete it (no snapshot)
     const ubyte OP_DELLINE = 3          ; a line was deleted; snapshot = its old content
@@ -281,12 +288,13 @@ main {
     ubyte g_active_slot = 0                      ; the live document: 0=A, 1=B, 2=C
     uword g_ctxp                                 ; running pointer into the context bank during a transfer
     const uword CTX_BASE = $A400                 ; context blocks sit above the 1KB clipboard ($A000-$A3FF)
-    const uword CTX_SIZE = 512                   ; bytes reserved per doc context (actual 466 at depth 24)
+    const uword CTX_SIZE = 512                   ; bytes reserved per doc context (actual 402 at depth 20)
     const ubyte CTX_FNAME_OFF = 18               ; byte offset of the 41-byte filename WITHIN a context block
                                                  ; (= sum of CTX_LEN[0..12]); the Window menu reads inactive
                                                  ; docs' names from here - keep in sync if the CTX order changes
     ; the per-document context is this ordered list of (address, byte-length) fields. save_ctx/load_ctx
-    ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 466.
+    ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 402
+    ; at UNDO_DEPTH 20 (the ten ring entries scale with it; the rest is fixed at 82).
     const ubyte NCTXF = 42
     uword[NCTXF] CTX_ADDR = [
         &edoc.line_count, &edoc.oom, &xarena.cur_bank, &xarena.cur_ptr, &xarena.high_bank,
@@ -1563,7 +1571,14 @@ main {
             flags |= 1
         if ww_hint
             flags |= 2
-        return ovl_prompt(promptmsg, dest, maxlen, flags, theme.current, &ww_on) != 0
+        if ovl_prompt(promptmsg, dest, maxlen, flags, theme.current, &ww_on) != 0
+            return true
+        ; Cancelled (Esc, or Enter on an empty line when allow_empty is off). Restore the footer here
+        ; rather than in each caller: the prompt text was sitting on the status row, and callers
+        ; reached by a HOTKEY (F6 Find, F8 Replace, Ctrl+J) have no menu_dispatch repaint behind them,
+        ; so the dead prompt stayed on the bar until the next cursor move repainted it.
+        draw_status()
+        return false
     }
 
     sub flash_status(str m) {
@@ -1572,6 +1587,15 @@ main {
         bar_fill(STATUS_ROW, $21)                       ; red bg, white fg
         put_str_at(1, STATUS_ROW, m)
         sys.wait(18)                                    ; ~0.3s
+    }
+
+    sub flash_no_ovl(str ovlname) {
+        ; "<ovlname> not found in the program folder" - four callers used to carry four near-identical
+        ; 40-byte literals; one shared tail costs 33 bytes total instead of ~170. Built in workbuf,
+        ; which is dead at every call site (none of them is mid-Replace, mid-load or mid-save).
+        void strings.copy(ovlname, &workbuf)
+        void strings.copy(" not found in the program folder", &workbuf + strings.length(ovlname))
+        flash_status(&workbuf)
     }
 
     sub confirm_save() -> ubyte {
@@ -1862,8 +1886,22 @@ main {
                     0 -> act_new()
                     1 -> act_open()
                     2 -> act_view()
-                    3 -> void save_now()
-                    4 -> act_save_as()
+                    ; Save / Save As draw on the status row only, and erase_dropdown() has already
+                    ; repainted the menu bar and the rows the dropdown covered - so claim g_redrawn
+                    ; and skip the blanket full_redraw() below (a visible full-screen flash for a
+                    ; save). Scoped to the menu path on purpose: save_now() has six other callers,
+                    ; several of which DO need the repaint. Save All is not here - it calls
+                    ; goto_slot(), which changes the text area, and does its own full_redraw().
+                    3 -> {
+                        void save_now()
+                        g_redrawn = true
+                        draw_status()
+                    }
+                    4 -> {
+                        act_save_as()
+                        g_redrawn = true
+                        draw_status()
+                    }
                     5 -> act_save_all()
                     6 -> act_new()          ; Close: the slots are fixed, so "closed" means "emptied" -
                                             ; that is exactly act_new. Listed separately because the
@@ -2206,7 +2244,7 @@ main {
         }
         fnbuf[0] = 0
         if not picker_ok {
-            flash_status("picker.ovl not found in the program folder")
+            flash_no_ovl("picker.ovl")
             return
         }
         cursor_sprite_off()             ; the overlay owns the screen: hide our cursor sprite
@@ -2390,11 +2428,17 @@ main {
         ; copy, not a Save. An existing .bak triggers a Y/N overwrite prompt.
         alias bakname = workbuf                 ; reuse the dead 256B Replace scratch (no Replace here)
                                                 ; instead of a dedicated 44B module buffer
+        ; Everything this action draws lives on the status row, and erase_dropdown() has already
+        ; repainted the menu bar plus the rows the dropdown covered. Claiming g_redrawn skips
+        ; menu_dispatch's blanket full_redraw(), which was clearing and repainting all 28 text rows
+        ; for a backup - a visible full-screen flash. Each exit restores the footer with draw_status().
+        g_redrawn = true
         if filename[0] == 0 {
             flash_status("Open or save a file first")
             bar_fill(STATUS_ROW, theme.CB_BAR)
             put_str_at(1, STATUS_ROW, "Open or save a file first")
             void wait_key()
+            draw_status()
             return
         }
         ; bakname = filename with everything from the last '.' replaced by ".bak"
@@ -2410,9 +2454,10 @@ main {
             cut = i                             ; no extension -> append ".bak" at the end
         void strings.copy(".bak", &bakname + cut)
 
-        if not confirm_overwrite(bakname)       ; existing .bak -> require Y before clobbering it
+        if not confirm_overwrite(bakname) {     ; existing .bak -> require Y before clobbering it
+            draw_status()
             return
-
+        }
         commit_editbuf()
         savebuf[0] = '@'                        ; "@:" = overwrite if it already exists
         savebuf[1] = ':'
@@ -2420,9 +2465,11 @@ main {
         notify_blink("Backing up...", blink_phases(edoc.line_count / 6))
         if not edoc.save_file(savebuf) {
             notify("Backup failed")
+            draw_status()
             return
         }
         notify("Backup saved")                  ; modified state left as-is on purpose
+        draw_status()
     }
 
     sub act_run_basload() {
@@ -2808,7 +2855,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
 
     sub act_about() {
         if not misc_ok {
-            flash_status("misc.ovl not found in the program folder")
+            flash_no_ovl("misc.ovl")
             return
         }
         cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
@@ -2835,7 +2882,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     sub view_help(str fname) {
         ; open a shipped help text file (in the install folder) read-only in the viewer
         if not tview_ok {
-            flash_status("help viewer needs tview.ovl + the .md file")
+            flash_no_ovl("tview.ovl")
             return
         }
         cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
@@ -2847,11 +2894,11 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ; File > View: pick a file and show it read-only in the viewer, without loading it into the
         ; document (so it side-steps the document size limit for a quick look at a big file).
         if not tview_ok {
-            flash_status("tview.ovl not found in the program folder")
+            flash_no_ovl("tview.ovl")
             return
         }
         if not picker_ok {
-            flash_status("picker.ovl not found in the program folder")
+            flash_no_ovl("picker.ovl")
             return
         }
         fnbuf[0] = 0
@@ -3202,6 +3249,13 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 anc_row = found_row
                 anc_col = found_col
                 sel_active = true
+                ; Reload editbuf for the row we just jumped to. draw_text_row renders the CUR_ROW
+                ; from editbuf and every other row from the document, so moving cur_row without this
+                ; paints the PREVIOUS cursor line's contents over the match - and paints it blank when
+                ; that line was empty or shorter. goto_found() (the Find path) already does this; the
+                ; inline jump here did not, which is why Find looked fine and Replace did not.
+                cur_len = edoc.load(cur_row, &editbuf)
+                cur_dirty = false
                 void ensure_visible()
                 draw_all_text()
                 ubyte k = prompt_replace()
@@ -3568,7 +3622,15 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         while r <= r1 {
             llen = edoc.load(r, &tmpbuf)
             if do_add {
-                if rem_start(&tmpbuf, llen) == 255 {    ; don't double-comment an already-REM line
+                ; Block Comment DOES stack a REM onto a line that is already a comment. Uncomment
+                ; strips exactly one, so a block that contained real comments survives a
+                ; comment/uncomment round trip with those original REMs still in place. (Toggle,
+                ; mode 0, never reaches here on a REM line: do_add is false for it above.)
+                ; SKIP a line the 4-byte "REM " prefix would push past MAX_LEN. build_commented
+                ; clamps at MAX_LEN, so commenting such a line would silently drop characters off
+                ; the end - and Uncomment could not put them back, since it only removes the prefix.
+                ; Leaving the line untouched is recoverable; truncating it is not.
+                if (llen as uword) + 4 <= edoc.MAX_LEN {
                     newlen = build_commented(&tmpbuf, llen)
                     urec_replace(r, &tmpbuf, llen)
                     void edoc.commit(r, &workbuf, newlen)

@@ -1,41 +1,36 @@
 # EDIT - TODO
 
-- **Ctrl+Home / Ctrl+End jump to top / bottom of file** — today keycode 19 (Home) and 4 (End) both act
-  on the current line only ([edit.p8:4261-4262](SRC/edit.p8#L4261-L4262)). Add the Ctrl variants: top of
-  file sets `cur_row = 0`, bottom sets `cur_row = edoc.line_count - 1` and the cursor to that line's end,
-  both resetting `cur_col` and scrolling the viewport so the cursor is visible, then a full text redraw
-  (a jump is almost never a one-line scroll, so the VRAM-scroll path does not apply). Copy the shape of
-  the Left-arrow case at [edit.p8:4255-4260](SRC/edit.p8#L4255-L4260), which already branches on
-  `g_mod & MOD_CTRL`. Three things to check: (1) **End is keycode 4, which is also Ctrl+D** — the known
-  Ctrl+letter ambiguity, so verify in the emulator that Ctrl+End actually arrives as 4 with `MOD_CTRL`
-  set and is not swallowed as Ctrl+D; (2) word-wrap mode has its own parallel renderer, so the jump has
-  to land correctly there too; (3) decide whether Ctrl+Shift+Home/End should extend the selection to the
-  file ends, matching the existing Shift+Home/Shift+End behaviour on 147/132.
-- **Installer: the run-from-inside-/msedit case is still untested** — install.p8 is meant to skip the
-  copy when the folder it was launched from IS the install folder, rather than copy each file onto
-  itself and truncate it. It does not arise in normal use (INSTALL.PRG is not one of the installed
-  FILES, so it never lands in /msedit), which is exactly why it has never been hit: reproducing it
-  means deliberately copying the release into /MSEDIT and running it there. Worth doing once, since
-  the failure mode is destroying the install rather than merely looking wrong.
-  Everything else was verified on build 200: all 11 files copied including prg2basload.prg, a
-  REINSTALL preserved the existing edit.cfg, `^/ED` launches from any folder, and the help .md files
-  display in the viewer.
-- **Move the "ABC" doc indicator from the footer to the header** — the three-cell active-document
-  indicator lives in `draw_status` ([edit.p8:1361-1371](SRC/edit.p8#L1361-L1371)), between the INS/OVR
-  flag and the centred "Total lines" block. Move it up to the menu bar (`draw_menubar`), which has free
-  space on the right. Carry the colouring rules across unchanged: active slot in `theme.CB_MENUSEL`,
-  an inactive-but-dirty slot in `ACCEL_FG` against the bar background — noting the header uses a
-  different bar colour, so the `(theme.CB_BAR & $f0) | ...` expression has to be rebased on the menu
-  bar's own colour or the dirty cell will sit on the wrong background. Then reclaim the gap in
-  `draw_status`: `col` is still advanced past the indicator and feeds the `lstart > col + 1` guard that
-  decides whether "Total lines" is drawn at all, so drop those `col +=` steps rather than leaving them.
-  Also check the header repaints on a slot switch and on the first edit that sets `slot_modified` —
-  today those paths call `draw_status()`, not the menu-bar draw.
-- **PRG2BASLOAD: 2-character variable collisions — NOT WORTH BUILDING.** Noted only so it does not get
-  "discovered" and designed a third time. BASIC 2.0 uses the first 2 characters of a name and BASLOAD
-  uses 64, so in theory `VAR1`/`VAR2` are one variable before conversion and two after. In practice
-  people writing Commodore BASIC knew the 2-char rule and named accordingly, so real programs do not
-  contain the collision. Do not spend a detector on it.
+- **Low RAM: 108 bytes free** (v0.9.220, top at $9E94, `memtop` $9F00). Was 36 B; recovered by folding
+  the four ".ovl not found" literals into one `flash_no_ovl()` helper (41 B) and trimming `UNDO_DEPTH`
+  24 -> 20 (62 B, `SES_VER` bumped to 2 with it). A third change - aliasing `workbuf` onto
+  `edoc.linebuf` for 256 B - is **reverted and unproven**; see the warning at the `workbuf`
+  declaration. It was reverted while chasing a Replace bug that turned out to be unrelated (see Done),
+  so the alias was never actually cleared or convicted. The one real datum against it is that Make
+  Backup repainted the whole screen; that was never re-tested after the Replace fix and may well have
+  been the same class of bug. Worth retrying carefully - it is the single largest win left.
+  prog8 has no call stack, so every sub-local is permanently
+  allocated: a single new `uword` local can fail the build. The proven moves, by yield: push text or
+  labels into a banked overlay (menus.ovl freed ~1.1 KB), move a fixed-size buffer into the CLIP_BANK
+  window (fksnap + startdir freed 181 B), alias a buffer whose lifetime cannot overlap another's
+  (`workbuf` = `edoc.linebuf` 256 B, `berr` = `workbuf` 80 B). The CLIP_BANK window is full to $AAC2 —
+  read the SLACK WARNING at the FKSNAP_ADDR constant before putting anything there.
+  Remaining candidates, largest first:
+  - **Merge `draw_text_row` (edit.p8:837) into `draw_wrapped_row` (edit.p8:918)** — ~500-600 B. The
+    two are ~85% identical; `draw_text_row(r)` is expressible as
+    `draw_wrapped_row(r, top_line+r, left_col, left_col+textw, true)`. Watch the `uword` vs `ubyte`
+    `srcidx` and the wrapped path's extra end-of-segment cursor case. It also fixes a latent bug: the
+    wrapped path hardcodes `$b0` for the current-line band instead of reading `theme.CB_BAND`. Hot
+    path — check redraw speed after.
+  - **Move cold prose into an overlay behind one `ovl_msg(id)`** — ~400 B of the 1044 B of interned
+    strings is user-facing text that never runs in a hot loop. The three session messages
+    (edit.p8:557-561, 96 B) are the easiest: startup-only, and that orchestration already lives in
+    misc.ovl. Guard the missing-overlay case — you cannot use the overlay to report the overlay is
+    missing.
+  - **Move the syntax keyword blobs (syntax.p8:32-34, 453 B) into a bank** — costs a bank switch per
+    token in `classify()`. Cheaper variant with no speed cost: length-prefix the table and drop the
+    space separators, worth ~40-60 B.
+  - Do NOT alias `savebuf` onto `workbuf` — act_make_backup (edit.p8:2419) copies `bakname`
+    (which *is* `workbuf`) into `savebuf`, so those two are live at the same instant.
 - **PRG2BASLOAD: auto-quote DATA items containing spaces** — BASLOAD lexes DATA content as identifiers,
   so `DATA HELLO WORLD` becomes `DATA HELLOWORLD` (see docs/basload-findings.md). The converter emits a
   `REM TODO` and leaves it. Better: split the DATA content on commas and wrap any unquoted item that
@@ -44,5 +39,38 @@
 - **BASLOAD token picker popup** — a popup listing the BASLOAD control-code tokens (`{CLR}`, `{HOME}`,
   `{RVS ON}`, colour names, ...) so they can be picked and inserted at the cursor instead of typed from
   memory. The supported set is enumerated in the BASLOAD docs — mirror that list, don't invent one.
+  Text-heavy, so build it as a banked overlay rather than in low RAM.
 - **Escape-char popup** — same idea for the `/x`-style escape form (e.g. hex/`\x` character escapes):
-  a pick-and-insert popup for the characters that are awkward to type.
+  a pick-and-insert popup for the characters that are awkward to type. Shares the overlay with the
+  token picker if both get built.
+- **Ctrl+Shift+PgUp/PgDn to select to the file ends** — small follow-on to the Ctrl+PgUp/PgDn jump
+  added in v0.9.211. `ed_doc_jump` does not touch the selection today, matching plain PgUp/PgDn.
+  Shift+Home / Shift+End (keycodes 147 / 132) already extend on the line, so the pattern exists; the
+  open question is whether the X16 keymap delivers a distinguishable Ctrl+Shift+PgUp at all.
+
+## Not worth building
+
+- **PRG2BASLOAD: 2-character variable collisions.** Noted only so it does not get "discovered" and
+  designed a third time. BASIC 2.0 uses the first 2 characters of a name and BASLOAD uses 64, so in
+  theory `VAR1`/`VAR2` are one variable before conversion and two after. In practice people writing
+  Commodore BASIC knew the 2-char rule and named accordingly, so real programs do not contain the
+  collision. Do not spend a detector on it.
+
+## Done
+
+- **Replace blanked the match line (v0.9.219).** Long-standing bug, not from the RAM work.
+  `draw_text_row` renders `cur_row` from `editbuf` and every other row from the document, so
+  `editbuf` is the display source for the cursor line. `act_replace` set `cur_row = found_row` for
+  the interactive Y/N highlight without reloading `editbuf`, so the match line was painted with the
+  PREVIOUS cursor line's contents - blank whenever that line was empty or shorter. Display-only:
+  `cur_dirty` was false, nothing was committed, and the tail `edoc.load` repaired it. Find was
+  unaffected because `goto_found()` already reloads. Rule: never assign `cur_row` by hand - call
+  `goto_row()` / `goto_found()`, or do the `edoc.load(cur_row, &editbuf)` + `cur_dirty = false` pair.
+- Ctrl+PgUp / Ctrl+PgDn jump to top / bottom of file (v0.9.211) — this was filed as Ctrl+Home/End;
+  PgUp/PgDn avoids the Ctrl+End-vs-Ctrl+D keycode-4 ambiguity that made the original risky.
+- "ABC" doc indicator moved from the status bar to the menu bar, flush right (v0.9.208).
+- File > Close / Close All (v0.9.207). Open-file picker filter + delete.
+- Installer: verified on build 200 — all 11 files copied including prg2basload.prg, a REINSTALL
+  preserved edit.cfg, `^/ED` launches from any folder, help .md files display in the viewer. The
+  run-from-inside-/msedit guard was closed as won't-test rather than tested: INSTALL.PRG is not one
+  of the installed FILES, so it never lands in /msedit and the case does not arise in normal use.
