@@ -24,14 +24,23 @@ syntax {
     str rem_kw = "REM"
 
     ; X16 BASIC keyword sets: Commodore BASIC V2 + the Commander X16 additions. Statements are
-    ; coloured as keywords; value-returning functions are coloured yellow (like sub names in an
-    ; IDE theme). Stored as space-delimited PETSCII blobs, matched case-insensitively (fold/eq).
-    ; This replaced the old uword[] arrays, which cost 188 bytes of lsb/msb pointer tables on top
-    ; of the same string bytes. Function forms keep any trailing '$'. Statements are split CBM/X16
-    ; only to keep each str well under the 256-byte limit; both classify as keywords.
-    str kw_stmt  = "END FOR NEXT DATA INPUT DIM READ LET GOTO RUN IF RESTORE GOSUB RETURN STOP ON WAIT LOAD SAVE VERIFY DEF POKE PRINT CONT LIST CLR CMD SYS OPEN CLOSE GET NEW TO THEN NOT STEP AND OR GO ELSE"
-    str kw_stmtx = "VPOKE SCREEN PSET LINE FRAME RECT CIRCLE CHAR MOUSE COLOR LOCATE CLS DOS OLD MON VLOAD BLOAD BSAVE BVERIFY BOOT RESET KEY BANK MENU FONT"
-    str kw_func  = "SGN INT ABS USR FRE POS SQR RND LOG EXP COS SIN TAN ATN PEEK LEN VAL ASC TAB SPC FN STR$ CHR$ LEFT$ RIGHT$ MID$ VPEEK HEX$ BIN$"
+    ; coloured as keywords; value-returning functions are coloured yellow (like sub names in an IDE
+    ; theme). The blobs themselves (~450 B of space-delimited PETSCII) were moved OUT of low RAM into
+    ; the misc overlay to reclaim editor RAM; these are pointers into MISC_BANK, set by set_kw() at
+    ; startup, and are only valid while that bank is mapped - lookup() maps it around the matching.
+    ; kw_enabled is false until the overlay hands them over; if misc.ovl is missing, keyword/function
+    ; colouring is simply skipped (strings, numbers, REM and ## comments still colour).
+    uword kw_stmt_p, kw_stmtx_p, kw_func_p
+    ubyte kw_bank
+    bool kw_enabled = false
+
+    sub set_kw(uword a @R0, uword b @R1, uword c @R2, ubyte bank @R3) {
+        kw_stmt_p = a
+        kw_stmtx_p = b
+        kw_func_p = c
+        kw_bank = bank
+        kw_enabled = true
+    }
 
     sub fold(ubyte b) -> ubyte {
         ; letters -> a single canonical range so either PETSCII case matches; else self.
@@ -80,15 +89,22 @@ syntax {
     sub lookup(uword tp, ubyte tlen) -> ubyte {
         ; classify an identifier token: 2 = REM (comment), 1 = statement keyword,
         ; 3 = built-in function, 0 = plain.
-        if tlen == 3 and eq(tp, rem_kw, 3)
+        if tlen == 3 and eq(tp, rem_kw, 3)         ; rem_kw + tp are low RAM - test before mapping
             return 2
-        if in_blob(kw_stmt, tp, tlen)
-            return 1
-        if in_blob(kw_stmtx, tp, tlen)
-            return 1
-        if in_blob(kw_func, tp, tlen)
-            return 3
-        return 0
+        if not kw_enabled
+            return 0                                ; overlay absent -> no keyword colouring
+        ; The blobs live in MISC_BANK; map it around the reads. in_blob reads @(blob+i) from the
+        ; bank and eq() reads the token tp from low RAM, which stays mapped under the $A000 window.
+        cx16.push_rambank(kw_bank)
+        ubyte r = 0
+        if in_blob(kw_stmt_p, tp, tlen)
+            r = 1
+        else if in_blob(kw_stmtx_p, tp, tlen)
+            r = 1
+        else if in_blob(kw_func_p, tp, tlen)
+            r = 3
+        cx16.pop_rambank()
+        return r
     }
 
     sub classify_md(uword src, ubyte slen, uword dest) {

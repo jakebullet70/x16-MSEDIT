@@ -55,7 +55,7 @@ main {
     ; a module-level initialized var is emitted BEFORE the code and would shove the jump table off
     ; its fixed offsets. The screen text below is all inline literals inside subs - those are fine;
     ; it is only main's init-data that moves the table.
-    %jmptable ( main.help_about, main.ovl_prompt, main.ses_setup, main.ses_write, main.ses_restore )
+    %jmptable ( main.help_about, main.ovl_prompt, main.ses_setup, main.ses_write, main.ses_restore, main.kw_addrs )
 
     const ubyte SPACE_SC = sc:' '
     const ubyte SC_TL = sc:'┌'
@@ -194,6 +194,26 @@ main {
         put_str_at(fcol, y1, " Press any key ")
         set_color_run(fcol, fcol + 14, y1, theme.CB_BOX)
         void wait_key()
+    }
+
+    sub kw_addrs(uword outp @R0) {
+        ; Write the addresses of the three BASIC keyword blobs (which live in THIS overlay's string
+        ; pool, so they are only valid while MISC_BANK is mapped) into the caller's 3-uword array at
+        ; outp in low RAM. syntax.p8 caches them and maps MISC_BANK around its keyword matching -
+        ; that is how ~450 B of keyword text was moved out of the editor's scarce low RAM.
+        ; These blobs used to live in syntax.p8. Statements split CBM/X16 only to stay under the
+        ; 255-byte str limit; both classify as keywords. Function forms keep any trailing '$'.
+        ; PETSCII, space-delimited, matched case-insensitively by syntax.in_blob.
+        uword p
+        p = "END FOR NEXT DATA INPUT DIM READ LET GOTO RUN IF RESTORE GOSUB RETURN STOP ON WAIT LOAD SAVE VERIFY DEF POKE PRINT CONT LIST CLR CMD SYS OPEN CLOSE GET NEW TO THEN NOT STEP AND OR GO ELSE"
+        @(outp) = lsb(p)
+        @(outp + 1) = msb(p)
+        p = "VPOKE SCREEN PSET LINE FRAME RECT CIRCLE CHAR MOUSE COLOR LOCATE CLS DOS OLD MON VLOAD BLOAD BSAVE BVERIFY BOOT RESET KEY BANK MENU FONT"
+        @(outp + 2) = lsb(p)
+        @(outp + 3) = msb(p)
+        p = "SGN INT ABS USR FRE POS SQR RND LOG EXP COS SIN TAN ATN PEEK LEN VAL ASC TAB SPC FN STR$ CHR$ LEFT$ RIGHT$ MID$ VPEEK HEX$ BIN$"
+        @(outp + 4) = lsb(p)
+        @(outp + 5) = msb(p)
     }
 
     sub ovl_prompt(uword promptmsg @R0, uword dest @R1, ubyte maxlen @R2, ubyte flags @R3,

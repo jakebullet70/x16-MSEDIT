@@ -23,7 +23,13 @@
 main {
     %option ignore_unused
 
-    %jmptable ( main.mnu_item )
+    %jmptable ( main.mnu_item, main.mnu_bar )
+
+    ; static screen geometry, mirrored from edit.p8 (consts allocate no storage, so they don't
+    ; disturb the %jmptable offsets the way an initialized var would).
+    const ubyte SCR_W = 80
+    const ubyte NMENU = 6
+    const ubyte NDOCS = 3
 
     sub start() {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
@@ -117,6 +123,118 @@ main {
         while s[i] != 0 {
             txt.setchr(col + i, row, txt.petscii2scr(s[i]))
             i++
+        }
+    }
+
+    sub mnu_bar(uword ctxp @R0) {
+        ; Repaint EDIT's top menu bar (row 0): bar fill, the six titles, the active-menu highlight,
+        ; the accelerator letters, and the right-hand filename + A/B/C document indicator. Moved here
+        ; from main's draw_menubar/draw_filename_title to reclaim scarce low RAM - it is pure screen
+        ; painting (never touches the document arena). Everything dynamic arrives in a 9-byte context
+        ; that main packs, because the theme COLOURS are runtime values and this overlay has its own,
+        ; unrelated copy of theme; passing them keeps a custom palette correct here.
+        ;   ctx: 0 active(255=none)  1 flags(b0 show_dev, b1 modified)  2 CB_BAR  3 CB_MENUSEL
+        ;        4 ACCEL_FG  5 active_slot  6 slot_modified bits  7..8 filename pointer
+        ubyte active  = @(ctxp)
+        ubyte flags   = @(ctxp + 1)
+        ubyte cbar    = @(ctxp + 2)
+        ubyte cmensel = @(ctxp + 3)
+        ubyte accel   = @(ctxp + 4)
+        ubyte aslot   = @(ctxp + 5)
+        ubyte smbits  = @(ctxp + 6)
+        uword fnp     = peekw(ctxp + 7)
+        bool showdev  = (flags & 1) != 0
+
+        ; bar fill
+        ubyte c
+        for c in 0 to SCR_W - 1 {
+            txt.setclr(c, 0, cbar)
+            txt.setchr(c, 0, $20)
+        }
+        ; titles at their fixed columns (menu_col = 1,7,13,21,26,34 in edit.p8)
+        put_str_at(1,  0, "File")
+        put_str_at(7,  0, "Edit")
+        put_str_at(13, 0, "Search")
+        if showdev
+            put_str_at(21, 0, "Dev")            ; hidden when show_dev is off
+        put_str_at(26, 0, "Window")
+        put_str_at(34, 0, "Help")
+
+        ; right end: filename immediately left of the A/B/C active-document indicator
+        ubyte abc_col = SCR_W - NDOCS - 1
+        put_str_at(abc_col, 0, "ABC")
+        ubyte d
+        for d in 0 to NDOCS - 1 {
+            if d == aslot
+                txt.setclr(abc_col + d, 0, cmensel)
+            else if (smbits & (1 << d)) != 0       ; inactive doc with unsaved edits -> accent
+                txt.setclr(abc_col + d, 0, (cbar & $f0) | accel)
+        }
+        ubyte fl = 0
+        while @(fnp + fl) != 0
+            fl++
+        ubyte extra = 0
+        if (flags & 2) != 0
+            extra = 2
+        bool useunt = fl == 0
+        ubyte dl = fl
+        if useunt
+            dl = 8                              ; length of "untitled"
+        ; drawn only if it clears the "Help" title (col 34 + len 4 = 38); guard the ubyte underflow
+        if abc_col >= dl + extra + 1 {
+            ubyte startcol = abc_col - dl - extra - 1
+            if startcol >= 38 {
+                if useunt
+                    put_str_at(startcol, 0, "untitled")
+                else {
+                    ubyte j = 0
+                    while @(fnp + j) != 0 {
+                        txt.setchr(startcol + j, 0, txt.petscii2scr(@(fnp + j)))
+                        j++
+                    }
+                }
+                if (flags & 2) != 0
+                    put_str_at(startcol + dl, 0, " *")
+            }
+        }
+
+        ; active-menu highlight (whole title), then the accelerator letter on top
+        if active != 255 {
+            ubyte a0 = mcol(active)
+            ubyte al = mlen(active)
+            for c in a0 to a0 + al - 1
+                txt.setclr(c, 0, cmensel)
+        }
+        ubyte mi
+        for mi in 0 to NMENU - 1 {
+            if showdev or mi != 3 {
+                ubyte base = cbar
+                if mi == active
+                    base = cmensel
+                txt.setclr(mcol(mi), 0, (base & $f0) | accel)
+            }
+        }
+    }
+
+    sub mcol(ubyte i) -> ubyte {
+        when i {
+            0 -> return 1
+            1 -> return 7
+            2 -> return 13
+            3 -> return 21
+            4 -> return 26
+            else -> return 34
+        }
+    }
+
+    sub mlen(ubyte i) -> ubyte {
+        when i {
+            0 -> return 4
+            1 -> return 4
+            2 -> return 6
+            3 -> return 3
+            4 -> return 6
+            else -> return 4
         }
     }
 }

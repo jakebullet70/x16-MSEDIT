@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 239         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 281         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -177,6 +177,19 @@ main {
     ubyte gutter_w = 0                  ; current gutter width in columns (0 = off); text starts here
     bool wrap_on = false                ; soft word-wrap (display only): default OFF, Edit-menu toggle
     ubyte top_seg = 0                   ; column where the top visible visual-row starts within top_line
+    ; Wrap-mode incremental-redraw state. Display-only, never persisted; rebuilt by every
+    ; draw_all_text_wrapped, which every edit path runs (ensure_visible returns true under wrap).
+    ; Together these answer "is the cursor on screen" and "which screen row is it on" with plain
+    ; compares - the old code re-derived the window layout by loading every visible line from
+    ; banked RAM on EVERY cursor move, which is the main reason wrap-mode scrolling crawled.
+    ubyte g_cseg                        ; cursor's wrap-segment start, set by ensure_visible_wrap
+    uword nxt_dl                        ; the first visual row BELOW the window: its doc line...
+    ubyte nxt_seg                       ; ...and segment. (line_count, 0) when blanks are visible.
+    ubyte cur_vseg                      ; wrap-segment the cursor was on at the last paint - the
+                                        ; one-row-scroll fast path needs it to un-band the old row.
+    ubyte cur_srow                      ; SCREEN row of the cursor's banded visual row at last paint;
+                                        ; draw_wrapped_row records it so a no-scroll move un-bands
+                                        ; the old row without searching for it (wrap fast path).
     ubyte cur_len                       ; length of editbuf
     uword cur_row, top_line             ; cursor line / first visible line
     uword prev_cur_row                  ; doc row that currently shows the cursor highlight
@@ -221,7 +234,7 @@ main {
     ; edoc.linebuf is live ONLY inside edoc.load_file / edoc.save_file, and no workbuf holder spans
     ; either call: act_make_backup builds bakname here but copies it into savebuf BEFORE save_file
     ; runs; Replace, the block-comment builders and the undo capture are pure in-memory (edoc.commit
-    ; and edoc.store never touch linebuf); flash_no_ovl builds and prints in one breath.
+    ; and edoc.store never touch linebuf); halt_no_ovl builds its message at startup, before any load.
     ; RULE for anything new that parks data here: it must not stay live across an Open, a Save or a
     ; session restore. That is exactly what sank the FIRST attempt at this alias (v0.9.215) - the
     ; BASLOAD error line used to ride in workbuf, and it is scraped in start() BEFORE
@@ -353,6 +366,9 @@ main {
     extsub @bank 10 $A009 = ovl_ses_setup(uword svcaddr @R0, uword ptrtbl @R1) -> ubyte @A
     extsub @bank 10 $A00C = ovl_ses_write()
     extsub @bank 10 $A00F = ovl_ses_restore() -> ubyte @A
+    ; $A012: hands back the addresses of the three BASIC keyword blobs, which live in misc.ovl's
+    ; string pool to keep ~450 B of keyword text out of low RAM. syntax.set_kw caches them + this bank.
+    extsub @bank 10 $A012 = ovl_kw_addrs(uword outp @R0)
     bool misc_ok                        ; misc.ovl loaded OK -> About + the input prompts are available
     str  miscovl = "misc.ovl"
 
@@ -374,7 +390,9 @@ main {
     const ubyte MENUS_BANK = 13     ; reserved bank 13 for menus.ovl
     extsub @bank 13 $A000 = menus_init()
     extsub @bank 13 $A003 = mnu_item(ubyte active @R0, ubyte i @R1, ubyte col @R2, ubyte row @R3, ubyte flags @R4)
+    extsub @bank 13 $A006 = mnu_bar(uword ctxp @R0)      ; paints the whole menu bar (row 0)
     bool menus_ok                       ; menus.ovl loaded OK -> dropdown item labels are available
+    ubyte[9] menuctx                    ; packed state handed to mnu_bar (see draw_menubar)
     str  menusovl = "menus.ovl"
     str  keysfile = "edit.md"           ; the help / Keyboard Map text file, viewed by Help > Keyboard
     str  basloadhlp = "basload.md"      ; the BASLOAD guide, viewed by Help > BASLOAD
@@ -493,21 +511,28 @@ main {
         misc_ok = diskio.loadlib(theme.path_to(miscovl), $a000) != 0
         cx16.pop_rambank()
         if misc_ok
-            misc_init()                 ; extsub @bank 8: clears the overlay's in-bank BSS, ONCE
+            misc_init()                 ; extsub @bank 10: clears the overlay's in-bank BSS, ONCE
         else
             void diskio.status()         ; drop the FILE NOT FOUND (else the activity LED blinks)
-        ; wire up the session code in the overlay. Two guards before trusting it: the three new
-        ; jmptable entries must actually BE jumps (a stale pre-session misc.ovl is shorter - $A009
-        ; would hold arbitrary code and calling it would crash), and ses_setup must return the ABI
-        ; version this binary was built against. Either failing -> ses_ok false -> EDIT runs fine
-        ; but sessions don't survive a hand-off (same graceful degradation as the prompts).
+        ; wire up the session code + the keyword-blob addresses in the overlay. Guard first: the
+        ; jmptable entries we are about to call must actually BE jumps (a stale pre-session misc.ovl
+        ; is shorter - $A009+ would hold arbitrary code and calling it would crash). $A009/C/F are
+        ; the session entries; $A012 is kw_addrs. ses_setup must also return the ABI version this
+        ; binary was built against. Any failing -> that feature degrades (sessions off / keyword
+        ; colouring off) but EDIT runs fine. One push/pop covers both checks.
         ses_ok = false
         if misc_ok {
             cx16.push_rambank(MISC_BANK)
             bool entries = @($a009) == $4c and @($a00c) == $4c and @($a00f) == $4c
+            bool kw_entry = @($a012) == $4c
             cx16.pop_rambank()
             if entries
                 ses_ok = ovl_ses_setup(&ses_svc, &SES_PTRS) == SESOVL_VER
+            if kw_entry {
+                ; syntax reads the blobs from MISC_BANK; hand it their addresses (via idle tmpbuf).
+                ovl_kw_addrs(&tmpbuf)
+                syntax.set_kw(peekw(&tmpbuf), peekw(&tmpbuf + 2), peekw(&tmpbuf + 4), MISC_BANK)
+            }
         }
 
         ; ...and the text/hex viewer overlay into its bank (same pattern). Missing tview.ovl is not
@@ -540,6 +565,27 @@ main {
             menus_init()                ; extsub @bank 11: clears the overlay's in-bank BSS, ONCE
         else
             void diskio.status()
+        ; All four overlays are REQUIRED. If any failed to load (file missing from the program
+        ; folder), name it and stop here - BEFORE the fkey hijack and document setup, so returning is
+        ; a clean exit. Running degraded is not offered: the menus, dialogs, prompts, viewer and the
+        ; syntax keyword tables all live in overlays, so a missing one is a broken install. Ordered
+        ; misc-first so a missing misc.ovl (which the input prompts + keyword colouring need) is named.
+        if not misc_ok {
+            halt_no_ovl(miscovl)
+            return
+        }
+        if not menus_ok {
+            halt_no_ovl(menusovl)
+            return
+        }
+        if not picker_ok {
+            halt_no_ovl(pickerovl)
+            return
+        }
+        if not tview_ok {
+            halt_no_ovl(tviewovl)
+            return
+        }
         ; A session restore rebuilds ALL THREE slots itself (documents, cursors, clipboard), so the
         ; fresh-launch path below - which blanks B and C - must not run on top of it.
         bool reloaded = restore_run_state()
@@ -562,7 +608,7 @@ main {
             ; later normal exit writes EDIT's own /ED macro back into the KERNAL as if it were the
             ; user's. Staging edit.prg without misc.ovl is exactly how that happens.
             if not ses_ok
-                flash_notify("Session off - misc.ovl missing or stale")
+                flash_notify("Session off - misc.ovl too old")
             else if ses_failed
                 flash_notify("Session unreadable - started fresh")
             else if ses_lost != 0
@@ -765,17 +811,18 @@ main {
     }
 
     sub draw_gutter(ubyte r) {
-        draw_gutter_dl(r, top_line + r, true)
+        draw_gutter_dl(r, top_line + r, true, top_line + r == cur_row)
     }
 
-    sub draw_gutter_dl(ubyte r, uword idx, bool shownum) {
+    sub draw_gutter_dl(ubyte r, uword idx, bool shownum, bool hilite) {
         ; paint the gutter strip for screen row r showing doc line `idx`. shownum=false blanks the
         ; number (used for soft-wrap continuation rows, which share the line above's number).
+        ; hilite mirrors the text band: whole line in unwrapped mode, cursor's visual row in wrap.
         if gutter_w == 0
             return
         ubyte sy = TEXT_TOP + r
         ubyte gcol = theme.CB_GUTTER
-        if idx == cur_row
+        if hilite
             gcol = theme.CB_GUTTER_CUR
         ubyte c
         for c in 0 to gutter_w - 1 {                 ; dark-grey strip; last col is the separator
@@ -843,72 +890,11 @@ main {
     }
 
     sub draw_text_row(ubyte r) {
-        ; paint one screen row: line-number gutter, characters, body colour, selection, cursor
-        ubyte sy = TEXT_TOP + r
-        uword idx = top_line + r
-        ; resolve this row's source line once (the cursor row uses the live editbuf)
-        ubyte blen = 0
-        uword bufptr = 0
-        if idx < edoc.line_count {
-            if idx == cur_row {
-                bufptr = &editbuf
-                blen = cur_len
-            } else {
-                blen = edoc.load(idx, &tmpbuf)
-                bufptr = &tmpbuf
-            }
-        }
-        ; syntax colouring: classify the whole line once into hlcol[] (one colour per doc
-        ; column), then the cell loop reads it. Display-only; selection/cursor still override.
-        if hl_on and blen != 0
-            run_syntax(bufptr, blen)
-        draw_gutter(r)                          ; line-number strip in cols [0, gutter_w)
-        ; single pass: each text cell (screen col gutter_w+c) gets its char + colour
-        ubyte textw = SCR_W - gutter_w
-        ubyte c
-        for c in 0 to textw - 1 {
-            uword srcidx = (left_col as uword) + c
-            ubyte ch = SPACE_SC
-            ubyte col = theme.CB_BODY
-            if srcidx < blen {
-                ch = txt.petscii2scr(@(bufptr + srcidx))
-                if hl_on
-                    col = hlcol[lsb(srcidx)]        ; srcidx < blen <= 250, fits a byte index
-            }
-            if idx == cur_row
-                col = (col & $0f) | (theme.CB_BAND & $f0)   ; current-line band: theme bg, keep the fg
-            txt.setchr(gutter_w + c, sy, ch)
-            txt.setclr(gutter_w + c, sy, col)
-        }
-        ; selection highlight: cells whose doc column is in [c0, c1) on this row
-        if sel_active {
-            sel_norm()
-            if idx >= s_row and idx <= e_row {
-                ubyte c0 = 0
-                if idx == s_row
-                    c0 = s_col
-                uword c1 = blen             ; whole rest of line for non-end rows
-                if idx == e_row
-                    c1 = e_col
-                ubyte sccol = 0
-                while sccol < textw {
-                    uword dcol = left_col
-                    dcol += sccol
-                    if dcol >= c1
-                        break
-                    if dcol >= c0
-                        txt.setclr(gutter_w + sccol, sy, theme.CB_MARK)
-                    sccol++
-                }
-            }
-        }
-        ; cursor cell: OVERTYPE (or no sprite) = reverse-block; INSERT = left blank, the underline
-        ; sprite marks it instead (so insert and overtype look different)
-        if idx == cur_row and cur_col >= left_col and (ovr_mode or not spr_ok) {
-            ubyte ccol = cur_col - left_col
-            if ccol < textw
-                txt.setclr(gutter_w + ccol, sy, theme.CB_CUR)
-        }
+        ; UNWRAPPED rendering is the same operation as a wrap segment, with the "segment" set to
+        ; the horizontal scroll window [left_col, left_col + textw). This used to be a second,
+        ; ~85%-identical copy of draw_wrapped_row; it is now a wrapper. Kept as a named sub because
+        ; eleven callers use it and `draw_text_row(r)` reads better than the 5-argument form.
+        draw_wrapped_row(r, top_line + r, left_col, (left_col as uword) + (SCR_W - gutter_w), true, 0, 0)
     }
 
     sub draw_all_text() {
@@ -923,52 +909,111 @@ main {
         prev_cur_row = cur_row          ; a full repaint freshly draws the cursor at cur_row
     }
 
-    sub draw_wrapped_row(ubyte r, uword dl, ubyte cstart, ubyte cend, bool shownum) {
-        ; draw doc line `dl`'s slice [cstart, cend) on screen row r (soft-wrap visual row)
+    sub draw_wrapped_row(ubyte r, uword dl, uword cstart, uword cend, bool shownum,
+                         uword pbuf, ubyte pblen) {
+        ; THE row renderer: paint doc line `dl`'s column slice [cstart, cend) on screen row r -
+        ; gutter, characters, body colour, selection, cursor. Both display modes come through here
+        ; (see draw_text_row for the unwrapped wrapper), so a fix lands in both.
+        ; pbuf = a line the CALLER has already staged, or 0 for "load it yourself".
         ubyte sy = TEXT_TOP + r
+        ; resolve this row's source line once (the cursor row uses the live editbuf)
         ubyte blen = 0
         uword bufptr = 0
-        if dl < edoc.line_count {
-            if dl == cur_row {
-                bufptr = &editbuf
+        if pbuf != 0 {
+            bufptr = pbuf                   ; draw_all_text_wrapped has to load the line anyway to
+            blen = pblen                    ; compute its wrap segments, so it hands it over rather
+        } else if dl < edoc.line_count {    ; than have us load the same line a second time - that
+            if dl == cur_row {              ; was one redundant BANKED read per visual row, and a
+                bufptr = &editbuf           ; 3-segment line cost six loads to paint three rows
                 blen = cur_len
             } else {
                 blen = edoc.load(dl, &tmpbuf)
                 bufptr = &tmpbuf
             }
         }
+        ; syntax colouring: classify the whole line once into hlcol[] (one colour per doc
+        ; column), then the cell loop reads it. Display-only; selection/cursor still override.
         if hl_on and blen != 0
             run_syntax(bufptr, blen)
-        draw_gutter_dl(r, dl, shownum)
+        ubyte band = theme.CB_BAND & $f0        ; hoisted out of the cell loop: this and the
+        bool bandrow = dl == cur_row            ; cur_row test were re-evaluated per cell before
+        ; In wrap mode the band marks only the cursor's VISUAL row (the segment holding cur_col),
+        ; not every row of a wrapped line - that is what lets a one-row scroll move the band by
+        ; repainting just two rows (redraw_after_move) instead of the whole window.
+        if bandrow and wrap_on
+            bandrow = cur_col >= cstart and ((cur_col as uword) < cend or cend >= blen)
+        if bandrow {
+            cur_vseg = lsb(cstart)              ; this IS the cursor's visual row; record its segment
+            cur_srow = r                        ; ...and its screen row, for the no-scroll fast path
+        }
+        draw_gutter_dl(r, dl, shownum, bandrow) ; line-number strip in cols [0, gutter_w)
         ubyte textw = SCR_W - gutter_w
+        ; one column past the last character to draw. Wrap callers pass cend <= blen, so this is
+        ; cend; the unwrapped wrapper passes the scroll-window end, which clamps to blen - the
+        ; `srcidx < blen` test the separate unwrapped renderer used to do.
+        uword vend = cend
+        if (blen as uword) < vend
+            vend = blen
+        ; How many of this row's cells hold a character; the rest are padding. Deciding it ONCE is
+        ; what keeps 16-bit arithmetic out of the hot loop: since vend <= blen <= 250, a row that
+        ; draws anything has cstart < 250, so the source index and the hlcol index both fit a BYTE
+        ; and the per-cell bounds test becomes a byte compare. (A uword srcidx here cost ~15% of
+        ; wrap-mode scroll speed - it runs textw * TEXT_ROWS times per repaint.)
+        ubyte nchar = 0
+        if vend > cstart {
+            uword avail = vend - cstart
+            nchar = textw
+            if avail < textw
+                nchar = lsb(avail)
+        }
+        uword sp = bufptr + cstart              ; running source pointer - one 16-bit INC per cell
+        ubyte si = lsb(cstart)                  ; hlcol index; valid whenever nchar != 0 (see above)
+        ; Stream the row through VERA DATA0 with auto-increment: ONE address setup for the whole
+        ; row, then two data writes per cell. txt.setchr/setclr each redo the full address dance
+        ; (CTRL + 3 address registers) per call, and at 2 calls x 80 cells x 28 rows that latching
+        ; WAS the repaint - wrap mode repaints everything on every cursor move and scrolled
+        ; visibly slower than the key repeat rate. Text map stride is 256 bytes/row, cell = 2
+        ; bytes (char, colour), same decode as vram_copy_row. Safe from mainline code: the
+        ; KERNAL's vsync IRQ saves/restores the VERA address state it touches.
+        ubyte mapb = cx16.VERA_L1_MAPBASE
+        uword va = ((mapb & $7f) as uword) << 9
+        va += (sy as uword) << 8
+        va += (gutter_w as uword) << 1
+        cx16.VERA_CTRL = 0                              ; ADDRSEL 0 -> ADDR0 / DATA0
+        cx16.VERA_ADDR_L = lsb(va)
+        cx16.VERA_ADDR_M = msb(va)
+        cx16.VERA_ADDR_H = %00010000 | (mapb >> 7)      ; auto-increment 1 + bank bit
+        ; single pass: each text cell gets its char + colour pushed through the data port
         ubyte c
         for c in 0 to textw - 1 {
-            ubyte srcidx = cstart + c
             ubyte ch = SPACE_SC
             ubyte col = theme.CB_BODY
-            if srcidx < cend {
-                ch = txt.petscii2scr(@(bufptr + srcidx))
+            if c < nchar {
+                ch = txt.petscii2scr(@(sp))
                 if hl_on
-                    col = hlcol[srcidx]
+                    col = hlcol[si]
+                sp++
+                si++
             }
-            if dl == cur_row
-                col = (col & $0f) | $b0
-            txt.setchr(gutter_w + c, sy, ch)
-            txt.setclr(gutter_w + c, sy, col)
+            if bandrow
+                col = (col & $0f) | band        ; current-line band: theme bg, keep the fg
+            cx16.VERA_DATA0 = ch
+            cx16.VERA_DATA0 = col
         }
+        ; selection highlight: cells whose doc column is in [c0, c1) on this row
         if sel_active {
             sel_norm()
             if dl >= s_row and dl <= e_row {
-                ubyte c0 = 0
+                uword c0 = 0
                 if dl == s_row
                     c0 = s_col
-                ubyte c1 = blen                     ; whole rest of line for non-end rows
+                uword c1 = blen                 ; whole rest of line for non-end rows
                 if dl == e_row
                     c1 = e_col
                 ubyte cc = 0
                 while cc < textw {
-                    ubyte dcol = cstart + cc
-                    if dcol >= cend or dcol >= c1
+                    uword dcol = cstart + cc
+                    if dcol >= c1 or dcol >= cend
                         break
                     if dcol >= c0
                         txt.setclr(gutter_w + cc, sy, theme.CB_MARK)
@@ -976,12 +1021,16 @@ main {
                 }
             }
         }
-        if dl == cur_row and cur_col >= cstart {
-            bool oncur = cur_col < cend
-            if cur_col == cend and cend >= blen
-                oncur = true                        ; cursor at the very end of the last segment
+        ; cursor cell. The reverse-block goes down whenever the underline SPRITE is NOT marking
+        ; this cell: overtype, no sprite, or wrap mode (cursor_update turns the sprite off for the
+        ; whole of wrap_on). In insert mode without wrap the cell is left alone so the sprite shows
+        ; instead - that is what makes insert and overtype look different.
+        if dl == cur_row and (cur_col as uword) >= cstart and (ovr_mode or not spr_ok or wrap_on) {
+            bool oncur = (cur_col as uword) < cend
+            if (cur_col as uword) == cend and cend >= blen
+                oncur = true                    ; cursor at the very end of the last segment
             if oncur {
-                ubyte ccol = cur_col - cstart
+                ubyte ccol = lsb((cur_col as uword) - cstart)
                 if ccol < textw
                     txt.setclr(gutter_w + ccol, sy, theme.CB_CUR)
             }
@@ -995,7 +1044,7 @@ main {
         ubyte seg = top_seg
         while r < TEXT_ROWS {
             if dl >= edoc.line_count {
-                draw_wrapped_row(r, dl, 0, 0, true)     ; blank row past end-of-document
+                draw_wrapped_row(r, dl, 0, 0, true, 0, 0)   ; blank row past end-of-document
                 r++
             } else {
                 uword b
@@ -1008,7 +1057,7 @@ main {
                     llen = edoc.load(dl, &tmpbuf)
                 }
                 ubyte segend = wrap_next(b, llen, seg, textw)
-                draw_wrapped_row(r, dl, seg, segend, seg == 0)
+                draw_wrapped_row(r, dl, seg, segend, seg == 0, b, llen)  ; b/llen: already staged
                 r++
                 if segend >= llen {
                     dl++
@@ -1018,6 +1067,8 @@ main {
                 }
             }
         }
+        nxt_dl = dl                                         ; the first row that did NOT fit -
+        nxt_seg = seg                                       ; ensure_visible_wrap tests against it
         prev_cur_row = cur_row
     }
 
@@ -1100,39 +1151,86 @@ main {
         }
     }
 
-    sub ensure_visible_wrap() {
-        ; keep the cursor's visual row on screen by moving (top_line, top_seg)
+    sub ensure_visible_wrap() -> ubyte {
+        ; keep the cursor's visual row on screen by moving (top_line, top_seg), and report HOW it
+        ; moved so redraw_after_move can VRAM-scroll instead of full-repainting:
+        ;   0 = didn't move (visible)   1 = advanced one row (down)   2 = retreated one row (up)
+        ;   3 = far jump - full repaint required
+        ; No load-walk: visibility is three compares against (nxt_dl, nxt_seg) - the first row below
+        ; the window, which the last draw_all_text_wrapped recorded. (nxt) is not maintained here;
+        ; the following repaint rebuilds it. g_cseg holds the cursor's segment for the band test.
         ubyte textw = SCR_W - gutter_w
-        ubyte cseg = seg_start_of(&editbuf, cur_len, cur_col, textw)   ; cursor line = editbuf
-        if cur_row < top_line or (cur_row == top_line and cseg < top_seg) {
-            top_line = cur_row                  ; cursor above the top -> pin it to the top row
-            top_seg = cseg
-            return
-        }
-        uword dl = top_line                     ; is it already within [top, top+TEXT_ROWS)?
-        ubyte seg = top_seg
-        ubyte rows = 0
-        while rows < TEXT_ROWS {
-            if dl == cur_row and seg == cseg
-                return                          ; visible
-            if dl >= edoc.line_count
-                break
-            ubyte llen = line_buf_len(dl)
-            ubyte e = wrap_next(g_wbuf, llen, seg, textw)
-            if e >= llen {
-                dl++
-                seg = 0
-            } else {
-                seg = e
+        g_cseg = seg_start_of(&editbuf, cur_len, cur_col, textw)       ; cursor line = editbuf
+        ubyte nseg = wrap_next(&editbuf, cur_len, g_cseg, textw)       ; end of the cursor's segment
+        if cur_row < top_line or (cur_row == top_line and g_cseg < top_seg) {
+            ; above the top. Exactly one visual row above (an upward scroll step) iff the row
+            ; AFTER the cursor's is the current top - answerable from editbuf alone, no loads.
+            if (nseg >= cur_len and cur_row + 1 == top_line and top_seg == 0)
+               or (nseg < cur_len and cur_row == top_line and top_seg == nseg) {
+                top_line = cur_row
+                top_seg = g_cseg
+                return 2
             }
-            rows++
+            top_line = cur_row                  ; a far jump up -> pin cursor to the top row
+            top_seg = g_cseg
+            return 3
         }
-        top_line = cur_row                      ; below the bottom -> put cursor on the last row
-        top_seg = cseg
+        if cur_row < nxt_dl or (cur_row == nxt_dl and g_cseg < nxt_seg)
+            return 0                            ; already visible
+        if cur_row == nxt_dl and g_cseg == nxt_seg {
+            ; one visual row below the bottom - a downward scroll step. Advance the top one visual
+            ; row (advance_top, inlined here as its only caller), then keep nxt current: the fast
+            ; path does NOT full-repaint, so nobody else rebuilds nxt, and a stale nxt would make the
+            ; next down-step miss this test and fall back to a full repaint (the flicker). The
+            ; cursor's row becomes the new bottom, so nxt is the row after the cursor's segment.
+            ubyte tlen = line_buf_len(top_line)
+            ubyte te = wrap_next(g_wbuf, tlen, top_seg, textw)
+            if te >= tlen {
+                top_line++
+                top_seg = 0
+            } else {
+                top_seg = te
+            }
+            nxt_dl = cur_row
+            nxt_seg = nseg
+            if nseg >= cur_len {
+                nxt_dl++
+                nxt_seg = 0
+            }
+            return 1
+        }
+        top_line = cur_row                      ; a far jump down -> rebuild: cursor on the last
+        top_seg = g_cseg                        ; row, walking the window backwards from it
         ubyte k = 0
         while k < TEXT_ROWS - 1 {
             retreat_top()
             k++
+        }
+        return 3
+    }
+
+    sub paint_wrapped_at(ubyte r, uword dl, ubyte seg) {
+        ; fully repaint one visual row: doc line dl's segment at column seg, on screen row r. Loads
+        ; dl (cursor line resolves to editbuf, no banked read). The scroll fast path uses it to
+        ; repaint just the two rows whose current-line band changed.
+        ubyte llen = line_buf_len(dl)
+        ubyte e = wrap_next(g_wbuf, llen, seg, SCR_W - gutter_w)
+        draw_wrapped_row(r, dl, seg, e, seg == 0, g_wbuf, llen)
+    }
+
+    sub vshift_up() {
+        ; scroll the visible text window up one screen row in VRAM (both display modes use this)
+        ubyte r
+        for r in 0 to TEXT_ROWS - 2
+            vram_copy_row(TEXT_TOP + r + 1, TEXT_TOP + r)
+    }
+
+    sub vshift_dn() {
+        ; scroll it down one row - copied bottom-up so a row is read before it is overwritten
+        ubyte r = TEXT_ROWS - 1
+        while r != 0 {
+            vram_copy_row(TEXT_TOP + r - 1, TEXT_TOP + r)
+            r--
         }
     }
 
@@ -1183,7 +1281,11 @@ main {
 
     sub ensure_visible() -> bool {
         if wrap_on {
-            ensure_visible_wrap()               ; wrap: adjust the visual top and force a full repaint
+            ; wrap: adjust the visual top and report "scrolled" so every EDIT caller full-repaints.
+            ; An edit can reflow the whole window, so a blanket repaint is the right answer for those.
+            ; (redraw_after_move calls ensure_visible_wrap directly and uses its return code to
+            ; VRAM-scroll a pure cursor move instead - that's the one caller that repaints less.)
+            void ensure_visible_wrap()
             return true
         }
         bool s = false
@@ -1316,8 +1418,68 @@ main {
         bool force_full = sel_cleared           ; a selection was just collapsed -> repaint every row once
         sel_cleared = false
         if wrap_on {
-            ensure_visible_wrap()               ; soft-wrap forces a full repaint (segments shift)
-            draw_all_text()
+            ; A pure cursor move can't reflow the wrap segments (only edits do, and those go through
+            ; ensure_visible/draw_all_text and full-repaint). So the band just moves between two visual
+            ; rows: the one the cursor LEFT (band comes off) and the one it landed on (band on). Both a
+            ; one-row scroll (VRAM window shift first) and an in-window move repaint exactly those two
+            ; rows - no full redraw, no gutter redraw. The band marks only the cursor's visual row in
+            ; wrap mode (draw_wrapped_row), which is what keeps it to two rows. Only a far jump (how 3),
+            ; a just-cleared selection, or an active selection still full-repaints.
+            ubyte how = ensure_visible_wrap()
+            if force_full or sel_active or how == 3 {
+                draw_all_text()
+                draw_status()
+                return
+            }
+            ; A pure move only shifts the current-line band; repaint the row the cursor LEFT (band
+            ; off) and the row it landed on (band on), never the whole window. The OLD visual
+            ; position is exactly (prev_cur_row, cur_vseg) - line + segment recorded at the last paint.
+            ubyte edge                          ; screen row of the cursor's NEW visual position
+            ubyte oldrow                        ; screen row of its OLD position
+            if how == 1 {                       ; scrolled down: window shifts up, new row at bottom
+                vshift_up()
+                edge = TEXT_ROWS - 1
+                oldrow = TEXT_ROWS - 2
+            } else if how == 2 {                ; scrolled up: window shifts down, new row at top
+                vshift_dn()
+                edge = 0
+                oldrow = 1
+            } else {
+                ; how == 0: visible, no scroll. The OLD row is cur_srow (the renderer records it), so
+                ; only the NEW cursor row is unknown - find it by walking the window from
+                ; (top_line, top_seg) with segment math (no rendering). THIS is the in-window move
+                ; that used to full-repaint the whole screen on every keypress (the slow scroll).
+                oldrow = cur_srow
+                ubyte tw = SCR_W - gutter_w
+                uword wdl = top_line
+                ubyte wseg = top_seg
+                ubyte wr = 0
+                edge = 255
+                while wr < TEXT_ROWS and wdl < edoc.line_count {
+                    if wdl == cur_row and wseg == g_cseg {
+                        edge = wr
+                        break
+                    }
+                    ubyte wl = line_buf_len(wdl)
+                    ubyte we = wrap_next(g_wbuf, wl, wseg, tw)
+                    if we >= wl {
+                        wdl++
+                        wseg = 0
+                    } else {
+                        wseg = we
+                    }
+                    wr++
+                }
+                if edge == 255 {                ; cursor not found in window (shouldn't happen) - safe
+                    draw_all_text()
+                    draw_status()
+                    return
+                }
+            }
+            if oldrow != edge
+                paint_wrapped_at(oldrow, prev_cur_row, cur_vseg)    ; old cursor row, band removed
+            paint_wrapped_at(edge, cur_row, g_cseg)                 ; new row, banded (sets cur_srow)
+            prev_cur_row = cur_row
             draw_status()
             return
         }
@@ -1352,20 +1514,14 @@ main {
             return
         }
         if top_line == old_top + 1 {
-            ; scrolled down one: text content moves up a row (copy rows 1..n-1 -> 0..n-2)
-            ubyte r
-            for r in 0 to TEXT_ROWS - 2
-                vram_copy_row(TEXT_TOP + r + 1, TEXT_TOP + r)
+            ; scrolled down one: text content moves up a row
+            vshift_up()
             draw_text_row(TEXT_ROWS - 1)                ; new bottom row (holds the cursor)
             if prev_cur_row >= top_line and prev_cur_row < top_line + TEXT_ROWS
                 draw_text_row(lsb(prev_cur_row - top_line))   ; clear the old cursor cell
         } else if old_top == top_line + 1 {
-            ; scrolled up one: text content moves down a row (copy bottom-up to avoid clobber)
-            ubyte rd = TEXT_ROWS - 1
-            while rd != 0 {
-                vram_copy_row(TEXT_TOP + rd - 1, TEXT_TOP + rd)
-                rd--
-            }
+            ; scrolled up one: text content moves down a row
+            vshift_dn()
             draw_text_row(0)                            ; new top row (holds the cursor)
             if prev_cur_row >= top_line and prev_cur_row < top_line + TEXT_ROWS
                 draw_text_row(lsb(prev_cur_row - top_line))
@@ -1379,67 +1535,34 @@ main {
 
     ; ---------- menu bar / status bar ----------
 
-    sub draw_filename_title() {
-        ; Right end of the menu bar: the active-document indicator hard against the right margin, with
-        ; the filename immediately to its left. Both live here rather than on the status bar because
-        ; this is the row that names the document. Refresh is correct at draw_menubar's cadence (full
-        ; redraw + menu open): the active slot only moves in switch_doc, and slot_modified[] is only
-        ; written by save_ctx - both of which redraw.
-        ; Drawn BEFORE the filename's width guard below, so a long name suppresses the name, not this.
-        ubyte abc_col = SCR_W - NDOCS - 1       ; one cell per doc, plus a one-column right margin
-        put_str_at(abc_col, 0, "ABC")
+    sub draw_menubar(ubyte active) {
+        ; The menu bar's PAINTING (row 0: bar fill, titles, active highlight, accelerators, and the
+        ; filename + A/B/C indicator that draw_filename_title used to do) lives in menus.ovl's mnu_bar
+        ; now - it is cold, screen-only work, so exiling it reclaims ~0.5 KB of scarce low RAM. Pack
+        ; the dynamic state into menuctx and hand it over; theme COLOURS ride along because the overlay
+        ; has its own separate theme copy. menu_col/menu_len are static, so the overlay hardcodes the
+        ; same columns while main keeps its copies for menu layout / hit-testing / dispatch.
+        menuctx[0] = active
+        ubyte f = 0
+        if theme.show_dev
+            f |= 1
+        if modified
+            f |= 2
+        menuctx[1] = f
+        menuctx[2] = theme.CB_BAR
+        menuctx[3] = theme.CB_MENUSEL
+        menuctx[4] = theme.ACCEL_FG
+        menuctx[5] = g_active_slot
+        ubyte sm = 0
         ubyte d
         for d in 0 to NDOCS - 1 {
-            if d == g_active_slot
-                txt.setclr(abc_col + d, 0, theme.CB_MENUSEL)
-            else if slot_modified[d]                ; inactive doc with unsaved edits -> accent
-                txt.setclr(abc_col + d, 0, (theme.CB_BAR & $f0) | theme.ACCEL_FG)
+            if slot_modified[d]
+                sm |= (1 << d)
         }
-        ubyte fl = lsb(strings.length(filename))
-        ubyte extra = 0
-        if modified
-            extra = 2
-        ubyte dl = fl
-        if fl == 0
-            dl = lsb(strings.length(untitled))
-        ubyte startcol = abc_col - dl - extra - 1    ; one space clear of the indicator
-        ; don't overwrite the menu titles when the filename is long
-        if startcol < menu_col[NMENU - 1] + menu_len[NMENU - 1]
-            return
-        if fl == 0
-            put_str_at(startcol, 0, untitled)
-        else
-            put_str_at(startcol, 0, filename)
-        if modified
-            put_str_at(startcol + dl, 0, " *")
-    }
-
-    sub draw_menubar(ubyte active) {
-        bar_fill(0, theme.CB_BAR)
-        put_str_at(menu_col[0], 0, "File")
-        put_str_at(menu_col[1], 0, "Edit")
-        put_str_at(menu_col[2], 0, "Search")
-        if theme.show_dev
-            put_str_at(menu_col[3], 0, "Dev")      ; hidden when show_dev is off (Window/Help slide left)
-        put_str_at(menu_col[4], 0, "Window")
-        put_str_at(menu_col[5], 0, "Help")
-        draw_filename_title()
-        if active != 255 {
-            ubyte x
-            for x in menu_col[active] to menu_col[active] + menu_len[active] - 1
-                txt.setclr(x, 0, theme.CB_MENUSEL)
-        }
-        ; highlight each title's accelerator letter (F/E/S/D/H, always the first char); skip Dev if hidden
-        ;ubyte mi
-        alias mi = x
-        for mi in 0 to NMENU - 1 {
-            if theme.show_dev or mi != 3 {
-                ubyte base = theme.CB_BAR
-                if mi == active
-                    base = theme.CB_MENUSEL
-                txt.setclr(menu_col[mi], 0, (base & $f0) | theme.ACCEL_FG)
-            }
-        }
+        menuctx[6] = sm
+        menuctx[7] = lsb(&filename)
+        menuctx[8] = msb(&filename)
+        mnu_bar(&menuctx)
     }
 
     sub draw_status() {
@@ -1572,9 +1695,7 @@ main {
         ; Esc/Stop -> false. Pre-fills with whatever is already in dest. See the PF_* consts above.
         ; The body lives in misc.ovl (ovl_prompt) to save low RAM - this wrapper hides the editor cursor
         ; and JSRFARs in. All state (dest, promptmsg, ww_on) is low RAM the overlay reads through
-        ; pointers. If misc.ovl is missing the prompt is unavailable -> treat as cancelled.
-        if not misc_ok
-            return false
+        ; pointers. misc.ovl is guaranteed present (start() halts if any overlay is missing).
         cursor_sprite_off()                     ; hide the editor cursor for the modal (was in wait_key)
         if ovl_prompt(promptmsg, dest, maxlen, flags, theme.current, &ww_on) != 0
             return true
@@ -1594,13 +1715,20 @@ main {
         sys.wait(18)                                    ; ~0.3s
     }
 
-    sub flash_no_ovl(str ovlname) {
-        ; "<ovlname> not found in the program folder" - four callers used to carry four near-identical
-        ; 40-byte literals; one shared tail costs 33 bytes total instead of ~170. Built in workbuf,
-        ; which is dead at every call site (none of them is mid-Replace, mid-load or mid-save).
+    sub halt_no_ovl(str ovlname) {
+        ; A REQUIRED overlay is missing -> name it and stop, rather than run degraded. Called only
+        ; from start(), before the fkey hijack / document setup, so returning from start() is a clean
+        ; exit: just put the screen mode + charset back the way we found them. Message built in
+        ; workbuf (idle at startup). The overlays are not optional - EDIT's menus, dialogs, prompts,
+        ; viewer and syntax tables all live in them - so a missing one is fatal, not a soft downgrade.
         void strings.copy(ovlname, &workbuf)
-        void strings.copy(" not found in the program folder", &workbuf + strings.length(ovlname))
-        flash_status(&workbuf)
+        void strings.copy(" missing - reinstall. Press a key.", &workbuf + strings.length(ovlname))
+        txt.clear_screen()
+        put_str_at(1, 1, &workbuf)
+        void wait_key()
+        cx16.set_screen_mode(saved_mode)        ; restore the mode + charset we changed at entry
+        restore_machine_state()
+        txt.clear_screen()
     }
 
     sub confirm_save() -> ubyte {
@@ -1649,6 +1777,13 @@ main {
     sub notify(str m) {
         status_msg(m)
         sys.wait(60)
+    }
+
+    sub notify_full() {
+        ; the "Document full - save now" toast has five callers (edit.p8's edoc.commit /
+        ; insert_line failure sites); one shared tail interns the 25-byte literal once instead of
+        ; five times. Same shared-tail trick as halt_no_ovl's message building.
+        notify("Document full - save now")
     }
 
     sub flash_notify(str m) {
@@ -2248,10 +2383,6 @@ main {
             }
         }
         fnbuf[0] = 0
-        if not picker_ok {
-            flash_no_ovl("picker.ovl")
-            return
-        }
         cursor_sprite_off()             ; the overlay owns the screen: hide our cursor sprite
         if pick(&fnbuf, pick_theme(), &pick_blocks) == 0 {
             full_redraw()
@@ -2859,10 +2990,6 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; blocks on a key; we repaint the editor after.
 
     sub act_about() {
-        if not misc_ok {
-            flash_no_ovl("misc.ovl")
-            return
-        }
         cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
         ovl_about(theme.current, BUILD_NUM, g_emu as ubyte)
         full_redraw()
@@ -2886,10 +3013,6 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
 
     sub view_help(str fname) {
         ; open a shipped help text file (in the install folder) read-only in the viewer
-        if not tview_ok {
-            flash_no_ovl("tview.ovl")
-            return
-        }
         cursor_sprite_off()                     ; the overlay owns the screen: hide our cursor sprite
         ovl_view(theme.path_to(fname), theme.current)
         full_redraw()
@@ -2898,14 +3021,6 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     sub act_view() {
         ; File > View: pick a file and show it read-only in the viewer, without loading it into the
         ; document (so it side-steps the document size limit for a quick look at a big file).
-        if not tview_ok {
-            flash_no_ovl("tview.ovl")
-            return
-        }
-        if not picker_ok {
-            flash_no_ovl("picker.ovl")
-            return
-        }
         fnbuf[0] = 0
         cursor_sprite_off()                     ; both overlays own the screen: hide our cursor sprite
         if pick(&fnbuf, pick_theme(), &pick_blocks) == 0 {
@@ -3801,7 +3916,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ; duplicate the current line, placing the copy below and moving the cursor onto it
         commit_editbuf()
         if not edoc.insert_line(cur_row + 1) {
-            notify("Document full - save now")
+            notify_full()
             return
         }
         undo_begin()
@@ -3873,7 +3988,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         if clip_line {
             ; whole-line clipboard: insert it as a new line below the cursor
             if not edoc.insert_line(cur_row + 1) {
-                notify("Document full - save now")
+                notify_full()
                 return
             }
             undo_begin()
@@ -3938,7 +4053,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     sub commit_editbuf() {
         if cur_dirty {
             if not edoc.commit(cur_row, &editbuf, cur_len)
-                notify("Document full - save now")
+                notify_full()
             cur_dirty = false
         }
     }
@@ -4398,11 +4513,11 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         while indent < cur_col and editbuf[indent] == ' '
             indent++
         if not edoc.commit(cur_row, &editbuf, cur_col) {
-            notify("Document full - save now")
+            notify_full()
             return
         }
         if not edoc.insert_line(cur_row + 1) {
-            notify("Document full - save now")
+            notify_full()
             return
         }
         ; undo: restore this line to its full pre-split content + delete the new line (one group)
