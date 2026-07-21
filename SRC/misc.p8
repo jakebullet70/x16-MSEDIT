@@ -216,6 +216,34 @@ main {
         @(outp + 5) = msb(p)
     }
 
+    sub prompt_box(ubyte interior) {
+        ; the 3-line attention box for the input prompt, matching edit.p8's box_msg: a top border on
+        ; SCR_H-3, the input row (SCR_H-2) framed by │ side borders, and a bottom border on the footer
+        ; row (SCR_H-1). interior = the middle row's fill (red flash, then theme.CB_BAR).
+        ubyte top = SCR_H - 3
+        ubyte mid = SCR_H - 2
+        ubyte bot = SCR_H - 1
+        ubyte c
+        for c in 0 to SCR_W - 1 {
+            txt.setclr(c, top, theme.CB_BAR)
+            txt.setchr(c, top, SC_H)
+            txt.setclr(c, bot, theme.CB_BAR)
+            txt.setchr(c, bot, SC_H)
+        }
+        txt.setchr(0, top, SC_TL)
+        txt.setchr(SCR_W - 1, top, SC_TR)
+        txt.setchr(0, bot, SC_BL)
+        txt.setchr(SCR_W - 1, bot, SC_BR)
+        for c in 1 to SCR_W - 2 {
+            txt.setclr(c, mid, interior)
+            txt.setchr(c, mid, SPACE_SC)
+        }
+        txt.setclr(0, mid, theme.CB_BAR)
+        txt.setchr(0, mid, SC_V)
+        txt.setclr(SCR_W - 1, mid, theme.CB_BAR)
+        txt.setchr(SCR_W - 1, mid, SC_V)
+    }
+
     sub ovl_prompt(uword promptmsg @R0, uword dest @R1, ubyte maxlen @R2, ubyte flags @R3,
                    ubyte theme_id @R4, uword wwptr @R5) -> ubyte {
         ; Modal text input on the status row - the moved-out body of edit.p8's prompt_str. Returns 1 on
@@ -226,21 +254,22 @@ main {
         theme.apply(theme_id)                   ; our own theme.p8 copy, painted to match main
         SCR_W = txt.width()
         SCR_H = txt.height()
-        ubyte statusrow = SCR_H - 1
+        ubyte statusrow = SCR_H - 2             ; the box's MIDDLE row (box hugs the bottom 3 rows)
         bool allow_empty = (flags & 1) != 0
         bool ww_hint     = (flags & 2) != 0
         ubyte cat        = flags >> 4           ; history category, 0 = no history on this prompt
         ubyte hidx       = 255                  ; slot currently recalled; 255 = showing live text
-        bar_fill(statusrow, $21)                 ; one red flash so the prompt draws the eye
-        put_str_at(1, statusrow, promptmsg)
-        sys.wait(18)                             ; ~0.3s (was flash_status in main)
-        bar_fill(statusrow, theme.CB_BAR)        ; settle to the normal bar
-        put_str_at(1, statusrow, promptmsg)
+        ; RED flash rem'd out for now (user request) - draw the box straight in the normal colour.
+        ; prompt_box($21)                        ; one red flash so the prompt draws the eye
+        ; put_str_at(2, statusrow, promptmsg)
+        ; sys.wait(18)                           ; ~0.3s
+        prompt_box(theme.CB_BAR)                 ; the normal box
+        put_str_at(2, statusrow, promptmsg)
         if ww_hint
             draw_ww_label(statusrow, wwptr)
         if cat != 0
             draw_hist_hint(statusrow, ww_hint)
-        ubyte base = lsb(strings.length(promptmsg)) + 2
+        ubyte base = lsb(strings.length(promptmsg)) + 3
         ubyte n = 0                              ; pre-fill length: scan dest up to maxlen
         while n < maxlen and @(dest + n) != 0
             n++

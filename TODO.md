@@ -63,6 +63,14 @@
 
 ## Done
 
+- **Too-big file refused; session messages simplified (v0.9.287)** — (1) opening a file past the
+  doc's line cap no longer shows a truncated half: act_open now resets to a fresh empty document
+  (new_document) and says "File too big - not loaded" (was "...extra lines dropped"). (2) Dropped the
+  "Session off - misc.ovl too old" message - misc.ovl is a REQUIRED overlay shipped with edit.prg, so
+  an ABI-version mismatch can't happen in a real install (a missing/broken one halts at startup); if
+  ses_ok were somehow false the session just stays off, no message. (3) Merged "Session unreadable"
+  and "Session files missing" into one "Session issue, starting fresh." The msg table dropped 21 -> 19
+  entries; free low RAM 535 -> 613 B. NOT emulator-tested.
 - **21 cold status messages moved to menus.ovl (v0.9.285)** — session/save/backup/search/clipboard/
   undo toasts + the modal Y/N prompts (~450 B of literals) now live in the overlay's string pool
   behind `msg_text` (menus.ovl jmptable $A009, appended after mnu_bar). Main's `msg(id) -> uword`

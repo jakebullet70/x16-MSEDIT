@@ -247,27 +247,25 @@ main {
         ; for the JSRFAR); dest is low RAM (always mapped), so a plain byte copy is correct.
         uword s
         when id {
-            0  -> s = "Session off - misc.ovl too old"
-            1  -> s = "Session unreadable - started fresh"
-            2  -> s = "Session files missing"
-            3  -> s = "File too big - extra lines dropped"
-            4  -> s = "Cannot open file"
-            5  -> s = "Save cancelled"
-            6  -> s = "All documents already saved"
-            7  -> s = "Backup failed"
-            8  -> s = "Backup saved"
-            9  -> s = "Wrapped to top"
-            10 -> s = "No search term - use Find first"
-            11 -> s = "Clipboard empty"
-            12 -> s = "Nothing to undo"
-            13 -> s = "Nothing to redo"
-            14 -> s = "Backing up..."
-            15 -> s = "Document full - save now"
-            16 -> s = "Line copied"
-            17 -> s = "Save changes? Y/N  (Esc=Cancel)"
-            18 -> s = "Overwrite existing file? Y/N"
-            19 -> s = "Open or save a file first"
-            else -> s = "Replace?  Yes  No  All  Esc"        ; id 20
+            0  -> s = "Session issue, starting fresh."
+            1  -> s = "File too big - not loaded"
+            2  -> s = "Cannot open file"
+            3  -> s = "Save cancelled"
+            4  -> s = "All documents already saved"
+            5  -> s = "Backup failed"
+            6  -> s = "Backup saved"
+            7  -> s = "Wrapped to top"
+            8  -> s = "No search term - use Find first"
+            9  -> s = "Clipboard empty"
+            10 -> s = "Nothing to undo"
+            11 -> s = "Nothing to redo"
+            12 -> s = "Backing up..."
+            13 -> s = "Document full - save now"
+            14 -> s = "Line copied"
+            15 -> s = "Save changes? Y/N  (Esc=Cancel)"
+            16 -> s = "Overwrite existing file? Y/N"
+            17 -> s = "Open or save a file first"
+            else -> s = "Replace?  Yes  No  All  Esc"        ; id 18
         }
         ubyte i = 0
         while @(s + i) != 0 {

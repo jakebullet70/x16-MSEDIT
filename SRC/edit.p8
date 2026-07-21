@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 286         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 300         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -200,6 +200,7 @@ main {
     bool spr_ok                         ; the insert-mode underline cursor sprite is set up and usable
     bool g_running
     bool g_redrawn                      ; set by full_redraw(); lets the menu skip a redundant repaint
+    bool g_attn                         ; the attention band (draw_attn) is up over the last text row
     bool alt_was                        ; ALT held on the previous poll (edge detect)
     ubyte g_mod                         ; modifier byte captured when the last key was read
     bool g_emu                          ; true if running under the x16emu emulator
@@ -374,27 +375,25 @@ main {
     ; user-facing toast/prompt text never run in a hot loop, so they live in the overlay; msg(id)
     ; fetches one on demand. IDs are the ABI - keep in lock-step with menus.p8's msg_text `when`.
     extsub @bank 13 $A009 = msg_text(ubyte id @R0, uword dest @R1)
-    const ubyte MSG_SES_OLD    = 0      ; "Session off - misc.ovl too old"
-    const ubyte MSG_SES_BAD    = 1      ; "Session unreadable - started fresh"
-    const ubyte MSG_SES_GONE   = 2      ; "Session files missing"
-    const ubyte MSG_TOOBIG     = 3      ; "File too big - extra lines dropped"
-    const ubyte MSG_OPENERR    = 4      ; "Cannot open file"
-    const ubyte MSG_SAVECAN    = 5      ; "Save cancelled"
-    const ubyte MSG_ALLSAVED   = 6      ; "All documents already saved"
-    const ubyte MSG_BAKFAIL    = 7      ; "Backup failed"
-    const ubyte MSG_BAKSAVED   = 8      ; "Backup saved"
-    const ubyte MSG_WRAPTOP    = 9      ; "Wrapped to top"
-    const ubyte MSG_NOTERM     = 10     ; "No search term - use Find first"
-    const ubyte MSG_CLIPEMPTY  = 11     ; "Clipboard empty"
-    const ubyte MSG_NOUNDO     = 12     ; "Nothing to undo"
-    const ubyte MSG_NOREDO     = 13     ; "Nothing to redo"
-    const ubyte MSG_BACKINGUP  = 14     ; "Backing up..."
-    const ubyte MSG_DOCFULL    = 15     ; "Document full - save now"
-    const ubyte MSG_LINECOPIED = 16     ; "Line copied"
-    const ubyte MSG_SAVECHG    = 17     ; "Save changes? Y/N  (Esc=Cancel)"
-    const ubyte MSG_OVERWRITE  = 18     ; "Overwrite existing file? Y/N"
-    const ubyte MSG_OPENFIRST  = 19     ; "Open or save a file first"
-    const ubyte MSG_REPLACEBAR = 20     ; "Replace?  Yes  No  All  Esc"
+    const ubyte MSG_SES_ISSUE  = 0      ; "Session issue, starting fresh."
+    const ubyte MSG_TOOBIG     = 1      ; "File too big - not loaded"
+    const ubyte MSG_OPENERR    = 2      ; "Cannot open file"
+    const ubyte MSG_SAVECAN    = 3      ; "Save cancelled"
+    const ubyte MSG_ALLSAVED   = 4      ; "All documents already saved"
+    const ubyte MSG_BAKFAIL    = 5      ; "Backup failed"
+    const ubyte MSG_BAKSAVED   = 6      ; "Backup saved"
+    const ubyte MSG_WRAPTOP    = 7      ; "Wrapped to top"
+    const ubyte MSG_NOTERM     = 8      ; "No search term - use Find first"
+    const ubyte MSG_CLIPEMPTY  = 9      ; "Clipboard empty"
+    const ubyte MSG_NOUNDO     = 10     ; "Nothing to undo"
+    const ubyte MSG_NOREDO     = 11     ; "Nothing to redo"
+    const ubyte MSG_BACKINGUP  = 12     ; "Backing up..."
+    const ubyte MSG_DOCFULL    = 13     ; "Document full - save now"
+    const ubyte MSG_LINECOPIED = 14     ; "Line copied"
+    const ubyte MSG_SAVECHG    = 15     ; "Save changes? Y/N  (Esc=Cancel)"
+    const ubyte MSG_OVERWRITE  = 16     ; "Overwrite existing file? Y/N"
+    const ubyte MSG_OPENFIRST  = 17     ; "Open or save a file first"
+    const ubyte MSG_REPLACEBAR = 18     ; "Replace?  Yes  No  All  Esc"
     ubyte[42] msgbuf                    ; scratch msg(id) copies into; longest message is 34 chars + a
                                         ; margin (msg_text has no length guard, so keep this >= the
                                         ; longest string in menus.p8's msg_text + 1 for the NUL)
@@ -630,18 +629,13 @@ main {
         ; would read as a bug in every one of those cases.
         if reloaded and berr_len != 0           ; the Run BASLOAD came back with an error; show the full
             show_basload_error()                ; error on the bar (cursor's already on the line it named)
-        else {
-            ; A failed overlay handshake used to be the one silent failure here, and it is the most
-            ; expensive to diagnose: sessions stop surviving a hand-off, F5 quietly discards the
-            ; workspace, and because the F8 return re-snapshots the ALREADY-HIJACKED fkey table, a
-            ; later normal exit writes EDIT's own /ED macro back into the KERNAL as if it were the
-            ; user's. Staging edit.prg without misc.ovl is exactly how that happens.
-            if not ses_ok
-                flash_notify(msg(MSG_SES_OLD))
-            else if ses_failed
-                flash_notify(msg(MSG_SES_BAD))
-            else if ses_lost != 0
-                flash_notify(msg(MSG_SES_GONE))
+        else if ses_failed or ses_lost != 0 {
+            ; ed.run was unreadable, or the docs it named are gone - explain why the editor came up
+            ; empty instead of with the saved workspace; silence would read as a bug. (ses_ok false -
+            ; a misc.ovl session-ABI mismatch - can't really happen: misc.ovl ships with edit.prg and
+            ; is a REQUIRED overlay, so a wrong one is a broken install that halts at startup. If it
+            ; somehow did, the session just stays off, no message.)
+            flash_notify(msg(MSG_SES_ISSUE))
         }
         g_running = true
         while g_running {
@@ -740,6 +734,85 @@ main {
         for c in 0 to SCR_W - 1 {
             txt.setclr(c, row, color)
             txt.setchr(c, row, SPACE_SC)
+        }
+    }
+
+    sub attn_frame() {
+        ; 3-line attention box hugging the bottom of the screen: a top border on STATUS_ROW-2, the
+        ; message/prompt row (STATUS_ROW-1) framed by │ side borders, and a bottom border on the
+        ; footer row (STATUS_ROW). box_msg fills the middle and writes the text; g_attn marks it up so
+        ; clear_attn (from draw_status) repaints the two covered text rows when the footer returns.
+        ubyte top = STATUS_ROW - 2
+        ubyte mid = STATUS_ROW - 1
+        ubyte bot = STATUS_ROW
+        ubyte c
+        for c in 0 to SCR_W - 1 {
+            txt.setclr(c, top, theme.CB_BAR)
+            txt.setchr(c, top, SC_H)
+            txt.setclr(c, bot, theme.CB_BAR)
+            txt.setchr(c, bot, SC_H)
+        }
+        txt.setchr(0, top, SC_TL)
+        txt.setchr(SCR_W - 1, top, SC_TR)
+        txt.setchr(0, bot, SC_BL)
+        txt.setchr(SCR_W - 1, bot, SC_BR)
+        txt.setclr(0, mid, theme.CB_BAR)
+        txt.setchr(0, mid, SC_V)
+        txt.setclr(SCR_W - 1, mid, theme.CB_BAR)
+        txt.setchr(SCR_W - 1, mid, SC_V)
+        g_attn = true
+    }
+
+    sub box_msg(str m, ubyte interior) {
+        ; draw the attention box and put message/prompt `m` on its middle row, the interior filled in
+        ; `interior` (theme.CB_BAR normally, a red/blink colour for a flash). Text is inset one cell
+        ; from the │ side border. Replaces the old one-line bar_fill+put_str_at on the status row.
+        attn_frame()
+        ubyte mid = STATUS_ROW - 1
+        ubyte c
+        for c in 1 to SCR_W - 2 {
+            txt.setclr(c, mid, interior)
+            txt.setchr(c, mid, SPACE_SC)
+        }
+        put_str_at(2, mid, m)
+    }
+
+    sub clear_attn() {
+        ; erase the attention box by repainting ONLY the two text rows it covered (the footer row is
+        ; redrawn by draw_status itself) - never the whole screen, so Esc from a prompt doesn't
+        ; flicker the document. Called from draw_status, so the box goes the instant the footer returns.
+        if not g_attn
+            return
+        g_attn = false
+        if not wrap_on {
+            draw_text_row(TEXT_ROWS - 2)
+            draw_text_row(TEXT_ROWS - 1)
+            return
+        }
+        ; wrap: reflow the window with segment math to find (dl,seg) at each screen row, but RENDER
+        ; only the last two rows (the ones the box sat on). The earlier rows are only walked, not drawn.
+        ubyte tw = SCR_W - gutter_w
+        uword dl = top_line
+        ubyte seg = top_seg
+        ubyte r = 0
+        while r < TEXT_ROWS {
+            if dl >= edoc.line_count {
+                if r >= TEXT_ROWS - 2
+                    draw_wrapped_row(r, dl, 0, 0, true, 0, 0)       ; blank row past end-of-document
+                r++
+            } else {
+                ubyte llen = line_buf_len(dl)
+                ubyte segend = wrap_next(g_wbuf, llen, seg, tw)
+                if r >= TEXT_ROWS - 2
+                    draw_wrapped_row(r, dl, seg, segend, seg == 0, g_wbuf, llen)
+                if segend >= llen {
+                    dl++
+                    seg = 0
+                } else {
+                    seg = segend
+                }
+                r++
+            }
         }
     }
 
@@ -1598,6 +1671,7 @@ main {
     }
 
     sub draw_status() {
+        clear_attn()                        ; footer is going back to normal -> erase the attention band
         bar_fill(STATUS_ROW, theme.CB_BAR)
         ubyte col = 1
         put_str_at(col, STATUS_ROW, "Line ")
@@ -1648,6 +1722,7 @@ main {
     }
 
     sub full_redraw() {
+        g_attn = false                  ; clear_screen below erases the band; don't let draw_status redo it
         txt.color2(theme.COL_FG, theme.COL_BG)
         txt.clear_screen()
         draw_menubar(255)
@@ -1693,21 +1768,21 @@ main {
     }
 
     sub draw_ww_label(bool live) {
-        ; whole-word indicator on the right of the search bar.
-        ;  live=true  : the toggle shown on the Find/Replace INPUT prompts - always shows the
-        ;               On/Off state and highlights the W (Commodore+W flips it, top-menu style).
-        ;  live=false : a read-only reminder on the Replace? bar - drawn only when it's on.
+        ; whole-word indicator on the right of the search box's middle row (STATUS_ROW-1). Only the
+        ; read-only live=false reminder is used from main now - the Find/Replace INPUT prompts run in
+        ; misc.ovl and carry their own live toggle. The right margin clears the box's │ side border.
+        ubyte row = STATUS_ROW - 1
         if live {
             ubyte c = SCR_W - 16            ; "Whole Word  Off" = 15 chars + a 1-col right margin
             if ww_on
-                put_str_at(c, STATUS_ROW, "Whole Word  On ")
+                put_str_at(c, row, "Whole Word  On ")
             else
-                put_str_at(c, STATUS_ROW, "Whole Word  Off")
-            txt.setclr(c, STATUS_ROW, (theme.CB_BAR & $f0) | theme.ACCEL_FG)   ; highlight the W accelerator
+                put_str_at(c, row, "Whole Word  Off")
+            txt.setclr(c, row, (theme.CB_BAR & $f0) | theme.ACCEL_FG)   ; highlight the W accelerator
         } else {
             if not ww_on
                 return
-            put_str_at(SCR_W - 11, STATUS_ROW, "Whole Word")       ; 10 chars + a 1-col right margin
+            put_str_at(SCR_W - 11, row, "Whole Word")       ; 10 chars + a 1-col right margin
         }
     }
 
@@ -1729,6 +1804,8 @@ main {
         ; and JSRFARs in. All state (dest, promptmsg, ww_on) is low RAM the overlay reads through
         ; pointers. misc.ovl is guaranteed present (start() halts if any overlay is missing).
         cursor_sprite_off()                     ; hide the editor cursor for the modal (was in wait_key)
+        g_attn = true                           ; ovl_prompt draws the 3-line box; mark it so a later
+                                                ; draw_status / full_redraw repaints the rows it covered
         if ovl_prompt(promptmsg, dest, maxlen, flags, theme.current, &ww_on) != 0
             return true
         ; Cancelled (Esc, or Enter on an empty line when allow_empty is off). Restore the footer here
@@ -1740,10 +1817,10 @@ main {
     }
 
     sub flash_status(str m) {
-        ; one bright-red attention flash of a status-row prompt, so it isn't missed on the thin
-        ; bottom bar; the caller then draws it normally (theme.CB_BAR) and it stays readable.
-        bar_fill(STATUS_ROW, $21)                       ; red bg, white fg
-        put_str_at(1, STATUS_ROW, m)
+        ; briefly show the prompt box before the caller settles it. RED flash disabled for the moment
+        ; (user request) - draw the box in the normal bar colour instead of the red attention flash.
+        ; box_msg(m, $21)                              ; RED flash (rem'd out for now)
+        box_msg(m, theme.CB_BAR)
         sys.wait(18)                                    ; ~0.3s
     }
 
@@ -1766,9 +1843,8 @@ main {
     sub confirm_save() -> ubyte {
         ; 0 = don't save, 1 = save, 2 = cancel. Flash the prompt so it isn't missed on the status
         ; row - users overlooked the silent bar and thought Open did nothing.
-        flash_status("Save changes? Y/N  (Esc=Cancel)")
-        bar_fill(STATUS_ROW, theme.CB_BAR)                    ; settle to the normal bar, stays readable
-        put_str_at(1, STATUS_ROW, msg(MSG_SAVECHG))
+        flash_status(msg(MSG_SAVECHG))
+        box_msg(msg(MSG_SAVECHG), theme.CB_BAR)              ; settle to the normal box, stays readable
         repeat {
             ubyte k = wait_key()
             if k >= $c1 and k <= $da
@@ -1785,9 +1861,8 @@ main {
         ; true = OK to write. If the file already exists, flash a prompt and require Y to proceed.
         if not diskio.exists(name)
             return true
-        flash_status("Overwrite existing file? Y/N")
-        bar_fill(STATUS_ROW, theme.CB_BAR)
-        put_str_at(1, STATUS_ROW, msg(MSG_OVERWRITE))
+        flash_status(msg(MSG_OVERWRITE))
+        box_msg(msg(MSG_OVERWRITE), theme.CB_BAR)
         repeat {
             ubyte k = wait_key()
             if k >= $c1 and k <= $da
@@ -1808,10 +1883,9 @@ main {
     }
 
     sub status_msg(str m) {
-        ; paint a transient message on the status bar with NO delay - used for progress
+        ; paint a transient message in the attention box with NO delay - used for progress
         ; hints ("Saving..."/"Loading...") right before a slow operation that will repaint
-        bar_fill(STATUS_ROW, theme.CB_BAR)
-        put_str_at(1, STATUS_ROW, m)
+        box_msg(m, theme.CB_BAR)
     }
 
     sub notify(str m) {
@@ -1837,31 +1911,6 @@ main {
         draw_status()                       ; restore the footer bar
     }
 
-    sub blink_phases(uword sz) -> ubyte {
-        ; map an approximate size (256-byte blocks) to a blink length:
-        ; small -> ~0.5s (2 phases), medium -> ~1.1s (4), large -> ~1.6s (6)
-        if sz < 16
-            return 1
-        if sz < 64
-            return 4
-        return 6
-    }
-
-    sub notify_blink(str m, ubyte phases) {
-        ; bold, impossible-to-miss status-bar flash: invert the WHOLE line between bright
-        ; red and white `phases` times (16 jiffies each). Announces a save/load; the phase
-        ; count scales with file size so tiny files don't blink for long.
-        ubyte i
-        for i in 0 to phases - 1 {
-            ubyte col = $21                 ; red bg, white fg
-            if (i & 1) != 0
-                col = $12                   ; white bg, red fg  (hard invert each phase)
-            bar_fill(STATUS_ROW, col)
-            put_str_at(1, STATUS_ROW, m)
-            sys.wait(16)
-        }
-        status_msg(m)                       ; end static and readable on the normal bar
-    }
 
     ; ---------- dropdown menus ----------
 
@@ -2428,8 +2477,8 @@ main {
             full_redraw()
             return
         }
-        full_redraw()                   ; hide the Open popup before the load blink
-        notify_blink("Loading...", blink_phases(pick_blocks as uword))  ; flash scaled to file size
+        full_redraw()                   ; hide the Open popup before the load
+        status_msg("Loading...")        ; box only - no red flash (user request); load repaints after
         undo_clear()                        ; fresh document -> old snapshots are invalid
         if edoc.load_file(fnbuf) {
             void strings.copy(fnbuf, filename)
@@ -2443,17 +2492,10 @@ main {
             modified = false
         } else if edoc.line_count > 0 {
             ; the file opened but ran past this doc's line cap (edoc.max_lines: 6000 for A, 2500 for
-            ; B/C; load_file truncates and sets oom). Show the lines that fit, but DON'T adopt the
-            ; filename - that way a later Save prompts for a new name, not overwriting the big original.
-            filename[0] = 0
-            apply_syntax_mode(fnbuf)        ; still colour by the picked name's extension
-            cur_row = 0
-            cur_col = 0
-            top_line = 0
-            left_col = 0
-            cur_len = edoc.load(0, &editbuf)
-            cur_dirty = false
-            modified = false
+            ; B/C; load_file truncated it and set oom). Refuse it rather than show a truncated half:
+            ; load_file already filled the arena with the partial content, so reset to a fresh empty
+            ; document and tell the user it was not loaded.
+            new_document()
             notify(msg(MSG_TOOBIG))
         } else {
             notify(msg(MSG_OPENERR))
@@ -2466,8 +2508,7 @@ main {
         savebuf[0] = '@'
         savebuf[1] = ':'
         void strings.copy(name, &savebuf + 2)
-        ; flash scaled to document size (~6 lines per 256-byte block) before the disk write
-        notify_blink("Saving...", blink_phases(edoc.line_count / 6))
+        status_msg("Saving...")                 ; box only - no red blink; disk write repaints after
         if not edoc.save_file(savebuf) {
             notify("Save error")
             return false
@@ -2638,7 +2679,7 @@ main {
         savebuf[0] = '@'                        ; "@:" = overwrite if it already exists
         savebuf[1] = ':'
         void strings.copy(bakname, &savebuf + 2)
-        notify_blink(msg(MSG_BACKINGUP), blink_phases(edoc.line_count / 6))
+        status_msg(msg(MSG_BACKINGUP))          ; box only - no red blink
         if not edoc.save_file(savebuf) {
             notify(msg(MSG_BAKFAIL))
             draw_status()
@@ -3363,15 +3404,15 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
 
     sub prompt_replace() -> ubyte {
         ; ask about the highlighted match; returns 'y', 'n', 'a' (all) or 27 (stop).
-        bar_fill(STATUS_ROW, theme.CB_BAR)
-        put_str_at(1, STATUS_ROW, msg(MSG_REPLACEBAR))
+        box_msg(msg(MSG_REPLACEBAR), theme.CB_BAR)   ; text at col 2 in the box middle (STATUS_ROW-1)
+        ubyte mid = STATUS_ROW - 1
         ubyte hi = (theme.CB_BAR & $f0) | theme.ACCEL_FG    ; top-menu-style highlight for the trigger keys
-        txt.setclr(11, STATUS_ROW, hi)          ; Y(es)
-        txt.setclr(16, STATUS_ROW, hi)          ; N(o)
-        txt.setclr(20, STATUS_ROW, hi)          ; A(ll)
-        txt.setclr(25, STATUS_ROW, hi)          ; E \
-        txt.setclr(26, STATUS_ROW, hi)          ; s  Esc
-        txt.setclr(27, STATUS_ROW, hi)          ; c /
+        txt.setclr(12, mid, hi)                 ; Y(es)    (cols are +1 vs the old col-1 bar - the box insets 1)
+        txt.setclr(17, mid, hi)                 ; N(o)
+        txt.setclr(21, mid, hi)                 ; A(ll)
+        txt.setclr(26, mid, hi)                 ; E \
+        txt.setclr(27, mid, hi)                 ; s  Esc
+        txt.setclr(28, mid, hi)                 ; c /
         draw_ww_label(false)                    ; read-only "Whole Word" reminder when it's on
         repeat {
             ubyte k = wait_key()
