@@ -1,9 +1,13 @@
 # EDIT - TODO
 
-- **Low RAM: 242 bytes free** (v0.9.280, `memtop` $9F00). The in-window wrap-scroll fix (the how==0
-  two-row repaint, below) cost ~240 B; it was funded by moving the top MENU BAR drawing
+- **Low RAM: 535 bytes free** (v0.9.285, `memtop` $9F00). Freed ~290 B by moving 21 cold status-bar
+  messages (session/save/backup/search/clipboard/undo toasts + the modal Y/N prompts) into menus.ovl
+  behind `msg_text` ($A009); main's `msg(id)` copies one into `msgbuf` and hands it to
+  notify/put_str_at unchanged. NOTE: they went to menus.ovl, NOT misc.ovl - misc.ovl is FULL (adding
+  them there overflowed its 8 KB bank by ~220 B). Before that: the in-window wrap-scroll fix (the
+  how==0 two-row repaint, below) cost ~240 B; it was funded by moving the top MENU BAR drawing
   (draw_menubar + draw_filename_title, ~600 B of cold screen-painting) out into menus.ovl behind the
-  new `mnu_bar` jmptable entry ($A006). See the Done entries and [[edit-banked-overlays]]. Earlier the
+  `mnu_bar` jmptable entry ($A006). See the Done entries and [[edit-banked-overlays]]. Earlier the
   wrap-scroll VRAM fast path was funded by moving the ~450 B of BASIC syntax keyword tables OUT of low
   RAM into misc.ovl (see [[edit-banked-overlays]]
   / the syntax-kw note): syntax.p8 now holds 3 pointers into MISC_BANK, set at startup via the new
@@ -32,14 +36,12 @@
   history below cost zero. The CLIP_BANK window is full to $AAC2 — read the SLACK WARNING at the
   FKSNAP_ADDR constant before putting anything there.
   Remaining candidates, largest first:
-  - **Move cold prose into an overlay behind one `ovl_msg(id)`** — ~400 B of the 1044 B of interned
-    strings is user-facing text that never runs in a hot loop. The three session messages
-    (edit.p8:563-571, 96 B) are the easiest: startup-only, and that orchestration already lives in
-    misc.ovl. Guard the missing-overlay case — you cannot use the overlay to report the overlay is
-    missing.
-  - **Move the syntax keyword blobs (syntax.p8:32-34, 453 B) into a bank** — costs a bank switch per
-    token in `classify()`. Cheaper variant with no speed cost: length-prefix the table and drop the
-    space separators, worth ~40-60 B.
+  - **More cold prose** — the big batch (21 toasts + prompts, ~290 B) is DONE via `msg_text`/`msg(id)`
+    (see the Done entry). What's left is small: ~7 tiny toasts kept inline ("Saved", "Save error",
+    "Not found", "Copied", "Loading...", "Saving...", "Replaced ", ~58 B total) - not worth a msg id
+    each. The status-bar FOOTER strings (draw_status: "Line "/"Col "/"INS"/...) must stay inline: it
+    repaints on every cursor move, so an overlay JSRFAR per keypress would defeat the wrap fast path.
+    New cold prose goes to menus.ovl, NOT misc.ovl (misc is full).
   - Do NOT alias `savebuf` onto `workbuf` — act_make_backup (edit.p8:2429) copies `bakname`
     (which *is* `workbuf`) into `savebuf`, so those two are live at the same instant.
 - **PRG2BASLOAD: auto-quote DATA items containing spaces** — BASLOAD lexes DATA content as identifiers,
@@ -59,16 +61,28 @@
   Shift+Home / Shift+End (keycodes 147 / 132) already extend on the line, so the pattern exists; the
   open question is whether the X16 keymap delivers a distinguishable Ctrl+Shift+PgUp at all.
 
-## Not worth building
-
-- **PRG2BASLOAD: 2-character variable collisions.** Noted only so it does not get "discovered" and
-  designed a third time. BASIC 2.0 uses the first 2 characters of a name and BASLOAD uses 64, so in
-  theory `VAR1`/`VAR2` are one variable before conversion and two after. In practice people writing
-  Commodore BASIC knew the 2-char rule and named accordingly, so real programs do not contain the
-  collision. Do not spend a detector on it.
-
 ## Done
 
+- **21 cold status messages moved to menus.ovl (v0.9.285)** — session/save/backup/search/clipboard/
+  undo toasts + the modal Y/N prompts (~450 B of literals) now live in the overlay's string pool
+  behind `msg_text` (menus.ovl jmptable $A009, appended after mnu_bar). Main's `msg(id) -> uword`
+  JSRFARs, copies the id-th message into `msgbuf[42]`, and returns its address, so notify /
+  flash_notify / notify_blink / put_str_at call sites just read `notify(msg(MSG_X))`. The MSG_*
+  consts in edit.p8 and the `when` in menus.p8 are the ABI (same order). Freed ~290 B (245 -> 535).
+  Went to menus.ovl NOT misc.ovl: adding them to misc overflowed its 8 KB bank by ~220 B (misc is
+  full - keyword tables + input-history ring). Tiny toasts (<=10 chars) and the hot draw_status
+  FOOTER stay inline. Safe because menus.ovl is a REQUIRED overlay (start() halts if it is missing,
+  before any msg() runs). NOT emulator-tested by the author - build only; verify each message still
+  reads correctly (a wrong MSG_* id shows the wrong text).
+- **Wrap SHIFT+arrow no longer full-repaints (v0.9.282)** — reported right after the how==0 fix:
+  "word wrap on, SHIFT ARROW to highlight text redraws the whole screen". redraw_after_move's wrap
+  branch still had `sel_active` in the full-repaint gate, so every selection-extend keypress redrew
+  all ~58 rows. Dropped it: an active selection now rides the same two-row path, because
+  draw_wrapped_row paints each row's own selection span and a single SHIFT+arrow only changes the
+  highlight on the two edge rows (the row the cursor left, the one it landed on) - the rows already
+  inside the selection don't change. No multi-row guard needed like the unwrapped path has, because a
+  wrap how==1/2 is always exactly one visual row (ensure_visible_wrap's nxt-marker match). Only a far
+  jump (how 3) or a just-cleared selection (force_full) still full-repaints. NOT emulator-tested.
 - **Wrap in-window move no longer full-repaints (v0.9.280)** — the reported "word wrap on, very slow
   scroll, whole screen repainting". redraw_after_move's wrap branch lumped `how == 0` (cursor moved
   but stayed visible - no scroll) in with the full-repaint cases, so EVERY in-window cursor keypress

@@ -32,7 +32,7 @@ main {
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
     const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 281         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 286         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -369,6 +369,35 @@ main {
     ; $A012: hands back the addresses of the three BASIC keyword blobs, which live in misc.ovl's
     ; string pool to keep ~450 B of keyword text out of low RAM. syntax.set_kw caches them + this bank.
     extsub @bank 10 $A012 = ovl_kw_addrs(uword outp @R0)
+    ; msg_text ($A009 in menus.ovl, NOT misc.ovl - misc was full): copies a cold status-bar message
+    ; (see MSG_* below) from the overlay's string pool into a low-RAM buffer. Those ~450 B of
+    ; user-facing toast/prompt text never run in a hot loop, so they live in the overlay; msg(id)
+    ; fetches one on demand. IDs are the ABI - keep in lock-step with menus.p8's msg_text `when`.
+    extsub @bank 13 $A009 = msg_text(ubyte id @R0, uword dest @R1)
+    const ubyte MSG_SES_OLD    = 0      ; "Session off - misc.ovl too old"
+    const ubyte MSG_SES_BAD    = 1      ; "Session unreadable - started fresh"
+    const ubyte MSG_SES_GONE   = 2      ; "Session files missing"
+    const ubyte MSG_TOOBIG     = 3      ; "File too big - extra lines dropped"
+    const ubyte MSG_OPENERR    = 4      ; "Cannot open file"
+    const ubyte MSG_SAVECAN    = 5      ; "Save cancelled"
+    const ubyte MSG_ALLSAVED   = 6      ; "All documents already saved"
+    const ubyte MSG_BAKFAIL    = 7      ; "Backup failed"
+    const ubyte MSG_BAKSAVED   = 8      ; "Backup saved"
+    const ubyte MSG_WRAPTOP    = 9      ; "Wrapped to top"
+    const ubyte MSG_NOTERM     = 10     ; "No search term - use Find first"
+    const ubyte MSG_CLIPEMPTY  = 11     ; "Clipboard empty"
+    const ubyte MSG_NOUNDO     = 12     ; "Nothing to undo"
+    const ubyte MSG_NOREDO     = 13     ; "Nothing to redo"
+    const ubyte MSG_BACKINGUP  = 14     ; "Backing up..."
+    const ubyte MSG_DOCFULL    = 15     ; "Document full - save now"
+    const ubyte MSG_LINECOPIED = 16     ; "Line copied"
+    const ubyte MSG_SAVECHG    = 17     ; "Save changes? Y/N  (Esc=Cancel)"
+    const ubyte MSG_OVERWRITE  = 18     ; "Overwrite existing file? Y/N"
+    const ubyte MSG_OPENFIRST  = 19     ; "Open or save a file first"
+    const ubyte MSG_REPLACEBAR = 20     ; "Replace?  Yes  No  All  Esc"
+    ubyte[42] msgbuf                    ; scratch msg(id) copies into; longest message is 34 chars + a
+                                        ; margin (msg_text has no length guard, so keep this >= the
+                                        ; longest string in menus.p8's msg_text + 1 for the NUL)
     bool misc_ok                        ; misc.ovl loaded OK -> About + the input prompts are available
     str  miscovl = "misc.ovl"
 
@@ -608,11 +637,11 @@ main {
             ; later normal exit writes EDIT's own /ED macro back into the KERNAL as if it were the
             ; user's. Staging edit.prg without misc.ovl is exactly how that happens.
             if not ses_ok
-                flash_notify("Session off - misc.ovl too old")
+                flash_notify(msg(MSG_SES_OLD))
             else if ses_failed
-                flash_notify("Session unreadable - started fresh")
+                flash_notify(msg(MSG_SES_BAD))
             else if ses_lost != 0
-                flash_notify("Session files missing")
+                flash_notify(msg(MSG_SES_GONE))
         }
         g_running = true
         while g_running {
@@ -1423,10 +1452,13 @@ main {
             ; rows: the one the cursor LEFT (band comes off) and the one it landed on (band on). Both a
             ; one-row scroll (VRAM window shift first) and an in-window move repaint exactly those two
             ; rows - no full redraw, no gutter redraw. The band marks only the cursor's visual row in
-            ; wrap mode (draw_wrapped_row), which is what keeps it to two rows. Only a far jump (how 3),
-            ; a just-cleared selection, or an active selection still full-repaints.
+            ; wrap mode (draw_wrapped_row), which is what keeps it to two rows. An ACTIVE selection
+            ; rides the same path: draw_wrapped_row paints each row's own selection span, and a single
+            ; SHIFT+arrow only changes the highlight on the two edge rows (the one the cursor left, the
+            ; one it landed on) - the rows already inside the selection don't change. Only a far jump
+            ; (how 3) or a just-cleared selection (force_full) still full-repaints.
             ubyte how = ensure_visible_wrap()
-            if force_full or sel_active or how == 3 {
+            if force_full or how == 3 {
                 draw_all_text()
                 draw_status()
                 return
@@ -1736,7 +1768,7 @@ main {
         ; row - users overlooked the silent bar and thought Open did nothing.
         flash_status("Save changes? Y/N  (Esc=Cancel)")
         bar_fill(STATUS_ROW, theme.CB_BAR)                    ; settle to the normal bar, stays readable
-        put_str_at(1, STATUS_ROW, "Save changes? Y/N  (Esc=Cancel)")
+        put_str_at(1, STATUS_ROW, msg(MSG_SAVECHG))
         repeat {
             ubyte k = wait_key()
             if k >= $c1 and k <= $da
@@ -1755,7 +1787,7 @@ main {
             return true
         flash_status("Overwrite existing file? Y/N")
         bar_fill(STATUS_ROW, theme.CB_BAR)
-        put_str_at(1, STATUS_ROW, "Overwrite existing file? Y/N")
+        put_str_at(1, STATUS_ROW, msg(MSG_OVERWRITE))
         repeat {
             ubyte k = wait_key()
             if k >= $c1 and k <= $da
@@ -1765,6 +1797,14 @@ main {
                 'n', 27, 3 -> return false
             }
         }
+    }
+
+    sub msg(ubyte id) -> uword {
+        ; fetch cold status-bar text id from misc.ovl into msgbuf and return its address, so callers
+        ; read `notify(msg(MSG_X))` in place of `notify("literal")`. misc.ovl is REQUIRED (start()
+        ; halts if it is missing), so it is always mapped-in by the time any msg() runs.
+        msg_text(id, &msgbuf)
+        return &msgbuf
     }
 
     sub status_msg(str m) {
@@ -1783,7 +1823,7 @@ main {
         ; the "Document full - save now" toast has five callers (edit.p8's edoc.commit /
         ; insert_line failure sites); one shared tail interns the 25-byte literal once instead of
         ; five times. Same shared-tail trick as halt_no_ovl's message building.
-        notify("Document full - save now")
+        notify(msg(MSG_DOCFULL))
     }
 
     sub flash_notify(str m) {
@@ -2414,9 +2454,9 @@ main {
             cur_len = edoc.load(0, &editbuf)
             cur_dirty = false
             modified = false
-            notify("File too big - extra lines dropped")
+            notify(msg(MSG_TOOBIG))
         } else {
-            notify("Cannot open file")
+            notify(msg(MSG_OPENERR))
         }
         full_redraw()                   ; repaint (needed when invoked via hotkey)
     }
@@ -2450,7 +2490,7 @@ main {
             ; silent no-op. The fnbuf[0]==0 re-check is belt-and-braces against an empty name slipping
             ; through to do_save (which would fail the write).
             if not prompt_str("Save as:", &fnbuf, 38, 0) or fnbuf[0] == 0 {
-                flash_notify("Save cancelled")
+                flash_notify(msg(MSG_SAVECAN))
                 return false
             }
             fold_str(&fnbuf)                    ; typed upper case -> the $41-$5A filenames use
@@ -2464,7 +2504,7 @@ main {
     sub act_save_as() {
         fnbuf[0] = 0
         if not prompt_str("Save as:", &fnbuf, 38, 0) or fnbuf[0] == 0 {
-            notify("Save cancelled")            ; Esc or Enter-on-blank-line -> cancel, with feedback
+            notify(msg(MSG_SAVECAN))            ; Esc or Enter-on-blank-line -> cancel, with feedback
             return
         }
         fold_str(&fnbuf)                        ; typed upper case -> the $41-$5A filenames use
@@ -2494,7 +2534,7 @@ main {
         goto_slot(start_slot)
         full_redraw()
         if not any
-            flash_notify("All documents already saved")
+            flash_notify(msg(MSG_ALLSAVED))
     }
 
     sub act_close_all() {
@@ -2572,7 +2612,7 @@ main {
         if filename[0] == 0 {
             flash_status("Open or save a file first")
             bar_fill(STATUS_ROW, theme.CB_BAR)
-            put_str_at(1, STATUS_ROW, "Open or save a file first")
+            put_str_at(1, STATUS_ROW, msg(MSG_OPENFIRST))
             void wait_key()
             draw_status()
             return
@@ -2598,13 +2638,13 @@ main {
         savebuf[0] = '@'                        ; "@:" = overwrite if it already exists
         savebuf[1] = ':'
         void strings.copy(bakname, &savebuf + 2)
-        notify_blink("Backing up...", blink_phases(edoc.line_count / 6))
+        notify_blink(msg(MSG_BACKINGUP), blink_phases(edoc.line_count / 6))
         if not edoc.save_file(savebuf) {
-            notify("Backup failed")
+            notify(msg(MSG_BAKFAIL))
             draw_status()
             return
         }
-        notify("Backup saved")                  ; modified state left as-is on purpose
+        notify(msg(MSG_BAKSAVED))               ; modified state left as-is on purpose
         draw_status()
     }
 
@@ -3297,7 +3337,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         }
         goto_found()
         if res == 2
-            notify("Wrapped to top")
+            notify(msg(MSG_WRAPTOP))
     }
 
     sub act_find_next() {
@@ -3305,7 +3345,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             sel_to_find()                   ; no term yet: adopt a single-line highlight as the term,
                                             ; so "select a word, F3" searches for it (no warning path)
             if find_term[0] == 0 {          ; nothing selected either -> warn, and BLOCK to eat the
-                notify("No search term - use Find first")   ; key the user presses to react, so it
+                notify(msg(MSG_NOTERM))   ; key the user presses to react, so it
                 void wait_key()             ; can't fall through and edit the document
                 return
             }
@@ -3318,13 +3358,13 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         }
         goto_found()
         if res == 2
-            notify("Wrapped to top")
+            notify(msg(MSG_WRAPTOP))
     }
 
     sub prompt_replace() -> ubyte {
         ; ask about the highlighted match; returns 'y', 'n', 'a' (all) or 27 (stop).
         bar_fill(STATUS_ROW, theme.CB_BAR)
-        put_str_at(1, STATUS_ROW, "Replace?  Yes  No  All  Esc")
+        put_str_at(1, STATUS_ROW, msg(MSG_REPLACEBAR))
         ubyte hi = (theme.CB_BAR & $f0) | theme.ACCEL_FG    ; top-menu-style highlight for the trigger keys
         txt.setclr(11, STATUS_ROW, hi)          ; Y(es)
         txt.setclr(16, STATUS_ROW, hi)          ; N(o)
@@ -3874,7 +3914,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             notify("Copied")
         } else {
             copy_current_line()
-            notify("Line copied")
+            notify(msg(MSG_LINECOPIED))
         }
     }
 
@@ -3979,7 +4019,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
 
     sub op_paste() {
         if not clip_has {
-            notify("Clipboard empty")
+            notify(msg(MSG_CLIPEMPTY))
             return
         }
         if sel_active
@@ -4207,7 +4247,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
 
     sub do_undo() {
         if u_sp == 0 {
-            notify("Nothing to undo")
+            notify(msg(MSG_NOUNDO))
             return
         }
         commit_editbuf()                        ; flush the live line before touching storage
@@ -4226,7 +4266,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
 
     sub do_redo() {
         if d_sp == 0 {
-            notify("Nothing to redo")
+            notify(msg(MSG_NOREDO))
             return
         }
         commit_editbuf()

@@ -23,7 +23,7 @@
 main {
     %option ignore_unused
 
-    %jmptable ( main.mnu_item, main.mnu_bar )
+    %jmptable ( main.mnu_item, main.mnu_bar, main.msg_text )
 
     ; static screen geometry, mirrored from edit.p8 (consts allocate no storage, so they don't
     ; disturb the %jmptable offsets the way an initialized var would).
@@ -236,5 +236,44 @@ main {
             4 -> return 6
             else -> return 4
         }
+    }
+
+    sub msg_text(ubyte id @R0, uword dest @R1) {
+        ; Copy the id-th cold status-bar message into the caller's low-RAM `dest` buffer (>= 35 B).
+        ; These are user-facing toasts/prompts that never run in a hot loop, so the text lives in this
+        ; overlay's string pool instead of EDIT's scarce low RAM; main's msg(id) wrapper hands them to
+        ; notify()/flash_notify()/put_str_at() unchanged. The IDs are the ABI - keep this `when` in
+        ; lock-step with edit.p8's MSG_* constants (same order). The literals sit in this bank (mapped
+        ; for the JSRFAR); dest is low RAM (always mapped), so a plain byte copy is correct.
+        uword s
+        when id {
+            0  -> s = "Session off - misc.ovl too old"
+            1  -> s = "Session unreadable - started fresh"
+            2  -> s = "Session files missing"
+            3  -> s = "File too big - extra lines dropped"
+            4  -> s = "Cannot open file"
+            5  -> s = "Save cancelled"
+            6  -> s = "All documents already saved"
+            7  -> s = "Backup failed"
+            8  -> s = "Backup saved"
+            9  -> s = "Wrapped to top"
+            10 -> s = "No search term - use Find first"
+            11 -> s = "Clipboard empty"
+            12 -> s = "Nothing to undo"
+            13 -> s = "Nothing to redo"
+            14 -> s = "Backing up..."
+            15 -> s = "Document full - save now"
+            16 -> s = "Line copied"
+            17 -> s = "Save changes? Y/N  (Esc=Cancel)"
+            18 -> s = "Overwrite existing file? Y/N"
+            19 -> s = "Open or save a file first"
+            else -> s = "Replace?  Yes  No  All  Esc"        ; id 20
+        }
+        ubyte i = 0
+        while @(s + i) != 0 {
+            @(dest + i) = @(s + i)
+            i++
+        }
+        @(dest + i) = 0
     }
 }
