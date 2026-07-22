@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 372         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 374         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -4151,7 +4151,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte llen = edoc.load(s_row, &tmpbuf)
             i = s_col
             while i < e_col and i < llen {
-                @(clipbuf + o) = tmpbuf[i]
+                @(clipbuf + o) = edoc.p2a(tmpbuf[i])    ; clip is canonical ASCII (mode-neutral)
                 o++
                 i++
             }
@@ -4159,7 +4159,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte slen = edoc.load(s_row, &tmpbuf)
             i = s_col
             while i < slen and o < 1023 {
-                @(clipbuf + o) = tmpbuf[i]
+                @(clipbuf + o) = edoc.p2a(tmpbuf[i])    ; clip is canonical ASCII (mode-neutral)
                 o++
                 i++
             }
@@ -4177,7 +4177,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 ubyte ml = edoc.load(r, &tmpbuf)
                 ubyte j = 0
                 while j < ml and o < 1023 {
-                    @(clipbuf + o) = tmpbuf[j]
+                    @(clipbuf + o) = edoc.p2a(tmpbuf[j])
                     o++
                     j++
                 }
@@ -4190,7 +4190,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte elen = edoc.load(e_row, &tmpbuf)
             ubyte k2 = 0
             while k2 < e_col and k2 < elen and o < 1023 {
-                @(clipbuf + o) = tmpbuf[k2]
+                @(clipbuf + o) = edoc.p2a(tmpbuf[k2])
                 o++
                 k2++
             }
@@ -4205,7 +4205,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ubyte i = 0
         cx16.push_rambank(CLIP_BANK)            ; clipbuf is banked; editbuf is low RAM
         while i < cur_len {
-            @(clipbuf + i) = editbuf[i]
+            @(clipbuf + i) = edoc.p2a(editbuf[i])   ; clip is canonical ASCII (mode-neutral)
             i++
         }
         cx16.pop_rambank()
@@ -4344,7 +4344,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte bi = 0
             cx16.push_rambank(CLIP_BANK)        ; stage the banked clip line into low-RAM tmpbuf
             while bi < lsb(clip_len) {
-                tmpbuf[bi] = @(clipbuf + bi)
+                tmpbuf[bi] = edoc.a2p(@(clipbuf + bi))  ; canonical ASCII clip -> active doc encoding
                 bi++
             }
             cx16.pop_rambank()
@@ -4365,7 +4365,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             uword pi = 0
             cx16.push_rambank(CLIP_BANK)        ; clip reads below; do_split's edoc calls nest and restore
             while pi < clip_len {
-                ubyte ch = @(clipbuf + pi)
+                ubyte ch = edoc.a2p(@(clipbuf + pi))   ; canonical ASCII clip -> active doc encoding
                 pi++
                 if ch == 13 {
                     if not do_split() {
