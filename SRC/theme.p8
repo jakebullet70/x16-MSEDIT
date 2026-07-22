@@ -19,13 +19,14 @@
 theme {
     %option ignore_unused
 
-    ; ---- global charset flag (see PLAN-ISO-MODE.md) ----------------------------------------
-    ; false = today's PETSCII-lowercase editor, byte-for-byte. This is a compile-time const, so
-    ; prog8 dead-strips every `if ISO_MODE {..}` true-branch: the false build is IDENTICAL to the
-    ; PETSCII build at zero RAM/code cost. Flip to true (rebuild) to run the KERNAL ISO-8859-15
-    ; charset - encoding-clean internals + no $C1-$DA save corruption. Lives here because theme is
-    ; imported by every UI unit (edit/syntax/picker/tview/misc; edoc imports it too for this).
-    const bool ISO_MODE = false
+    ; ---- active-document charset mode (see PLAN-ISO-MODE.md, per-doc scope) ------------------
+    ; The mode of the ACTIVE document: false = PETSCII, true = ISO-8859-15. RUNTIME var (not a
+    ; const): edit.p8 stores it per-doc in the CTX table, so load_ctx sets it on every doc switch
+    ; and apply_charset_mode reconfigures the KERNAL charset + keyboard to match. Every items-1-6
+    ; branch reads this. Lives here because theme is imported by every UI unit
+    ; (edit/syntax/picker/tview/misc; edoc imports it too). Runtime (not const) => both PETSCII and
+    ; ISO code paths ship - that RAM cost is the price of per-doc mode.
+    bool ISO_MODE = false
 
     const ubyte FIRST = 1
     const ubyte LAST  = 3

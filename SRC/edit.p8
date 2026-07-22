@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 344         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 350         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -126,8 +126,8 @@ main {
     ;
     ; The contexts are written at the full CTX_SIZE even though the CTX table only fills 466 of it -
     ; padding is free on disk and it means no length constant can drift out of step with the table.
-    const ubyte SES_VER = 4             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
-                                        ; (v2: UNDO_DEPTH 24 -> 20; v3: 20 -> 14; v4: 14 -> 12; each shortened the context)
+    const ubyte SES_VER = 5             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
+                                        ; (v2: UNDO_DEPTH 24 -> 20; v3: 20 -> 14; v4: 14 -> 12; v5: +per-doc iso_mode CTX field)
     const uword CLIP_MAX = 1024         ; clipbuf is $A000-$A3FF in CLIP_BANK
     ; magic + version as ONE record: it writes in a single f_write and verifies in a single compare
     ; loop, so the version can never be checked separately from (or forgotten alongside) the signature
@@ -332,12 +332,12 @@ main {
     ; the per-document context is this ordered list of (address, byte-length) fields. save_ctx/load_ctx
     ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 402
     ; at UNDO_DEPTH 20 (the ten ring entries scale with it; the rest is fixed at 82).
-    const ubyte NCTXF = 42
+    const ubyte NCTXF = 43
     uword[NCTXF] CTX_ADDR = [
         &edoc.line_count, &edoc.oom, &xarena.cur_bank, &xarena.cur_ptr, &xarena.high_bank,
         &cur_row, &top_line, &prev_cur_row, &cur_col, &left_col, &top_seg, &modified, &ovr_mode,
         &filename,
-        &ln_on, &gutter_w, &wrap_on, &hl_on, &hl_mode,
+        &ln_on, &gutter_w, &wrap_on, &hl_on, &hl_mode, &theme.ISO_MODE,
         &sel_active, &sel_cleared, &anc_row, &anc_col, &s_row, &e_row, &s_col, &e_col,
         &found_row, &found_col,
         &g_group, &u_sp, &d_sp,
@@ -347,7 +347,7 @@ main {
         2, 1, 1, 2, 1,
         2, 2, 2, 1, 1, 1, 1, 1,
         41,
-        1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1,
         1, 1, 2, 1, 2, 2, 1, 1,
         2, 1,
         2, 1, 1,
@@ -540,28 +540,9 @@ main {
         ; 40-col still returns to it. The UI lays itself out from SCR_W/SCR_H below.
         cx16.set_screen_mode($01)               ; 80x30 (SCR_W/SCR_H/STATUS_ROW are consts to match)
         TEXT_ROWS = SCR_H - 2                    ; the one geometry value kept as a var (SES_PTRS &TEXT_ROWS)
-        if theme.ISO_MODE {
-            cx16.screen_set_charset(1, 0)   ; ISO-8859-15 font (0 ptr = built-in ROM charset)
-            ; screen_set_charset loads the FONT only. To make the KEYBOARD emit ISO/ASCII bytes
-            ; ({} \ | ~ etc.), also ENTER ISO MODE: set KERNAL_MODE ($0372) bit $40 + call EXTAPI
-            ; ($feab, A=$05 X=$9f, C=0) - the exact sequence the ROM's X16 Edit uses (cmd.inc iso:).
-            %asm {{
-                lda  $0372
-                ora  #$40
-                sta  $0372
-                clc
-                ldx  #$9f
-                lda  #$05
-                jsr  $feab
-            }}
-            ; the "REM " comment marker must be ASCII in ISO (not shifted-PETSCII) so it displays
-            ; and saves as REM under the ISO font - patch cmt_prefix's R/E/M here (item 6).
-            cmt_prefix[0] = $52             ; R
-            cmt_prefix[1] = $45             ; E
-            cmt_prefix[2] = $4d             ; M
-        } else {
-            txt.lowercase()
-        }
+        txt.lowercase()                 ; boot charset = PETSCII lowercase. The ACTIVE doc's real mode
+                                        ; (per-doc theme.ISO_MODE) is applied by apply_charset_mode once
+                                        ; the slots are loaded, below (before the first full_redraw).
         sys.disable_caseswitch()        ; lock the charset - Shift+Commodore can't flip the whole
                                         ; display mid-edit (as in XFMGR2); wanted in ISO mode too
 
@@ -687,6 +668,7 @@ main {
         if session_on and not reloaded                  ; overlay the saved files+cursors onto the fresh slots
             edsess_rw(2)
         cursor_sprite_setup()                   ; the insert-mode underline cursor sprite (theme+mode set)
+        apply_charset_mode()                    ; apply the active doc's PETSCII/ISO mode before the first paint
         full_redraw()
         ; One status-row message, most specific first: a BASLOAD error names a line to fix, a rejected
         ; session explains why the editor came up empty, missing files explain the blank slots. Silence
@@ -2488,6 +2470,7 @@ main {
         wrap_on = false
         hl_on = false
         hl_mode = HL_BASIC
+        theme.ISO_MODE = false          ; fresh slots start in PETSCII (New = PETSCII)
     }
 
     sub init_doc_slots() {
@@ -2505,6 +2488,55 @@ main {
         cur_dirty = false
     }
 
+    sub act_toggle_mode() {
+        ; Ctrl+F7 (test hook, phase 1): flip the ACTIVE doc's PETSCII/ISO mode. Phase 4 replaces this
+        ; with a Dev-menu item + a footer indicator.
+        theme.ISO_MODE = not theme.ISO_MODE
+        apply_charset_mode()
+        full_redraw()
+    }
+
+    sub apply_charset_mode() {
+        ; Reconfigure the KERNAL charset + keyboard for the ACTIVE doc's mode (per-doc theme.ISO_MODE,
+        ; loaded from the context on every doc switch). This MIRRORS the ROM X16 Edit cmd_encoding_set:
+        ; store the KERNAL_MODE number to $0372, load that charset, and for ISO ALSO set bit $40 + call
+        ; EXTAPI. ISO (mode 1): $0372 bit $40 + EXTAPI ($feab, A=$05 X=$9f) so the keyboard emits ASCII
+        ; ({} \ | ~). PETSCII (mode 3 = upper/lower): storing the bare mode CLEARS bit $40, which reverts
+        ; the KERNAL keyboard to PETSCII - the ROM's petscii path calls NO EXTAPI (clearing the flag is
+        ; enough; without this clear the keyboard stays stuck in ISO after an ISO->PETSCII switch).
+        ; cmt_prefix ("REM ") follows the mode. Phase 1 uses ROM fonts, so an ISO doc's box-draw chrome is
+        ; garbage until the custom font.
+        if theme.ISO_MODE {
+            %asm {{
+                lda  #$01
+                sta  $0372
+            }}                                    ; KERNAL_MODE = 1 (ISO)
+            cx16.screen_set_charset(1, 0)
+            %asm {{
+                lda  $0372
+                ora  #$40
+                sta  $0372
+                clc
+                ldx  #$9f
+                lda  #$05
+                jsr  $feab
+            }}
+            cmt_prefix[0] = $52             ; "REM " as ASCII
+            cmt_prefix[1] = $45
+            cmt_prefix[2] = $4d
+        } else {
+            %asm {{
+                lda  #$03
+                sta  $0372
+            }}                                    ; KERNAL_MODE = 3 (pet upper/lower); clears ISO bit $40
+            cx16.screen_set_charset(3, 0)
+            cmt_prefix[0] = $d2             ; "REM " in shifted PETSCII
+            cmt_prefix[1] = $c5
+            cmt_prefix[2] = $cd
+        }
+        sys.disable_caseswitch()            ; screen_set_charset can re-enable the case switch - re-lock
+    }
+
     sub switch_doc() {
         ; F7: cycle A->B->C->A. Flush the live line, save the active context, bring up the next doc.
         commit_editbuf()
@@ -2513,6 +2545,7 @@ main {
         if g_active_slot >= NDOCS
             g_active_slot = 0
         load_ctx(g_active_slot)
+        apply_charset_mode()            ; this doc may be a different mode than the one we left
         cur_len = edoc.load(cur_row, &editbuf)
         cur_dirty = false
         full_redraw()
@@ -4958,7 +4991,12 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             15 -> act_open()                ; Ctrl+O  open
             137 -> void save_now()          ; F2  save
             135 -> act_run_basload()        ; F5  save + run through BASLOAD
-            136 -> switch_doc()             ; F7  cycle the active document (A->B->C)
+            136 -> {                        ; F7 cycle docs; Ctrl+F7 toggles THIS doc's PETSCII/ISO mode (test)
+                if (g_mod & MOD_CTRL) != 0
+                    act_toggle_mode()
+                else
+                    switch_doc()
+            }
             133 -> act_keymap()             ; F1  Help (keyboard map / edit.md)
             else -> {
                 if (k >= 32 and k <= 126) or (k >= 160) {

@@ -38,8 +38,8 @@ edoc {
     uword line_count
     bool  oom                           ; set if an allocation failed (document full)
 
-    uword iobuf = memory("iobuf", 256, 0)   ; disk read chunk buffer (main RAM). 256 = the load_file
-                                            ; read size below; was 512 (over-allocated - only 256 used).
+    uword iobuf = memory("iobuf", 128, 0)   ; disk read chunk buffer (main RAM). 128 = the load_file
+                                            ; read size below; 256 -> 128 reclaimed 128 B to fund per-doc ISO mode.
     ubyte[252] linebuf                       ; scratch: assembling / reading one line (<= MAX_LEN 250; load
                                              ; force-breaks longer, so 252 = 250 + a 2-byte boundary margin)
 
@@ -233,7 +233,7 @@ edoc {
         ubyte ll = 0
         bool prev_cr = false
         repeat {
-            uword n = diskio.f_read(iobuf, 256)
+            uword n = diskio.f_read(iobuf, 128)
             if n == 0
                 break
             uword j = 0
