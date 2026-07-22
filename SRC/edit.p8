@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 350         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 359         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -458,6 +458,10 @@ main {
     ; mnu_mode ($A00F, menus.ovl's 5th entry): draws the footer INS/OVR + CAPS field and returns the column
     ; past it. Hosted in the overlay so its put_str_at calls + string literals don't sit in scarce low RAM.
     extsub @bank 13 $A00F = mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte @A
+    ; mnu_accel ($A012, menus.ovl's 6th entry): the dropdown accelerator tables (which 0 = folded letter
+    ; -> item index; which 1 = item index -> accelerator column offset). Hosted beside the labels so the
+    ; ~330 B of when-tables leave main's low RAM. showdev = theme.show_dev (the overlay has no theme).
+    extsub @bank 13 $A012 = mnu_accel(ubyte which @R0, ubyte active @R1, ubyte arg @R2, ubyte showdev @R3) -> ubyte @A
     bool menus_ok                       ; menus.ovl loaded OK -> dropdown item labels are available
     ubyte[9] menuctx                    ; packed state handed to mnu_bar (see draw_menubar)
     str  menusovl = "menus.ovl"
@@ -495,39 +499,10 @@ main {
         return 255
     }
 
-    sub item_accel(ubyte active, ubyte key) -> ubyte {
-        ; dropdown item accelerator: a folded letter -> item index, else 255
-        when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'c' -> return 6   'l' -> return 7   'x' -> return 8 }
-            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
-            2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-            3 -> when key { 'r' -> return 0   'b' -> return 1   'd' -> return 2   't' -> return 3   'c' -> return 4   'u' -> return 5   'f' -> return 6   's' -> return 7   'l' -> return 8 }
-            4 -> when key { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
-            else -> {                        ; Help. Dev shown: H/B/T/C/A -> 0/1/2/3/4. Dev hidden (no BASLOAD/Hints): H/C/A -> 0/1/2
-                if theme.show_dev {
-                    when key { 'h' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'a' -> return 4 }
-                } else {
-                    when key { 'h' -> return 0   'c' -> return 1   'a' -> return 2 }
-                }
-            }
-        }
-        return 255
-    }
-
-    sub accel_off(ubyte active, ubyte i) -> ubyte {
-        ; column offset of the accelerator letter within an item label (for highlighting)
-        when active {
-            0 -> when i { 2 -> return 3   4 -> return 5   5 -> return 2   7 -> return 1   8 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Close All 'l'@1, Exit 'x'@1 (New/Open/Save/Close @0 default)
-            1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
-            2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
-            3 -> when i { 1 -> return 5   6 -> return 15 }      ; Dev: Make Backup 'B'@5, Session file 'f'@15 (others 'R/D/T/C/U/S/L' @0)
-            5 -> {                                              ; Help
-                if theme.show_dev and i == 2                    ; Hints-Tips 'T'@6 (Dev-only row; all other Help items @0)
-                    return 6
-            }
-        }
-        return 0
-    }
+    ; item_accel + accel_off (the dropdown accelerator tables) moved to menus.ovl's mnu_accel ($A012)
+    ; to reclaim ~330 B of low RAM - they belong beside the labels there. Call sites use mnu_accel
+    ; directly: which 0 (folded letter -> item index) in run_dropdown; which 1 (item -> accel column)
+    ; in draw_dropdown_item. theme.show_dev is passed since the overlay has no theme copy.
 
     sub start() {
         saved_mode, cx16.r0L, cx16.r0H = cx16.get_screen_mode()
@@ -1853,7 +1828,12 @@ main {
                 hold &= (255 - MOD_CAPS)
             }
             if (hold & MOD_ALT) != 0 {
-                alt_was = true              ; ALT held - wait to see if a letter follows
+                if theme.ISO_MODE {
+                    iso_alt_menu()          ; ISO: read the C=+letter accelerator under a temporary
+                    cursor_update()         ; PETSCII keyboard decode, open that menu, restore ISO decode
+                    continue                ; then wait for the next real key
+                }
+                alt_was = true              ; PETSCII: ALT held - wait to see if a letter chord follows
             } else {
                 if alt_was {                ; ALT released with no key -> return 0 = "open the menu". 0 is
                     alt_was = false         ; never a real key here, so no collision (unlike the old 200 = 'H').
@@ -2128,7 +2108,7 @@ main {
         }
         ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
         ; survives the selection fill
-        txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | theme.ACCEL_FG)
+        txt.setclr(x0 + 2 + mnu_accel(1, active, i, theme.show_dev as ubyte), row, (base & $f0) | theme.ACCEL_FG)
     }
 
     sub draw_dropdown(ubyte active, ubyte x0, ubyte y0, ubyte x1, ubyte y1, ubyte n, ubyte sel) {
@@ -2195,7 +2175,7 @@ main {
                 if k >= $c1 and k <= $da
                     k -= $80
             }
-            ubyte acc = item_accel(active, k)   ; letter accelerator activates the item
+            ubyte acc = mnu_accel(0, active, k, theme.show_dev as ubyte)   ; letter accelerator activates the item
             if acc != 255
                 return acc
             when k {
@@ -2535,6 +2515,59 @@ main {
             cmt_prefix[2] = $cd
         }
         sys.disable_caseswitch()            ; screen_set_charset can re-enable the case switch - re-lock
+    }
+
+    sub kbd_decode_petscii() {
+        ; Flip ONLY the KERNAL keyboard decode back to PETSCII by clearing the ISO flag ($0372 bit $40).
+        ; The ISO FONT is untouched (no screen_set_charset), so the screen still shows ISO glyphs; only
+        ; how keys are decoded changes. Used briefly while C= is held so a C=+letter chord delivers the
+        ; PETSCII graphics code 161-191 that alt_letter maps to a menu letter.
+        %asm {{
+            lda  $0372
+            and  #$bf
+            sta  $0372
+        }}
+    }
+
+    sub kbd_decode_iso() {
+        ; Restore ISO keyboard decode (ISO flag + EXTAPI) after kbd_decode_petscii, so typing { } \ | ~
+        ; works again. Same sequence apply_charset_mode uses for ISO, minus the font load (already ISO).
+        %asm {{
+            lda  $0372
+            ora  #$40
+            sta  $0372
+            clc
+            ldx  #$9f
+            lda  #$05
+            jsr  $feab
+        }}
+    }
+
+    sub iso_alt_menu() {
+        ; ISO-mode menu open. In ISO the KERNAL keymap turns C= into a compose modifier, so a C=+letter
+        ; chord never delivers a decodable menu letter. Trick: flip only the keyboard decode to PETSCII
+        ; (the ISO font stays), so C=+letter now arrives as a graphics code 161-191 we CAN map - giving
+        ; real Alt+E / Alt+W. We enter here having just seen C= held with nothing in the buffer yet, so
+        ; the flip lands before the letter is decoded. Falls back to the menu bar (m=0) if C= is released
+        ; with no letter, or if a non-accelerator arrives. Restores ISO decode before opening the menu so
+        ; the dropdown accelerators (which use the ISO fold) and later text typing behave normally.
+        kbd_decode_petscii()
+        ubyte m = 0
+        repeat {
+            ubyte k = cbm.GETIN2()
+            if k != 0 {
+                if k >= 161 and k <= 191 {
+                    ubyte mm = menu_for_letter(alt_letter[k - 161])
+                    if mm != 255
+                        m = mm
+                }
+                break
+            }
+            if (cx16.kbdbuf_get_modifiers() & MOD_ALT) == 0
+                break                       ; C= released with no letter -> open the bar (m stays 0)
+        }
+        kbd_decode_iso()
+        menu_mode_loop(m)
     }
 
     sub switch_doc() {
@@ -4859,13 +4892,22 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; ---------- key dispatch ----------
 
     sub editor_key(ubyte k) {
-        ; ALT+letter (Commodore-key graphics codes 161..191) opens that menu directly;
-        ; intercept before the text-insert path below (which accepts k>=160). Other ALT
-        ; combos are swallowed so they don't insert a graphics char.
-        if k >= 161 and k <= 191 {
-            ubyte m = menu_for_letter(alt_letter[k - 161])
-            if m != 255
-                menu_mode_loop(m)
+        ; Commodore(ALT)+letter opens a menu. In PETSCII the KERNAL delivers the chord as a graphics
+        ; code 161..191 that alt_letter maps back to a base letter -> open that menu directly (intercept
+        ; before the text-insert path below, which accepts k>=160; other ALT combos are swallowed).
+        if not theme.ISO_MODE {
+            if k >= 161 and k <= 191 {
+                ubyte m = menu_for_letter(alt_letter[k - 161])
+                if m != 255
+                    menu_mode_loop(m)
+                return
+            }
+        } else if (g_mod & MOD_ALT) != 0 {
+            ; ISO: the ISO keymap has no Commodore graphics table, so C= acts as AltGr/compose and the
+            ; emitted byte can't be decoded to a menu letter. Claim any Commodore chord to open the menu
+            ; bar (we type no accented/compose chars - the glyph set is { } \ | ~, all base keys); the
+            ; user then picks the menu with the arrow keys or a dropdown accelerator letter.
+            menu_mode_loop(0)
             return
         }
         ; selection management: Shift+cursor extends the selection, any other
