@@ -49,13 +49,88 @@
   `REM TODO` and leaves it. Better: split the DATA content on commas and wrap any unquoted item that
   holds a space in quotes. Careful with items that are already quoted, and with numeric items — quoting
   a number changes what `READ N` does.
-- **BASLOAD token picker popup** — a popup listing the BASLOAD control-code tokens (`{CLR}`, `{HOME}`,
-  `{RVS ON}`, colour names, ...) so they can be picked and inserted at the cursor instead of typed from
-  memory. The supported set is enumerated in the BASLOAD docs — mirror that list, don't invent one.
-  Text-heavy, so build it as a banked overlay rather than in low RAM.
+- **BASLOAD token / `{}` picker popup** — a popup listing the BASLOAD control-code tokens (`{CLR}`,
+  `{HOME}`, `{RVS ON}`, colour names, ...) so they can be picked and inserted at the cursor instead of
+  typed from memory. MOTIVE: `{` and `}` cannot be typed AT ALL in the editor's locked lowercase PETSCII
+  charset — no key emits byte 123/125 (the insert path at edit.p8:4918 would accept them fine if they
+  arrived). The supported set is enumerated in the BASLOAD docs (basload.md) — mirror that list, don't
+  invent one. Entry 0 is a bare `{}`: insert the pair, then `ed_left()` once so the cursor lands between
+  the braces. Text-heavy, so build it as a banked overlay rather than in low RAM. Design settled
+  2026-07-22:
+  - Build it INTO picker.ovl (bank 8), not a new bank — it IS the picker widget. Append a `charpick`
+    entry to picker's `%jmptable` (4th slot, after pick/picker_setup/del_sym; append-only so existing
+    offsets don't shift, exactly how del_sym was added). Reuses draw_box_frame / draw_title_bar /
+    draw_footer / wait_key / put_str_at + the Up/Down/PgUp/PgDn/Home/End nav — near-zero new low RAM.
+  - The overlay RETURNS the chosen token text to a low-RAM `dest` buffer and returns 1 (exactly like
+    `pick()` returns a filename); MAIN then loops `ed_insert()` over the bytes. The overlay never
+    touches editbuf, so there is no cross-bank insert problem. Watch ed_insert's `cur_len >= MAX_LEN`
+    guard: a multi-char token near the line-length limit inserts partially — main should check room first.
+  - Insert the READABLE text token (`{DOWN}`), not the raw control byte ($11): matches the notation and
+    stays greppable/editable. List entries can BE the token strings (label = payload).
+  - List source: bake the canonical BASLOAD set into the overlay bank (robust, zero low RAM, no file
+    dependency). Optional later: append a user `PETSCII.LST` if present, but keep the core baked in so a
+    missing file can't break the feature.
+  - Open from a menu item (Edit > "Insert Special..."): `{` can't be a hotkey and the Ctrl/F-key space
+    is nearly full; a menu item costs no scarce keycodes and is discoverable.
+  - CAVEAT — this fixes INPUT only, not DISPLAY. An inserted `{`/`}` SAVES correctly as ASCII (edoc
+    p2a passes $7B/$7D through, edoc.p8:61) but RENDERS as a graphics glyph in the lowercase PETSCII
+    charset — no brace glyph exists there, and draw_text_row draws every byte via petscii2scr
+    (edit.p8:1179). The display half is the ISO/PETSCII investigation below.
 - **Escape-char popup** — same idea for the `/x`-style escape form (e.g. hex/`\x` character escapes):
-  a pick-and-insert popup for the characters that are awkward to type. Shares the overlay with the
-  token picker if both get built.
+  a pick-and-insert popup for the characters that are awkward to type. Shares the picker.ovl `charpick`
+  overlay + machinery with the token picker if both get built (different payload set, same widget).
+- **Investigate supporting both ISO and PETSCII charsets** — the DISPLAY counterpart to the two picker
+  popups above (filed 2026-07-22). In the editor's locked lowercase PETSCII charset, `{` `}` (and other ASCII
+  punctuation missing from PETSCII — backslash, pipe, tilde, caret, grave, underscore) have no glyph
+  and render as graphics chars via petscii2scr; ISO mode (charset 1) has the full ASCII set, so those
+  would display correctly AND become directly typeable. The plumbing to
+  track the mode already exists — snapshot/restore_machine_state carry the charset as 1=ISO / 2=upper-
+  gfx / 3=lower (edit.p8:720) — and the on-disk format is ASCII either way, so files are unaffected AT
+  THE FILE LEVEL for ASCII — but real ISO capitals DO corrupt on a load->save round-trip, see the
+  HAZARD bullet below. A straight switch to ISO is a deep change, not a flag. Things to settle:
+  - THE BLOCKER: the entire UI chrome is drawn with PETSCII box-draw glyphs (`sc:'┌'` etc. in every
+    frame / menu / popup). One screen has ONE charset; under ISO those screen codes become Latin-1 and
+    all the boxes turn to garbage. You cannot get box-draw glyphs AND ASCII braces from a stock ROM
+    charset at the same time.
+  - Likely real answer: a CUSTOM uploaded 8x8 VRAM charset that keeps the box-draw glyphs where the UI
+    expects them AND puts `{` `}` (etc.) at 123/125. This ties directly to the "Thin font like
+    inspector.prg" item below (also a custom-charset upload) — investigate them together.
+  - Internal storage is PETSCII today: edoc.a2p/p2a case-fold on load/save (edoc.p8:54) and the
+    software-caps `upper_mode` fold ($41-$5A -> +$80) assume PETSCII upper. Running the text area in ISO
+    would make internal bytes ASCII and those conversions/folds wrong — they'd have to become no-ops or
+    branch on the active mode. This, not the display, is the subtle cost.
+  - HAZARD (verified 2026-07-22): the a2p/p2a fold isn't merely "wrong under ISO" — it actively CORRUPTS
+    existing ISO-8859-15 files on a load->save round-trip, TODAY. p2a treats $C1-$DA as PETSCII uppercase
+    and subtracts $80 (edoc.p8:64), but $C1-$DA is exactly the ISO-8859-15 range for accented capitals
+    Á…Ú. Root cause: on load a2p leaves a $C1 byte unchanged (edoc.p8:59), so ISO-`Á` and PETSCII/ASCII-`A`
+    both become internal $C1 — indistinguishable — and on save p2a maps both back to `A` ($41). Net: open
+    an ISO file containing `Á`/`É`/`Ñ` etc., save it, and the accents are silently stripped to plain ASCII
+    `A`/`E`/`N`. Other high bytes (é=$E9, €=$A4, ñ=$F1) round-trip byte-for-byte but display as PETSCII
+    graphics glyphs; ONLY $C1-$DA loses data. Latent for now (no key emits $C1-$DA in the locked lowercase
+    charset) — the trigger is opening pre-existing ISO text, not typing it. Whatever the ISO fix becomes,
+    a2p/p2a must stop case-folding blindly (branch on active mode, or drop the fold and store what's on
+    disk). REFERENCE ARCHITECTURE — the ROM's own X16 Edit (Stefan Jakobsson, `edit` at the BASIC prompt;
+    src X16Community/x16-rom/x16-edit, verified 2026-07-22) never hits this because it is an ENCODING-
+    AGNOSTIC RAW-BYTE editor: (1) load/save move bytes VERBATIM — only transforms are CR/CRLF<->LF newline
+    normalization + TAB->spaces on load (file.inc file_read/file_write); no ASCII<->PETSCII fold, so every
+    $80-$FF byte round-trips intact. (2) The buffer holds the file's raw bytes; PETSCII->screencode
+    conversion happens ONLY at draw time and ONLY in PETSCII display modes — in ISO mode the byte goes
+    straight to VERA (screen.inc, gated on `screen_mode`). (3) CTRL-E cycles charsets as a PURE DISPLAY
+    repaint (cmd.inc cmd_encoding_set -> KERNAL $ff62 + screen_mode flag + screen_refresh); the buffer is
+    never touched, and it calls the ISO font freely. It gets away with runtime charset cycling because its
+    chrome is NANO-STYLE — colored blank-space bars + ASCII letters, ZERO box-draw glyphs (screen.inc
+    screen_print_header/footer) — so flipping to ISO breaks nothing. TWO lessons for EDIT: (a) the
+    corruption fix is to move charset conversion OFF the storage boundary (a2p/p2a) onto the DISPLAY
+    boundary only, where petscii2scr already is — display conversion is lossless because it's never
+    written back; (b) our PETSCII box-draw chrome is the SOLE reason we can't just flip to ISO the way X16
+    Edit does — which is exactly what option (a)'s custom font buys back (box-draw + ASCII glyphs in one
+    uploaded charset, so no mode flip needed). X16 Edit chose the other trade: plain chrome, free cycling.
+  - Decide scope: (a) custom charset that just makes braces real (preferred — unifies the popups + the
+    thin font), (b) a runtime ISO/PETSCII toggle for the text area only (needs chrome rework +
+    conditional a2p/p2a/caps), or (c) do nothing, ship the token popup, live with the brace glyph.
+  - Reminder why we're on lowercase PETSCII and not ISO already: the Caps-Lock handling
+    (disable_caseswitch + the software toggle, [[edit-caps-lock-fix]]) was built around PETSCII; ISO
+    was weighed during that work and set aside.
 - **Ctrl+Shift+PgUp/PgDn to select to the file ends** — small follow-on to the Ctrl+PgUp/PgDn jump
   added in v0.9.211. `ed_doc_jump` does not touch the selection today, matching plain PgUp/PgDn.
   Shift+Home / Shift+End (keycodes 147 / 132) already extend on the line, so the pattern exists; the
