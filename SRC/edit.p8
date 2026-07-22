@@ -31,13 +31,27 @@ main {
     const ubyte NMENU       = 6          ; File Edit Search Dev Window Help
     const ubyte WINDOW_MENU = 4          ; Window menu index (Next + document A/B/C list)
     const ubyte MOD_ALT    = $02        ; kbdbuf_get_modifiers bit
-    const ubyte MENU_KEY   = 200        ; synthetic key: open the menu bar
-    const uword BUILD_NUM  = 300         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
+    ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
+    ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
+    const uword BUILD_NUM  = 337         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
     const ubyte MOD_SHIFT = $01         ; kbdbuf_get_modifiers shift bit
     const ubyte MOD_CTRL  = $04         ; kbdbuf_get_modifiers ctrl bit
+    const ubyte MOD_CAPS  = $10         ; kbdbuf_get_modifiers bit 4 = Caps Lock
+    ; Caps Lock breaks the Alt/Commodore menu keys: with Caps on, a letter is delivered as a graphics
+    ; code 161-191 (which editor_key reads as a menu accelerator) and Caps shifts what the keyboard
+    ; reports on top of that - so every keystroke opens a menu and ESC can't escape it. The KERNAL has
+    ; NO API to clear the Caps toggle (kbd_leds drives only the LED), so we write shflag directly. It
+    ; lives in RAM bank 0, adjacent to the $A80E fkey region EDIT already maps there; the address is
+    ; undocumented so every write is GUARDED (see caps_kill). Same fix as sibling XFMGR2.
+    const uword KBD_SHFLAG = $a80c      ; KERNAL shflag (Caps toggle) in RAM bank 0 - undocumented, guarded
+    bool caps_was_on                    ; Caps was on at launch AND we cleared it -> restore it on exit
+    bool upper_mode                     ; software Caps Lock: fold typed letters to uppercase at INSERT time
+                                        ; (never via the KERNAL shflag, which breaks the Alt menus). Toggled
+                                        ; by the Caps Lock key in get_editor_key; shown as CAPS on the footer.
 
     const ubyte SPACE_SC = sc:' '
     ; box-drawing SCREENCODES (drawn with setchr - never moves the cursor)
@@ -108,8 +122,8 @@ main {
     ;
     ; The contexts are written at the full CTX_SIZE even though the CTX table only fills 466 of it -
     ; padding is free on disk and it means no length constant can drift out of step with the table.
-    const ubyte SES_VER = 2             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
-                                        ; (v2: UNDO_DEPTH 24 -> 20 shortened the context by 64 bytes)
+    const ubyte SES_VER = 4             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
+                                        ; (v2: UNDO_DEPTH 24 -> 20; v3: 20 -> 14; v4: 14 -> 12; each shortened the context)
     const uword CLIP_MAX = 1024         ; clipbuf is $A000-$A3FF in CLIP_BANK
     ; magic + version as ONE record: it writes in a single f_write and verifies in a single compare
     ; loop, so the version can never be checked separately from (or forgotten alongside) the signature
@@ -144,18 +158,22 @@ main {
     ; SLACK WARNING: $AA00 is the FIRST byte after the context blocks, not a byte after them - slot 2
     ; is reserved through $A9FF exactly. ctx_field walks the CTX table with no bound check against
     ; CTX_SIZE, so the fit is arithmetic, not enforced: CTX_LEN sums to 82 + 16*UNDO_DEPTH, which is
-    ; 402 at the current depth of 20 and crosses 512 at depth 27. Raising UNDO_DEPTH past 26 would
+    ; 274 at the current depth of 12 and crosses 512 at depth 27. Raising UNDO_DEPTH past 26 would
     ; have save_ctx(2) write straight through the fkey snapshot, which exit then commits into the
     ; KERNAL's fkeytb. Move these two up before touching UNDO_DEPTH.
     const uword FKSNAP_ADDR   = $AA00       ; 99 bytes: the KERNAL fkey-macro snapshot
     const uword STARTDIR_ADDR = $AA70       ; 82 bytes: the startup working directory
     const ubyte SESOVL_VER = 2
-    uword[26] @nosplit SES_PTRS = [
+    ; Index 26 (&cur_col) is APPENDED for picker.ovl's .EDIT.SESSION engine (P_CUR_COL there). Appending
+    ; at the end leaves misc.ovl's ABI (it only reads indices 0-25) untouched, so SESOVL_VER is NOT bumped.
+    ; This table holds ADDRESSES only - it is never streamed to a file, so the ed.run format/SES_VER are
+    ; unaffected too.
+    uword[27] @nosplit SES_PTRS = [
         &g_active_slot, &modified, &filename, &fnbuf, &ses_spill,
         &tmpdoc, &seshdr, &tmpbuf, &clip_has, &clip_len,
         &cur_row, &top_line, &basload_err_line, &edoc.line_count, &sel_active,
         &sel_cleared, &cur_dirty, &ses_failed, &ses_lost, &TEXT_ROWS,
-        FKSNAP_ADDR, &find_term, &repl_term, STARTDIR_ADDR, &ww_on, &clip_line ]
+        FKSNAP_ADDR, &find_term, &repl_term, STARTDIR_ADDR, &ww_on, &clip_line, &cur_col ]
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     const ubyte BERR_MAX = 80           ; longest BASLOAD error line kept - one full 80-column row.
     ubyte[BERR_MAX] berr                ; the scraped BASLOAD error line, screen codes
@@ -260,8 +278,10 @@ main {
     bool clip_line
 
     ; ---------- undo / redo (per-line snapshots kept in banked RAM) ----------
-    const ubyte UNDO_DEPTH = 20         ; per-doc undo/redo history depth (trimmed 32 -> 24 -> 20 to reclaim
-                                        ; low RAM - each level costs 16 B across the two rings).
+    const ubyte UNDO_DEPTH = 12         ; per-doc undo/redo history depth (trimmed 32 -> 24 -> 20 -> 14 -> 12
+                                        ; to reclaim low RAM - each level costs 16 B across the two rings.
+                                        ; 20 -> 14 funded the Caps Lock keyboard fix; 12 is the hard floor
+                                        ; (user-set - do not trim below this). See caps_kill.
                                         ; Changing this changes the context layout: bump SES_VER with it.
     const ubyte OP_REPLACE = 1          ; line content changed; snapshot = old content
     const ubyte OP_ADDLINE = 2          ; a line was inserted; apply => delete it (no snapshot)
@@ -338,13 +358,19 @@ main {
     ; lifts the Open list to ~157 files. Same loadlib + extsub @bank pattern as misc.ovl / tview.ovl.
     ;   picker_setup(peek, read, write, move, stage)  - wire the bank helpers, once after load
     ;   pick(dest, theme_id, blkptr) -> 1 if a file was chosen (dest + @blkptr filled), 0 if cancelled.
+    ;   del_sym(theme_id)             - Dev > Delete all SYM files: confirm + scan + delete + report,
+    ;                                   all painted in-bank on the status row (returns the count deleted).
     const ubyte PICKER_BANK  = 8       ; reserved bank 8 for picker.ovl
     const ubyte RECORDS_BANK = 12      ; reserved bank 12: the picker's file-list records
     const ubyte REC_STAGE_LEN = 52                         ; bytes/record - MUST match picker.p8 FNREC
     extsub @bank 8 $A000 = picker_init()
     extsub @bank 8 $A003 = pick(uword dest @R0, ubyte theme_id @R1, uword blkptr @R2) -> ubyte @A
     extsub @bank 8 $A006 = picker_setup(uword peekfn @R0, uword readfn @R1, uword writefn @R2, uword movefn @R3, uword stage @R4)
+    extsub @bank 8 $A009 = del_sym(ubyte theme_id @R0) -> ubyte @A   ; Dev > Delete all SYM files
     bool picker_ok                      ; picker.ovl loaded OK -> the Open/View picker is available
+    bool session_on                     ; a .EDIT.SESSION exists in the cwd -> the feature is "on" (label +
+                                        ; exit-update). Dev-mode only; set at startup, kept current by the
+                                        ; toggle and after Open/View (the only cwd changes).
     str  pickerovl = "picker.ovl"
     ubyte[REC_STAGE_LEN] recstage       ; low-RAM staging buffer for one record (rec_read/rec_write)
 
@@ -394,7 +420,7 @@ main {
     const ubyte MSG_OVERWRITE  = 16     ; "Overwrite existing file? Y/N"
     const ubyte MSG_OPENFIRST  = 17     ; "Open or save a file first"
     const ubyte MSG_REPLACEBAR = 18     ; "Replace?  Yes  No  All  Esc"
-    ubyte[42] msgbuf                    ; scratch msg(id) copies into; longest message is 34 chars + a
+    ubyte[36] msgbuf                    ; scratch msg(id) copies into; longest message is 34 chars + a
                                         ; margin (msg_text has no length guard, so keep this >= the
                                         ; longest string in menus.p8's msg_text + 1 for the NUL)
     bool misc_ok                        ; misc.ovl loaded OK -> About + the input prompts are available
@@ -419,6 +445,15 @@ main {
     extsub @bank 13 $A000 = menus_init()
     extsub @bank 13 $A003 = mnu_item(ubyte active @R0, ubyte i @R1, ubyte col @R2, ubyte row @R3, ubyte flags @R4)
     extsub @bank 13 $A006 = mnu_bar(uword ctxp @R0)      ; paints the whole menu bar (row 0)
+    ; edsess_op ($A00C, menus.ovl's 4th jmptable entry): the per-folder .EDIT.SESSION engine. It lives
+    ; here (not picker.ovl - that bank was full; menus.ovl had the room) and imports its own diskio for the
+    ; file I/O, but drives main's ses_svc + SES_PTRS for the slot loads/saves. op = 0 exists? / 1 delete /
+    ; 2 restore (load saved files+cursors onto the fresh slots) / 3 write. Pass &ses_svc + &SES_PTRS (0/0
+    ; for ops 0 and 1). See act_session_toggle, refresh_session_on, and the start()/act_exit hooks.
+    extsub @bank 13 $A00C = edsess_op(ubyte op @R0, uword svc @R1, uword ptrs @R2) -> ubyte @A
+    ; mnu_mode ($A00F, menus.ovl's 5th entry): draws the footer INS/OVR + CAPS field and returns the column
+    ; past it. Hosted in the overlay so its put_str_at calls + string literals don't sit in scarce low RAM.
+    extsub @bank 13 $A00F = mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte @A
     bool menus_ok                       ; menus.ovl loaded OK -> dropdown item labels are available
     ubyte[9] menuctx                    ; packed state handed to mnu_bar (see draw_menubar)
     str  menusovl = "menus.ovl"
@@ -462,7 +497,7 @@ main {
             0 -> when key { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'c' -> return 6   'l' -> return 7   'x' -> return 8 }
             1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
             2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-            3 -> when key { 'r' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'u' -> return 4   's' -> return 5   'l' -> return 6 }
+            3 -> when key { 'r' -> return 0   'b' -> return 1   'd' -> return 2   't' -> return 3   'c' -> return 4   'u' -> return 5   'f' -> return 6   's' -> return 7   'l' -> return 8 }
             4 -> when key { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
             else -> {                        ; Help. Dev shown: H/B/T/C/A -> 0/1/2/3/4. Dev hidden (no BASLOAD/Hints): H/C/A -> 0/1/2
                 if theme.show_dev {
@@ -481,7 +516,7 @@ main {
             0 -> when i { 2 -> return 3   4 -> return 5   5 -> return 2   7 -> return 1   8 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Close All 'l'@1, Exit 'x'@1 (New/Open/Save/Close @0 default)
             1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
             2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
-            3 -> when i { 1 -> return 5 }                       ; Dev: Make Backup 'B'@5 (Run BASLOAD 'R'@0 default)
+            3 -> when i { 1 -> return 5   6 -> return 15 }      ; Dev: Make Backup 'B'@5, Session file 'f'@15 (others 'R/D/T/C/U/S/L' @0)
             5 -> {                                              ; Help
                 if theme.show_dev and i == 2                    ; Hints-Tips 'T'@6 (Dev-only row; all other Help items @0)
                     return 6
@@ -495,6 +530,7 @@ main {
         scan_basload_error(cx16.r0L, cx16.r0H)  ; read the still-intact boot screen (X=width,Y=height) for a
                                                 ; BASLOAD error line BEFORE the mode switch below wipes it
         snapshot_machine_state()                ; capture charset + text colour while still in the booted mode
+        caps_off()                              ; Caps Lock off for the session (it breaks the Alt menus); restored on exit
         ; 80-column only: force 80x30 regardless of the booted mode (40-col is NOT supported). The
         ; original mode is captured above (saved_mode) and put back on exit, so a machine booted in
         ; 40-col still returns to it. The UI lays itself out from SCR_W/SCR_H below.
@@ -622,6 +658,12 @@ main {
             new_document()
             init_doc_slots()            ;   slot 0 is the launched doc; create empty docs B and C
         }                               ; (on reload, restore_run_state loaded the snapshot from ed.run)
+        ; Per-folder .EDIT.SESSION (Dev mode only). A pending ed.run BASLOAD/EDCFG round-trip WINS (we only
+        ; auto-load the folder session on a truly fresh launch), matching "if session from BASLOAD exists in
+        ; root use that one". session_on tracks the file's existence for the Dev-menu label + the exit update.
+        refresh_session_on()
+        if session_on and not reloaded                  ; overlay the saved files+cursors onto the fresh slots
+            edsess_rw(2)
         cursor_sprite_setup()                   ; the insert-mode underline cursor sprite (theme+mode set)
         full_redraw()
         ; One status-row message, most specific first: a BASLOAD error names a line to fix, a rejected
@@ -640,7 +682,10 @@ main {
         g_running = true
         while g_running {
             ubyte k = get_editor_key()
-            editor_key(k)
+            if k == 0
+                menu_mode_loop(0)       ; get_editor_key returns 0 only on ALT-release -> open the menu
+            else
+                editor_key(k)
         }
 
         ; Restore the launch dir ONLY on a normal exit. The BASLOAD/Config hand-offs must keep the cwd
@@ -655,6 +700,7 @@ main {
         txt.clear_screen()
         cx16.set_screen_mode(saved_mode)        ; restore the original screen mode
         restore_machine_state()                 ; re-apply the user's charset + text colour (CINT reset them)
+        caps_restore()                          ; put Caps Lock back as we found it - before ALL exit branches
         txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
         if run_config {
             chain_load(theme.path_to(cfgprog))  ; hand off to EDCFG; it reloads EDIT (and ed.run) on exit
@@ -688,6 +734,44 @@ main {
             cx16.screen_set_charset(saved_charset, 0)       ; 0 ptr = built-in ROM charset
         if saved_color != 0                                 ; 0 = black-on-black -> skip a bad read
             txt.color2(saved_color & 15, saved_color >> 4)  ; low nibble = fg, high nibble = bg
+    }
+
+    sub caps_kill(ubyte mods) -> bool {
+        ; Clear the Caps bit in the KERNAL shflag. `mods` MUST be the value kbdbuf_get_modifiers() just
+        ; returned (with MOD_CAPS set). GUARD: only write if the byte at KBD_SHFLAG reads back exactly
+        ; that value - a strong match (we are here only when Caps is set, so mods is a specific non-zero
+        ; value, not a coincidental 0). If a future ROM moved shflag the two disagree and we leave it
+        ; alone: the fix quietly no-ops instead of corrupting an unrelated KERNAL variable. Returns true
+        ; if it actually cleared. push/pop bank 0 is balanced, so the caller's mapped bank is preserved.
+        cx16.push_rambank(0)
+        bool ok = @(KBD_SHFLAG) == mods
+        if ok
+            @(KBD_SHFLAG) = mods & (255 - MOD_CAPS)
+        cx16.pop_rambank()
+        return ok
+    }
+
+    sub caps_off() {
+        ; Startup: if Caps Lock is on, clear it for the session and arm the exit restore. (Mid-session
+        ; re-toggles are caught by the guard in get_editor_key, so Caps can never take hold while editing.)
+        ubyte mods = cx16.kbdbuf_get_modifiers()
+        if (mods & MOD_CAPS) != 0 {
+            cx16.kbdbuf_clear()             ; keys typed pre-load were translated with Caps ON (graphics
+                                            ; codes 161-191); drop that type-ahead so it can't open menus.
+                                            ; Only fires when Caps was on - a normal launch keeps its type-ahead.
+            if caps_kill(mods)
+                caps_was_on = true
+        }
+    }
+
+    sub caps_restore() {
+        ; Exit: put Caps Lock back exactly as it was at launch. Only runs if caps_off() confirmed the
+        ; address and actually cleared it, so it never writes on an unverified ROM.
+        if not caps_was_on
+            return
+        cx16.push_rambank(0)
+        @(KBD_SHFLAG) = @(KBD_SHFLAG) | MOD_CAPS
+        cx16.pop_rambank()
     }
 
     ; ---------- low-level drawing helpers ----------
@@ -1680,11 +1764,9 @@ main {
         put_str_at(col, STATUS_ROW, "  Col ")
         col += 6
         col = put_uw_at(col, STATUS_ROW, cur_col + 1)
-        if ovr_mode
-            put_str_at(col, STATUS_ROW, "  OVR")
-        else
-            put_str_at(col, STATUS_ROW, "  INS")
-        col += 5
+        ; INS/OVR + CAPS field. Drawn by menus.ovl (mnu_mode) to keep its strings/put_str_at out of low
+        ; RAM. It returns the column just past the field (variable width - CAPS widens it when caps is on).
+        col = mnu_mode(col, STATUS_ROW, ovr_mode as ubyte, upper_mode as ubyte)
         ; (the active-document ABC indicator used to sit here; it lives at the right end of the MENU
         ;  bar now, beside the filename. The col advances that reserved its width are gone with it, so
         ;  the "Total lines" guard below sees the extra 6 columns it freed.)
@@ -1744,7 +1826,7 @@ main {
     }
 
     sub get_editor_key() -> ubyte {
-        ; like wait_key, but ALT released with no key returns the synthetic MENU_KEY.
+        ; like wait_key, but ALT released with no key returns 0 (the main loop opens the menu on k==0).
         ; We wait for ALT *release* (not press) so an Alt+letter chord delivers its letter
         ; (a graphics code 161-191) to us as a menu accelerator instead of opening File.
         cursor_update()                 ; the editor is idle here: position + show the insert underline
@@ -1756,12 +1838,19 @@ main {
                 return k
             }
             ubyte hold = cx16.kbdbuf_get_modifiers()
+            if (hold & MOD_CAPS) != 0 {     ; the Caps Lock key. caps_kill clears the KERNAL Caps bit (the
+                if caps_kill(hold) {        ; menus need it gone). A SUCCESSFUL clear means the bit reads 0
+                    upper_mode = not upper_mode ; next poll, so we flip our software caps EXACTLY ONCE per
+                    draw_status()               ; press and show CAPS on the footer. If it can't clear (a ROM
+                }                               ; where shflag moved) we don't flip - avoids a flicker loop.
+                hold &= (255 - MOD_CAPS)
+            }
             if (hold & MOD_ALT) != 0 {
                 alt_was = true              ; ALT held - wait to see if a letter follows
             } else {
-                if alt_was {                ; ALT released with no key -> open File menu
-                    alt_was = false
-                    return MENU_KEY
+                if alt_was {                ; ALT released with no key -> return 0 = "open the menu". 0 is
+                    alt_was = false         ; never a real key here, so no collision (unlike the old 200 = 'H').
+                    return 0
                 }
             }
         }
@@ -1837,6 +1926,8 @@ main {
         void wait_key()
         cx16.set_screen_mode(saved_mode)        ; restore the mode + charset we changed at entry
         restore_machine_state()
+        caps_restore()                          ; and Caps Lock - this IS an exit path (returns from start),
+                                                ; so it bypasses the caps_restore in start()'s normal tail
         txt.clear_screen()
     }
 
@@ -1916,7 +2007,8 @@ main {
 
     sub menu_flags() -> ubyte {
         ; pack the states menus.ovl needs for its dynamic item labels:
-        ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers, bit3 = Dev menu shown
+        ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers, bit3 = Dev menu shown,
+        ; bit4 = a .EDIT.SESSION exists (Dev item shows Delete vs Create).
         ; (when Dev is hidden, the Help menu also drops its BASLOAD + Hints-Tips items and compacts).
         ubyte f = 0
         if wrap_on
@@ -1927,6 +2019,8 @@ main {
             f |= 4
         if theme.show_dev
             f |= 8
+        if session_on
+            f |= 16
         return f
     }
 
@@ -2041,7 +2135,7 @@ main {
         when active {
             0 -> return 7       ; File: document actions (New..Close All) | Exit
             1 -> return 8       ; Edit: line ops (Undo..Move Down) | display toggle (Word Wrap)
-            3 -> return 4       ; Dev:  actions (Run BASLOAD, Make Backup, comment ops) | view toggles (Syntax, Line#)
+            3 -> return 6       ; Dev:  actions (Run BASLOAD, Make Backup, Delete SYM, comment ops, Session file) | toggles (Syntax, Line#)
             WINDOW_MENU -> return 0   ; Window: Next | documents A/B/C
         }
         return 255
@@ -2055,7 +2149,7 @@ main {
             0 -> { n = 9  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
-            3 -> { n = 7  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
+            3 -> { n = 9  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
             WINDOW_MENU -> { n = 4  boxw = 20 }   ; Window (Next + docs A/B/C: "A - <name>")
         }
         if active == 5 and not theme.show_dev
@@ -2169,10 +2263,12 @@ main {
                 when choice {
                     0 -> act_run_basload()
                     1 -> act_make_backup()
-                    2 -> comment_apply(0)       ; toggle REM comment on the current line
-                    3 -> comment_apply(1)       ; comment the selected block (add REM)
-                    4 -> comment_apply(2)       ; uncomment the selected block (strip REM)
-                    5 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
+                    2 -> act_delete_sym()       ; delete every *.SYM in the cwd (code lives in picker.ovl)
+                    3 -> comment_apply(0)       ; toggle REM comment on the current line
+                    4 -> comment_apply(1)       ; comment the selected block (add REM)
+                    5 -> comment_apply(2)       ; uncomment the selected block (strip REM)
+                    6 -> act_session_toggle()   ; create/delete the per-folder .EDIT.SESSION (picker.ovl)
+                    7 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
                     else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
                 }
             }
@@ -2500,6 +2596,7 @@ main {
         } else {
             notify(msg(MSG_OPENERR))
         }
+        refresh_session_on()            ; the picker may have chdir'd into another folder
         full_redraw()                   ; repaint (needed when invoked via hotkey)
     }
 
@@ -2634,8 +2731,46 @@ main {
             if checked < NDOCS
                 switch_doc()                ; advance to the next doc and re-check
         }
+        ; Per-folder session: silently update .EDIT.SESSION (no prompt) with the current files+cursors.
+        ; The save-loop above advanced g_active_slot, so restore it to where the user was FIRST - that is
+        ; the active slot the session records (and edsess_op's OP_BEGIN_W saves that slot's live editbuf).
+        ; Only genuine quit reaches here; the BASLOAD/EDCFG hand-offs bypass act_exit and keep ed.run.
+        if theme.show_dev and session_on {
+            goto_slot(start_slot)
+            edsess_rw(3)
+        }
         g_running = false
         g_redrawn = true                ; we're quitting - skip the menu's post-action screen repaint
+    }
+
+    sub refresh_session_on() {
+        ; session_on = does a .EDIT.SESSION exist in the current folder? Dev mode only (else it stays
+        ; false, so the feature is fully off). Called at startup and after any cwd change (Open / View).
+        if theme.show_dev
+            session_on = edsess_op(0, 0, 0) != 0
+    }
+
+    sub edsess_rw(ubyte op) {
+        ; the two ops that need main's dispatcher + pointer table: 2 = restore, 3 = write. Folded into
+        ; one helper so the &ses_svc / &SES_PTRS argument pair is set up once, not at three call sites.
+        void edsess_op(op, &ses_svc, &SES_PTRS)
+    }
+
+    sub act_session_toggle() {
+        ; Dev > Create/Delete Session file. Toggles the per-folder .EDIT.SESSION: Create snapshots the
+        ; current files+cursors (so exit keeps it updated), Delete removes it (feature off for this
+        ; folder). No prompt. The read/write engine is in picker.ovl; main only flips session_on so the
+        ; menu label (and the exit-update decision) follow. erase_dropdown already repainted the screen,
+        ; so claim g_redrawn and just restore the footer - no full-screen flash for a one-file write.
+        g_redrawn = true
+        if session_on {
+            void edsess_op(1, 0, 0)                     ; delete .EDIT.SESSION
+            session_on = false
+        } else {
+            edsess_rw(3)                                ; write current workspace -> creates it
+            session_on = true
+        }
+        draw_status()
     }
 
     sub act_make_backup() {
@@ -2686,6 +2821,23 @@ main {
             return
         }
         notify(msg(MSG_BAKSAVED))               ; modified state left as-is on purpose
+        draw_status()
+    }
+
+    sub act_delete_sym() {
+        ; Dev > Delete all SYM files. The whole feature - the directory scan, the deletes and the result
+        ; line - runs INSIDE picker.ovl on the status row (the cheapest low-RAM overlay pattern), so main
+        ; only guards the jmptable entry and restores the footer. No confirm: it deletes on select.
+        ; erase_dropdown
+        ; already repainted the menu bar + text rows, and del_sym touches only the status row, so
+        ; g_redrawn skips menu_dispatch's blanket full_redraw (no full-screen flash); draw_status puts
+        ; the Line/Col footer back after del_sym has held its result on the bar.
+        g_redrawn = true
+        cx16.push_rambank(PICKER_BANK)
+        bool have = @($a009) == $4c             ; del_sym present? (a stale picker.ovl degrades softly)
+        cx16.pop_rambank()
+        if have
+            void del_sym(theme.current)
         draw_status()
     }
 
@@ -2940,8 +3092,9 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 diskio.delete(fnbuf)
                 void diskio.status()
             }
-        }
-    }
+            16 -> apply_syntax_mode(filename)   ; .EDIT.SESSION restore: colour + gutter by extension, as
+        }                                       ; Open does (ed.run's slot_restore skips this - it keeps
+    }                                           ; the per-doc hl_on/ln_on the context already carries)
 
     sub b2r(bool b) {
         ; bool result -> the r0L result register (the overlay tests 0 / not-0)
@@ -3109,6 +3262,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             return
         }
         ovl_view(&fnbuf, theme.current)
+        refresh_session_on()            ; View can chdir too - keep session_on tracking the current folder
         full_redraw()
     }
 
@@ -4662,7 +4816,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             }
         }
         when k {
-            27, MENU_KEY -> menu_mode_loop(0)
+            27 -> menu_mode_loop(0)         ; Esc opens the menu bar (ALT-release does it via a 0 return)
             13 -> {
                 if sel_active
                     delete_selection()
@@ -4768,6 +4922,8 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             133 -> act_keymap()             ; F1  Help (keyboard map / edit.md)
             else -> {
                 if (k >= 32 and k <= 126) or (k >= 160) {
+                    if upper_mode and k >= $41 and k <= $5a
+                        k += $80        ; software Caps Lock: fold lowercase a-z ($41-$5A) to capital ($C1-$DA)
                     if sel_active
                         delete_selection()
                     ed_insert(k)

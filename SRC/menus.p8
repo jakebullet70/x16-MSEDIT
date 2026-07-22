@@ -15,6 +15,7 @@
 ; KEEP main's block free of initialized vars (the %jmptable gotcha) - labels are inline in the sub.
 
 %import textio
+%import diskio          ; for the .EDIT.SESSION per-folder session engine (edsess_op) hosted here
 %address $A000
 %memtop  $C000
 %output  library
@@ -23,7 +24,7 @@
 main {
     %option ignore_unused
 
-    %jmptable ( main.mnu_item, main.mnu_bar, main.msg_text )
+    %jmptable ( main.mnu_item, main.mnu_bar, main.msg_text, main.edsess_op, main.mnu_mode )
 
     ; static screen geometry, mirrored from edit.p8 (consts allocate no storage, so they don't
     ; disturb the %jmptable offsets the way an initialized var would).
@@ -35,11 +36,29 @@ main {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
     }
 
+    sub mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte {
+        ; Paint the footer's INS/OVR indicator, plus CAPS when software Caps Lock is on. Moved out of
+        ; main's draw_status into this overlay to reclaim scarce low RAM (put_str_at calls + string
+        ; literals are costly there). ovr = overwrite mode, caps = software Caps Lock on (0/non-0).
+        ; Returns the column just past the field so main can guard its centred "Total lines" block.
+        if ovr != 0
+            put_str_at(col, row, "  OVR")
+        else
+            put_str_at(col, row, "  INS")
+        col += 5
+        if caps != 0 {
+            put_str_at(col, row, " CAPS")
+            col += 5
+        }
+        return col
+    }
+
     sub mnu_item(ubyte active @R0, ubyte i @R1, ubyte col @R2, ubyte row @R3, ubyte flags @R4) {
         ; paint dropdown item `i` of menu `active` at (col,row). TEXT ONLY - the caller (main's
         ; draw_dropdown_item) laid the row colour first and re-colours the accelerator afterwards.
         ; flags: bit0 = word-wrap on, bit1 = syntax-colour on, bit2 = line-numbers on (the 3 toggles),
-        ; bit3 = Dev menu shown (when clear, the Help menu drops BASLOAD + Hints-Tips and rows compact up).
+        ; bit3 = Dev menu shown (when clear, the Help menu drops BASLOAD + Hints-Tips and rows compact up),
+        ; bit4 = a .EDIT.SESSION exists in this folder (Dev item shows Delete vs Create Session file).
         when active {
             0 -> {                          ; File
                 when i {
@@ -85,10 +104,17 @@ main {
                 when i {
                     0 -> put_str_at(col, row, "Run BASLOAD  F5")
                     1 -> put_str_at(col, row, "Make Backup")
-                    2 -> put_str_at(col, row, "Toggle Comment  Ctrl+L")
-                    3 -> put_str_at(col, row, "Comment Block   Ctrl+K")
-                    4 -> put_str_at(col, row, "Uncomment Block Ctrl+W")
-                    5 -> {
+                    2 -> put_str_at(col, row, "Delete all SYM files")
+                    3 -> put_str_at(col, row, "Toggle Comment  Ctrl+L")
+                    4 -> put_str_at(col, row, "Comment Block   Ctrl+K")
+                    5 -> put_str_at(col, row, "Uncomment Block Ctrl+W")
+                    6 -> {                              ; bit4 = a .EDIT.SESSION exists in this folder
+                        if (flags & 16) != 0
+                            put_str_at(col, row, "Delete Session file")
+                        else
+                            put_str_at(col, row, "Create Session file")
+                    }
+                    7 -> {
                         if (flags & 2) != 0
                             put_str_at(col, row, "Syntax Color On ")
                         else
@@ -273,5 +299,210 @@ main {
             i++
         }
         @(dest + i) = 0
+    }
+
+    ; ---------- .EDIT.SESSION per-folder session engine (Dev menu) ----------
+    ; Hosted here (not picker.ovl - that bank was full) because menus.ovl had the room. The engine does
+    ; the .EDIT.SESSION file I/O with diskio, but drives MAIN's own session dispatcher (ses_svc) + pointer
+    ; table (SES_PTRS) for the slot load/save/activate work - the same generic ops the ed.run engine uses.
+    ; main hands us &ses_svc + &SES_PTRS per call. The op numbers + P_* indices mirror edit.p8's ses_svc
+    ; `when` and SES_PTRS order (only the subset used here). P_CUR_COL is an entry edit.p8 appended to
+    ; SES_PTRS just for this feature. edsess_op is the jmptable's 4th entry -> $A00C, called via extsub.
+    ;
+    ; FILE FORMAT (.EDIT.SESSION, lowercase source literal -> uppercase on disk, see install.p8:29):
+    ;   5   header  'e','d','s', 1 (version), active_slot
+    ;   then per slot 0..2:  [namelen:1]  and if namelen>0:  name[namelen], row_lo, row_hi, col
+    ; namelen 0 = empty slot. cursor row/col restore where you left off; the active slot is made current.
+    ; NO clipboard/search/undo (that is ed.run's job) and NO force-save.
+    const ubyte OP_BEGIN_W   = 0        ; commit_editbuf() + save_ctx(active)
+    const ubyte OP_SAVE_CTX  = 1
+    const ubyte OP_LOAD_CTX  = 2        ; scatter slot's context + point storage at it
+    const ubyte OP_ACTIVATE  = 3        ; load_ctx(slot) + reload editbuf from its cur_row
+    const ubyte OP_BLANK     = 4
+    const ubyte OP_LOAD_FILE = 6        ; edoc.load_file(filename) -> r0L (0 = missing)
+    const ubyte OP_UNDO_INIT = 7        ; undo_clear() + g_group=0 + recompute_gutter()
+    const ubyte OP_SYNTAX    = 16       ; apply_syntax_mode(filename): colour + gutter by extension
+    const ubyte P_ACT       = 0
+    const ubyte P_MOD       = 1
+    const ubyte P_FILENAME  = 2
+    const ubyte P_CUR_ROW   = 10
+    const ubyte P_TOP_LINE  = 11
+    const ubyte P_LINECOUNT = 13
+    const ubyte P_SELA      = 14
+    const ubyte P_SELC      = 15
+    const ubyte P_DIRTY     = 16
+    const ubyte P_TEXTROWS  = 19
+    const ubyte P_CUR_COL   = 26        ; appended to SES_PTRS by edit.p8 for .EDIT.SESSION
+    const ubyte ES_NDOCS    = 3
+    const ubyte ES_NAMEW    = 64        ; per-slot name field width within es_names
+
+    ; all UNINITIALIZED (BSS tail) so the %jmptable offsets stay put
+    uword es_svc, es_ptrs               ; main's &ses_svc / &SES_PTRS, wired per call
+    ubyte es_act
+    ubyte[5]   es_hdr                   ; small header / length / row-col file-I/O scratch
+    ubyte[192] es_names                 ; 3 slots * ES_NAMEW: NUL-terminated filename read from the file
+    uword[3]   es_row                   ; per-slot cursor row
+    ubyte[3]   es_col                   ; per-slot cursor column
+
+    sub esp(ubyte i) -> uword {
+        return peekw(es_ptrs + (i as uword) * 2)        ; address of main global #i
+    }
+    sub esop0(ubyte op) {
+        cx16.r0L = op
+        void call(es_svc)
+    }
+    sub esop1(ubyte op, ubyte a) {
+        cx16.r1L = a
+        cx16.r0L = op
+        void call(es_svc)
+    }
+    sub esopr(ubyte op) -> ubyte {
+        cx16.r0L = op
+        void call(es_svc)
+        return cx16.r0L
+    }
+
+    sub edsess_op(ubyte op @R0, uword svc @R1, uword ptrs @R2) -> ubyte {
+        ; op: 0 = exists?, 1 = delete, 2 = restore (load onto the fresh slots), 3 = write (snapshot).
+        ; svc/ptrs are main's &ses_svc / &SES_PTRS (pass 0 for the file-only ops 0 and 1).
+        ubyte o = op
+        es_svc  = svc
+        es_ptrs = ptrs
+        when o {
+            0 -> {
+                if diskio.exists(".edit.session")
+                    return 1
+                return 0
+            }
+            1 -> {
+                diskio.delete(".edit.session")
+                void diskio.status()
+                return 0
+            }
+            2 -> return es_restore()
+            else -> {
+                es_write()
+                return 0
+            }
+        }
+    }
+
+    sub es_write() {
+        ; Snapshot the three slots' {name, cursor} + the active slot into .EDIT.SESSION. No force-save
+        ; and no untitled spill (unlike ed.run): main's exit save-prompt has already run, so a titled
+        ; doc is on disk and an untitled slot is simply written empty. The write channel stays open the
+        ; whole time - none of the ops here touch a disk file (context work is CLIP_BANK only; OP_ACTIVATE
+        ; reloads editbuf from the arena, not disk), so there is no second-open clash.
+        esop0(OP_BEGIN_W)                       ; commit the live line + freeze the active context
+        ubyte act = @(esp(P_ACT))
+        if not diskio.f_open_w(".edit.session")
+            return
+        es_hdr[0] = 'e'
+        es_hdr[1] = 'd'
+        es_hdr[2] = 's'
+        es_hdr[3] = 1                           ; format version
+        es_hdr[4] = act
+        void diskio.f_write(&es_hdr, 5)
+        ubyte s
+        for s in 0 to ES_NDOCS - 1 {
+            esop1(OP_LOAD_CTX, s)               ; slot s's name + cursor -> main's live globals
+            uword fnp = esp(P_FILENAME)
+            ubyte nl = 0
+            while @(fnp + nl) != 0 and nl < ES_NAMEW - 1
+                nl++
+            es_hdr[0] = nl
+            void diskio.f_write(&es_hdr, 1)
+            if nl != 0 {
+                void diskio.f_write(fnp, nl as uword)       ; name straight from main's low-RAM filename
+                uword row = peekw(esp(P_CUR_ROW))
+                es_hdr[0] = lsb(row)
+                es_hdr[1] = msb(row)
+                es_hdr[2] = @(esp(P_CUR_COL))
+                void diskio.f_write(&es_hdr, 3)
+            }
+        }
+        esop1(OP_ACTIVATE, act)                 ; the load_ctx walk left editbuf on another slot
+        diskio.f_close_w()
+    }
+
+    sub es_restore() -> ubyte {
+        ; Load the workspace .EDIT.SESSION describes onto the (already blank) A/B/C slots. Read EVERY
+        ; record and CLOSE the file FIRST, then load the documents: OP_LOAD_FILE reopens the read channel,
+        ; which would clobber our still-open .EDIT.SESSION handle (same order ed.run's ses_restore uses).
+        if not diskio.f_open(".edit.session")
+            return 0
+        if diskio.f_read(&es_hdr, 5) != 5 {
+            diskio.f_close()
+            return 0
+        }
+        if es_hdr[0] != 'e' or es_hdr[1] != 'd' or es_hdr[2] != 's' or es_hdr[3] != 1 {
+            diskio.f_close()                    ; not ours / wrong version -> leave the fresh slots as-is
+            return 0
+        }
+        es_act = es_hdr[4]
+        ubyte s
+        uword nb                                ; slot s's name buffer base (hoisted - prog8 has no block scope)
+        for s in 0 to ES_NDOCS - 1 {
+            nb = &es_names + (s as uword) * ES_NAMEW
+            @(nb) = 0                           ; default: empty slot
+            es_row[s] = 0
+            es_col[s] = 0
+            if diskio.f_read(&es_hdr, 1) != 1
+                break                           ; truncated -> stop; remaining slots stay empty
+            ubyte nl = es_hdr[0]
+            if nl == 0
+                continue
+            if nl > ES_NAMEW - 1
+                nl = ES_NAMEW - 1
+            if diskio.f_read(nb, nl as uword) != nl
+                break
+            @(nb + nl) = 0
+            if diskio.f_read(&es_hdr, 3) != 3
+                break
+            es_row[s] = (es_hdr[0] as uword) | ((es_hdr[1] as uword) << 8)
+            es_col[s] = es_hdr[2]
+        }
+        diskio.f_close()                        ; done reading - do NOT delete (.EDIT.SESSION persists)
+
+        for s in 0 to ES_NDOCS - 1 {
+            nb = &es_names + (s as uword) * ES_NAMEW
+            if @(nb) == 0
+                continue                        ; empty slot -> keep the blank doc init_doc_slots made
+            esop1(OP_LOAD_CTX, s)               ; point storage at slot s (its context is blank)
+            uword fnp = esp(P_FILENAME)
+            ubyte i = 0
+            while @(nb + i) != 0 {
+                @(fnp + i) = @(nb + i)          ; name -> main's filename
+                i++
+            }
+            @(fnp + i) = 0
+            if esopr(OP_LOAD_FILE) == 0 {       ; moved/deleted since -> keep the slot blank
+                esop0(OP_BLANK)
+                esop1(OP_SAVE_CTX, s)
+                continue
+            }
+            esop0(OP_SYNTAX)                    ; colour + gutter by extension (before UNDO_INIT's gutter refit)
+            esop0(OP_UNDO_INIT)                 ; the reload reset the arena - drop the stale undo rings
+            uword lc = peekw(esp(P_LINECOUNT))
+            uword row = es_row[s]
+            if row >= lc                        ; the file may have shrunk since we saved
+                row = lc - 1
+            pokew(esp(P_CUR_ROW), row)
+            @(esp(P_CUR_COL)) = es_col[s]
+            pokew(esp(P_TOP_LINE), 0)           ; pull the cursor onto screen
+            uword trows = @(esp(P_TEXTROWS)) as uword
+            if row >= trows
+                pokew(esp(P_TOP_LINE), row - trows + 1)
+            @(esp(P_SELA)) = 0                  ; a selection across a reload refers to a stale document
+            @(esp(P_SELC)) = 0
+            @(esp(P_DIRTY)) = 0
+            @(esp(P_MOD)) = 0
+            esop1(OP_SAVE_CTX, s)
+        }
+        if es_act >= ES_NDOCS
+            es_act = 0
+        @(esp(P_ACT)) = es_act                  ; restore which slot was active...
+        esop1(OP_ACTIVATE, es_act)              ; ...and bring it up (context + editbuf)
+        return 1
     }
 }

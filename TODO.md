@@ -60,6 +60,54 @@
   added in v0.9.211. `ed_doc_jump` does not touch the selection today, matching plain PgUp/PgDn.
   Shift+Home / Shift+End (keycodes 147 / 132) already extend on the line, so the pattern exists; the
   open question is whether the X16 keymap delivers a distinguishable Ctrl+Shift+PgUp at all.
+- **F12 on `#INCLUDE` jumps to the included file** — when the cursor is on an `#INCLUDE` line, F12
+  follows it: if the referenced file is already open in one of the A/B/C slots, switch to that slot;
+  otherwise open it (or drop into File > View if no slot is free / it isn't a source we want to edit).
+  Parse the filename off the `#INCLUDE` directive on the current line, resolve it relative to the
+  current document's directory, then reuse act_window_goto / the picker's open path.
+- **Thin font like `inspector.prg`** — switch EDIT's display to the narrower/thin character set that
+  `inspector.prg` uses (look at how it installs its charset) so more fits on screen / it reads cleaner.
+  Check whether it is a full 8x8 charset upload to VRAM and how it coexists with our lowercase lock
+  (sys.disable_caseswitch) and the PETSCII box-draw glyphs the UI relies on.
+- **Batch BASLOAD build tool (LOADBATCH.PRG)** — a small utility that build-runs a whole project of
+  BASLOAD sources from one plain-text script. The script is one `BASLOAD"NAME.BAS"` per line, e.g.:
+
+  ```text
+  BASLOAD"BBSINIT.BAS"
+  BASLOAD"LOGIN.BAS"
+  BASLOAD"SYSOP.BAS"
+  BASLOAD"PWMAINT.BAS"
+  BASLOAD"BBSMSG.BAS"
+  ```
+
+  Because each source has `#SAVEAS`, every BASLOAD writes its own PRG — the script needs no SAVE lines.
+  The mechanism: BLOAD the script text to $A000, zero-terminate it at the load end (the
+  `PEEK($30D)+PEEK($30E)*256` end-of-load pointer), then `EXEC $A000,10` to march through every line. A
+  minimal hardcoded 3-line loader works (BLOAD the fixed script name, POKE the terminator, EXEC). Ship
+  it instead as a prompt-driven **LOADBATCH.PRG** that asks for the script name:
+
+  ```basic
+  10 XR = $030D
+  20 YR = $030E
+  30 CLS:PRINT
+  40 PRINT " ENTER BATCH FILE NAME -->";
+  50 LINPUT F$
+  60 BLOAD F$,8,10,$A000
+  70 POKE PEEK(XR)+(256*PEEK(YR)),0
+  80 EXEC $A000,10
+  ```
+
+  Decide: build it as a shipped .PRG (like prg2basload.prg) and/or expose it from EDIT's Dev menu; and
+  whether EDIT can generate the BUILDALL.TXT script from the open documents / a project's .BAS files.
+- **User-saved per-folder session file (Dev menu)** — a Dev-menu action that writes a session-like file
+  recording the currently open documents, one such file PER FOLDER (a project's own session). On EDIT
+  startup, look for it and, if found, auto-load its files. Lookup precedence: a session file in the
+  ROOT wins; otherwise use one found in the CURRENT directory. This is DISTINCT from the automatic
+  `ed.run` 3-doc restore ([[edit-session-restore]]) — that one is implicit/global and about resuming
+  the last edit; this is an explicit, user-created, project-scoped "open this set of files" list.
+  Decide: its own filename/format vs. reusing the ed.run layout; how it interacts with (or overrides)
+  ed.run restore at startup; and whether "root" means the fsroot we launched in (`STARTDIR_ADDR`) or a
+  drive root.
 
 ## Done
 

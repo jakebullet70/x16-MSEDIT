@@ -42,7 +42,7 @@ main {
     ; KEEP THIS BLOCK FREE OF INITIALIZED VARIABLES (the %jmptable gotcha): a module-level initialized
     ; var is emitted BEFORE the code and would shove the jump table off its fixed offsets. Inline
     ; literals inside subs are fine.
-    %jmptable ( main.pick, main.picker_setup )
+    %jmptable ( main.pick, main.picker_setup, main.del_sym )
 
     const ubyte SPACE_SC = sc:' '
     const ubyte SC_TL = sc:'┌'
@@ -65,6 +65,8 @@ main {
     bool  hide_dirs                     ; footer toggles (BSS; reset at the top of each pick() call).
     bool  basl_only                     ; hide_dirs = skip sub-dirs; basl_only = only BASLOAD source files
     bool  basl_avail                    ; caller's Dev-menu-shown flag: hide the Basl filter when Dev is off
+    ubyte[64] symname                   ; del_sym: the current *.SYM victim, copied out of the listing
+                                        ; before lf_end_list, then handed to diskio.delete
 
     sub start() {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
@@ -276,6 +278,87 @@ main {
                 }
             }
         }
+    }
+
+    ; ------------------------------------------------------------------ Delete-all-SYM (Dev menu)
+
+    sub del_sym(ubyte theme_id @R0) -> ubyte {
+        ; Dev menu > Delete all SYM files. The WHOLE feature runs in-bank - scan, delete and report all
+        ; paint on the status row here - so main keeps only a thin caller (the cheapest low-RAM overlay
+        ; pattern). By request there is NO confirm: selecting the item deletes straight away. Enumerate-
+        ; then-delete ONE file per pass: find the first *.SYM, close the listing, delete it, rescan.
+        ; diskio won't delete during an open listing (the picker's own 'd' closes first too), and a
+        ; fresh scan each pass stays correct as files vanish. The 255 cap guards a silent-fail delete
+        ; from looping forever. Returns the count deleted.
+        theme.apply(theme_id)
+        SCR_W = txt.width()
+        SCR_H = txt.height()
+        ubyte srow = SCR_H - 1
+
+        ubyte count = 0
+        repeat {
+            bool found = false
+            if diskio.lf_start_list("*") {
+                while diskio.lf_next_entry() {
+                    if diskio.list_filetype == "dir"
+                        continue
+                    if ends_ci(&diskio.list_filename, ".sym") {
+                        ubyte i = 0
+                        while diskio.list_filename[i] != 0 and i < len(symname) - 1 {
+                            symname[i] = diskio.list_filename[i]
+                            i++
+                        }
+                        symname[i] = 0
+                        found = true
+                        break                       ; close the listing before deleting
+                    }
+                }
+                diskio.lf_end_list()
+            }
+            if not found
+                break
+            diskio.delete(&symname)
+            void diskio.status()                    ; clear the channel (LED / stale error)
+            count++
+            if count == 255
+                break
+        }
+
+        report_del(srow, count)
+        sys.wait(90)                                ; hold the result ~1.5s before main restores the footer
+        return count
+    }
+
+    sub report_del(ubyte row, ubyte count) {
+        ubyte c
+        for c in 0 to SCR_W - 1
+            txt.setchr(c, row, SPACE_SC)
+        if count == 0 {
+            put_str_at(1, row, "No .SYM files found")
+        } else {
+            ubyte col = put_num(1, row, count)
+            if count == 1
+                put_str_at(col, row, " .SYM file deleted")
+            else
+                put_str_at(col, row, " .SYM files deleted")
+        }
+        set_color_run(0, SCR_W - 1, row, theme.CB_BAR)
+    }
+
+    sub put_num(ubyte col, ubyte row, ubyte n) -> ubyte {
+        ; print n (0..255) left-aligned as decimal at (col,row); return the column past the last digit
+        ubyte h = n / 100
+        ubyte t = n / 10 % 10
+        if h != 0 {
+            txt.setchr(col, row, txt.petscii2scr('0' + h))
+            col++
+        }
+        if h != 0 or t != 0 {
+            txt.setchr(col, row, txt.petscii2scr('0' + t))
+            col++
+        }
+        txt.setchr(col, row, txt.petscii2scr('0' + n % 10))
+        return col + 1
     }
 
     ; ------------------------------------------------------------------ record store (in RECORDS_BANK)
