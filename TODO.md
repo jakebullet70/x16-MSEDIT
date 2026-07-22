@@ -44,6 +44,21 @@
     New cold prose goes to menus.ovl, NOT misc.ovl (misc is full).
   - Do NOT alias `savebuf` onto `workbuf` — act_make_backup (edit.p8:2429) copies `bakname`
     (which *is* `workbuf`) into `savebuf`, so those two are live at the same instant.
+- **BUG: `ed.run` session file is written to the CURRENT dir, not the fsroot root** (filed 2026-07-22).
+  `runstate = "ed.run"` (edit.p8:90) is a BARE relative name; ses_svc opens it with
+  `diskio.f_open_w(runstate)` (edit.p8:3110, OP_OPEN_W) relative to the cwd. But the Open/View picker
+  chdir's into whatever folder the user browses (picker.p8:261; edit.p8:2627 "the picker may have
+  chdir'd", edit.p8:3293 "View can chdir too"), so a session save / BASLOAD / EDCFG hand-off that runs
+  while the cwd is a subfolder writes `ed.run` THERE, not at the fsroot root. On reload the restore
+  looks for it relative to the launch cwd (root), so a stray `ed.run` is orphaned in the subfolder and
+  the session silently fails to restore. Contrast: the launcher is deliberately ABSOLUTE
+  (`theme.ED_NAME = "/ed"`, theme.p8:157) and EDCFG explicitly `chdir("/")` before touching ed.run
+  (edcfg.p8:170) — ed.run should follow the same "always at root" rule but doesn't.
+  FIX OPTIONS: (a) `chdir("/")` around the ses_svc open/write/delete and restore the cwd after (mirrors
+  EDCFG's cfg_write dance) — safest; (b) make `runstate` absolute "/ed.run" — BUT the host FS won't
+  overwrite via an absolute path / @: (see [[edit-diskio-overwrite]]), so a bare-name-in-root write is
+  still needed, i.e. (a) is the real fix. Repro: Open a file from a subfolder via the picker, then do an
+  F5/EDCFG round-trip, and check where ed.run lands.
 - **PRG2BASLOAD: auto-quote DATA items containing spaces** — BASLOAD lexes DATA content as identifiers,
   so `DATA HELLO WORLD` becomes `DATA HELLOWORLD` (see docs/basload-findings.md). The converter emits a
   `REM TODO` and leaves it. Better: split the DATA content on commas and wrap any unquoted item that
