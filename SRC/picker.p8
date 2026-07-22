@@ -42,7 +42,7 @@ main {
     ; KEEP THIS BLOCK FREE OF INITIALIZED VARIABLES (the %jmptable gotcha): a module-level initialized
     ; var is emitted BEFORE the code and would shove the jump table off its fixed offsets. Inline
     ; literals inside subs are fine.
-    %jmptable ( main.pick, main.picker_setup, main.del_sym )
+    %jmptable ( main.pick, main.picker_setup, main.del_sym, main.mnu_rem )
 
     const ubyte SPACE_SC = sc:' '
     const ubyte SC_TL = sc:'┌'
@@ -67,6 +67,94 @@ main {
     bool  basl_avail                    ; caller's Dev-menu-shown flag: hide the Basl filter when Dev is off
     ubyte[64] symname                   ; del_sym: the current *.SYM victim, copied out of the listing
                                         ; before lf_end_list, then handed to diskio.delete
+
+    const ubyte REM_MAXLEN = 250           ; mirrors edoc.MAX_LEN (max chars per line)
+
+    sub mnu_rem(ubyte op @R0, ubyte blen @R1, ubyte extra @R2, ubyte iso @R3, uword buf @R4, uword workp @R5) -> ubyte {
+        ; REM-comment builders, hosted here (picker.ovl had the room; menus.ovl was full) to reclaim main's
+        ; low RAM. buf/workp point at main's low-RAM tmpbuf/workbuf, which stay mapped while this overlay
+        ; runs, so direct @() access is correct. op 0 = rem_start (extra/workp unused); op 1 =
+        ; build_commented (extra = cmt_indent); op 2 = build_uncommented (extra = rs). iso picks the fold
+        ; range (op 0) and the REM prefix encoding (op 1).
+        when op {
+            0 -> return rem_start_o(buf, blen, iso)
+            1 -> return build_commented_o(buf, blen, extra, iso, workp)
+            else -> return build_uncommented_o(buf, blen, extra, workp)
+        }
+    }
+
+    sub rem_fold(ubyte b, ubyte iso) -> ubyte {
+        ; case-fold a letter down to $41-$5A so R/E/M match either case (ISO adds the $61-$7A range)
+        if iso != 0 and b >= $61 and b <= $7a
+            return b - $20
+        if b >= $c1 and b <= $da
+            return b - $80
+        return b
+    }
+
+    sub rem_start_o(uword buf, ubyte blen, ubyte iso) -> ubyte {
+        ; index where a whole-token REM starts (after leading spaces), else 255
+        ubyte i = 0
+        while i < blen and @(buf + i) == $20
+            i++
+        if i + 3 > blen
+            return 255
+        if rem_fold(@(buf + i), iso) == $52 and rem_fold(@(buf + i + 1), iso) == $45 and rem_fold(@(buf + i + 2), iso) == $4d {
+            if i + 3 == blen or @(buf + i + 3) == $20
+                return i
+        }
+        return 255
+    }
+
+    sub build_commented_o(uword buf, ubyte blen, ubyte cmt_indent, ubyte iso, uword workp) -> ubyte {
+        ; workp = buf with "REM " inserted at column 0 (or after the leading indent when cmt_indent)
+        ubyte ins = 0
+        if cmt_indent != 0
+            while ins < blen and @(buf + ins) == $20
+                ins++
+        ubyte o = 0
+        ubyte i = 0
+        while i < ins and o < REM_MAXLEN {         ; copy the leading indent
+            @(workp + o) = @(buf + i)
+            o++
+            i++
+        }
+        ; "REM " prefix: ASCII in ISO, shifted-PETSCII otherwise (space $20 is common to both)
+        if o < REM_MAXLEN { if iso != 0 { @(workp + o) = $52 } else { @(workp + o) = $d2 }  o++ }
+        if o < REM_MAXLEN { if iso != 0 { @(workp + o) = $45 } else { @(workp + o) = $c5 }  o++ }
+        if o < REM_MAXLEN { if iso != 0 { @(workp + o) = $4d } else { @(workp + o) = $cd }  o++ }
+        if o < REM_MAXLEN { @(workp + o) = $20  o++ }
+        while i < blen and o < REM_MAXLEN {        ; copy the rest of the line
+            @(workp + o) = @(buf + i)
+            o++
+            i++
+        }
+        return o
+    }
+
+    sub build_uncommented_o(uword buf, ubyte blen, ubyte rs, uword workp) -> ubyte {
+        ; workp = buf with the REM (3 chars at rs) + up to 3 following spaces removed
+        ubyte cut = rs + 3
+        ubyte sp = 0
+        while sp < 3 and cut < blen and @(buf + cut) == $20 {
+            cut++
+            sp++
+        }
+        ubyte o = 0
+        ubyte i = 0
+        while i < rs {                             ; keep any indent before REM
+            @(workp + o) = @(buf + i)
+            o++
+            i++
+        }
+        i = cut
+        while i < blen {                           ; keep everything after the stripped REM
+            @(workp + o) = @(buf + i)
+            o++
+            i++
+        }
+        return o
+    }
 
     sub start() {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.

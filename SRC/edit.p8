@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 369         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 372         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -464,6 +464,10 @@ main {
     ; -> item index; which 1 = item index -> accelerator column offset). Hosted beside the labels so the
     ; ~330 B of when-tables leave main's low RAM. showdev = theme.show_dev (the overlay has no theme).
     extsub @bank 13 $A012 = mnu_accel(ubyte which @R0, ubyte active @R1, ubyte arg @R2, ubyte showdev @R3) -> ubyte @A
+    ; mnu_rem (picker.ovl $A00C, its 4th jmptable entry - menus.ovl was full): the REM-comment builders
+    ; (op 0 = rem_start, 1 = build_commented with extra=cmt_indent, 2 = build_uncommented with extra=rs).
+    ; buf/workp are &tmpbuf/&workbuf (low RAM, mapped for the overlay); iso = theme.ISO_MODE (fold + prefix).
+    extsub @bank 8 $A00C = mnu_rem(ubyte op @R0, ubyte blen @R1, ubyte extra @R2, ubyte iso @R3, uword buf @R4, uword workp @R5) -> ubyte @A
     bool menus_ok                       ; menus.ovl loaded OK -> dropdown item labels are available
     ubyte[9] menuctx                    ; packed state handed to mnu_bar (see draw_menubar)
     str  menusovl = "menus.ovl"
@@ -4056,73 +4060,9 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; "Comment at" setting, theme.cmt_indent.
     ubyte[4] cmt_prefix = [$d2, $c5, $cd, $20]               ; "REM " in uppercase PETSCII
 
-    sub rem_start(uword buf, ubyte blen) -> ubyte {
-        ; index where a REM comment starts (after leading spaces), or 255 if the line isn't a comment.
-        ; REM must be a whole token (end-of-line or a space next) so "REMARK" isn't mistaken for one.
-        ubyte i = 0
-        while i < blen and @(buf + i) == ' '
-            i++
-        if i + 3 > blen
-            return 255
-        ; compare against the FOLDED (uppercase $41-$5A) codes for R,E,M directly - a char literal like
-        ; 'R' encodes to shifted PETSCII ($D2), which cfold would never produce, so match on $52/$45/$4D.
-        if fold(@(buf + i)) == $52 and fold(@(buf + i + 1)) == $45 and fold(@(buf + i + 2)) == $4d {
-            if i + 3 == blen or @(buf + i + 3) == ' '
-                return i
-        }
-        return 255
-    }
-
-    sub build_commented(uword buf, ubyte blen) -> ubyte {
-        ; workbuf = buf with "REM " inserted at column 0, or after the leading spaces if cmt_indent
-        ubyte ins = 0
-        if theme.cmt_indent != 0
-            while ins < blen and @(buf + ins) == ' '
-                ins++
-        ubyte o = 0
-        ubyte i = 0
-        while i < ins and o < edoc.MAX_LEN {            ; copy the leading indent (indent mode)
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        ubyte j = 0
-        while j < 4 and o < edoc.MAX_LEN {              ; insert the REM prefix
-            workbuf[o] = cmt_prefix[j]
-            o++
-            j++
-        }
-        while i < blen and o < edoc.MAX_LEN {           ; copy the rest of the line
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        return o
-    }
-
-    sub build_uncommented(uword buf, ubyte blen, ubyte rs) -> ubyte {
-        ; workbuf = buf with the REM (3 chars at rs) + up to 3 following spaces removed
-        ubyte cut = rs + 3
-        ubyte sp = 0
-        while sp < 3 and cut < blen and @(buf + cut) == ' ' {
-            cut++
-            sp++
-        }
-        ubyte o = 0
-        ubyte i = 0
-        while i < rs {                                  ; keep any indent before REM
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        i = cut
-        while i < blen {                                ; keep everything after the stripped REM
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        return o
-    }
+    ; rem_start / build_commented / build_uncommented moved to menus.ovl's mnu_rem ($A015) to reclaim
+    ; ~200 B of low RAM (the overlay writes main's workbuf directly - low RAM stays mapped). comment_apply
+    ; calls mnu_rem with buf=&tmpbuf, workp=&workbuf, iso=theme.ISO_MODE.
 
     sub comment_apply(ubyte mode) {
         ; mode 0 = toggle the current line; 1 = comment the block; 2 = uncomment the block. One undo
@@ -4147,7 +4087,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         bool do_add = mode != 2                         ; comment adds REM; uncomment strips it
         if mode == 0 {
             ubyte cl = edoc.load(cur_row, &tmpbuf)
-            do_add = rem_start(&tmpbuf, cl) == 255      ; toggle: add only if the line isn't a comment
+            do_add = mnu_rem(0, cl, 0, theme.ISO_MODE as ubyte, &tmpbuf, 0) == 255   ; toggle: add only if not a comment
         }
         ubyte llen
         ubyte newlen
@@ -4166,14 +4106,14 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 ; the end - and Uncomment could not put them back, since it only removes the prefix.
                 ; Leaving the line untouched is recoverable; truncating it is not.
                 if (llen as uword) + 4 <= edoc.MAX_LEN {
-                    newlen = build_commented(&tmpbuf, llen)
+                    newlen = mnu_rem(1, llen, theme.cmt_indent, theme.ISO_MODE as ubyte, &tmpbuf, &workbuf)
                     urec_replace(r, &tmpbuf, llen)
                     void edoc.commit(r, &workbuf, newlen)
                 }
             } else {
-                rs = rem_start(&tmpbuf, llen)
+                rs = mnu_rem(0, llen, 0, theme.ISO_MODE as ubyte, &tmpbuf, 0)
                 if rs != 255 {
-                    newlen = build_uncommented(&tmpbuf, llen, rs)
+                    newlen = mnu_rem(2, llen, rs, theme.ISO_MODE as ubyte, &tmpbuf, &workbuf)
                     urec_replace(r, &tmpbuf, llen)
                     void edoc.commit(r, &workbuf, newlen)
                 }
