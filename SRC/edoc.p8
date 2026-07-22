@@ -39,7 +39,8 @@ edoc {
 
     uword iobuf = memory("iobuf", 256, 0)   ; disk read chunk buffer (main RAM). 256 = the load_file
                                             ; read size below; was 512 (over-allocated - only 256 used).
-    ubyte[256] linebuf                       ; scratch: assembling / reading one line
+    ubyte[252] linebuf                       ; scratch: assembling / reading one line (<= MAX_LEN 250; load
+                                             ; force-breaks longer, so 252 = 250 + a 2-byte boundary margin)
 
     ; result of the last store(): far pointer to the new record
     ubyte r_bank

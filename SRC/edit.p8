@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 337         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 339         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -64,8 +64,12 @@ main {
     const ubyte SC_VR = sc:'├'          ; left tee  - divider junction on the box's left edge
     const ubyte SC_VL = sc:'┤'          ; right tee - divider junction on the box's right edge
 
-    ; runtime screen geometry (queried after the mode switch)
-    ubyte SCR_W, SCR_H, TEXT_ROWS, STATUS_ROW
+    ; screen geometry. start() forces 80x30 (set_screen_mode $01; 40-col is unsupported), so these are
+    ; INVARIANT - consts, not runtime vars, which folds ~60 use-sites to immediates and frees 3 BSS bytes.
+    const ubyte SCR_W = 80
+    const ubyte SCR_H = 30
+    const ubyte STATUS_ROW = 29         ; = SCR_H - 1
+    ubyte TEXT_ROWS                     ; = SCR_H - 2; stays a VAR (SES_PTRS holds &TEXT_ROWS)
     ubyte md_boxbot                     ; bottom screen row of the last-drawn menu dropdown, so
                                         ; closing/switching a menu can repaint just that band
     ubyte saved_mode                    ; screen mode to restore on exit
@@ -75,7 +79,7 @@ main {
     ; document/cursor/view state
     str filename = "?" * 40
     str fnbuf    = "?" * 42             ; input scratch for prompts
-    str savebuf  = "?" * 44             ; "@:" + filename for overwrite
+    str savebuf  = "?" * 42             ; "@:" + filename for overwrite ("@:" + 40-char filename + NUL = 43)
     ; bakname (was a str*44 module buffer here) now aliases workbuf INSIDE act_make_backup - that sub
     ; never runs a Replace, so the 256B Replace scratch is dead there. Saves 44 B of low RAM.
     str untitled = "untitled"
@@ -181,9 +185,9 @@ main {
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ; fksnap (the 99-byte snapshot of all 9 KERNAL fkey macros, restored verbatim on exit) lives at
     ; FKSNAP_ADDR in CLIP_BANK - see the note on that constant.
-    ubyte[256] editbuf                  ; the line under the cursor (raw PETSCII)
-    ubyte[256] tmpbuf                   ; scratch for rendering / line joins
-    ubyte[256] hlcol                    ; per-column syntax colour for the row being drawn
+    ubyte[252] editbuf                  ; the line under the cursor (raw PETSCII). 252 = edoc.MAX_LEN(250)
+    ubyte[252] tmpbuf                   ; + a 2-byte boundary margin; lines can never exceed 250 (ed_insert
+    ubyte[252] hlcol                    ; guards, edoc.load force-breaks). tmpbuf=line joins, hlcol=syntax cols.
     uword g_wbuf                        ; scratch: pointer to the line buffer last resolved for wrap math
     bool hl_on = false                  ; syntax colouring: default OFF, auto-on by extension on open
                                         ; (has_basic_ext / .md); toggle in the Edit menu
@@ -247,8 +251,8 @@ main {
     ubyte s_col, e_col
 
     ; search / replace
-    str find_term = "?" * 40            ; current search term
-    str repl_term = "?" * 40            ; current replacement
+    str find_term = "?" * 38            ; current search term (prompt maxlen 38; sel_to_find caps at 38)
+    str repl_term = "?" * 38            ; current replacement (prompt maxlen 38)
     ; Scratch for building a replaced line - aliased onto edoc.linebuf for 256 bytes of low RAM.
     ; edoc.linebuf is live ONLY inside edoc.load_file / edoc.save_file, and no workbuf holder spans
     ; either call: act_make_backup builds bakname here but copies it into savebuf BEFORE save_file
@@ -534,11 +538,8 @@ main {
         ; 80-column only: force 80x30 regardless of the booted mode (40-col is NOT supported). The
         ; original mode is captured above (saved_mode) and put back on exit, so a machine booted in
         ; 40-col still returns to it. The UI lays itself out from SCR_W/SCR_H below.
-        cx16.set_screen_mode($01)               ; 80x30
-        SCR_W = txt.width()
-        SCR_H = txt.height()
-        TEXT_ROWS  = SCR_H - 2
-        STATUS_ROW = SCR_H - 1
+        cx16.set_screen_mode($01)               ; 80x30 (SCR_W/SCR_H/STATUS_ROW are consts to match)
+        TEXT_ROWS = SCR_H - 2                    ; the one geometry value kept as a var (SES_PTRS &TEXT_ROWS)
         txt.lowercase()
         sys.disable_caseswitch()        ; lock the charset in lowercase - Shift+Commodore can't
                                         ; flip the whole display to uppercase mid-edit (as in XFMGR2)
@@ -563,7 +564,7 @@ main {
                                         ; paths are relative to it and it does no chdir of its own.
         if not theme.show_dev {
             menu_col[4] = menu_col[3]                     ; Dev hidden -> Window slides into Dev's slot, and
-            menu_col[5] = menu_col[4] + menu_len[4] + 2   ; Help follows Window (2-space gap). show_dev
+            menu_col[5] = menu_col[4] + 6 + 2   ; Help follows Window (width 6 + 2-space gap). show_dev
         }                                                 ; is fixed for the session (only EDCFG changes it),
                                                           ; so this one-time overwrite is safe; Dev(3) is then
                                                           ; never drawn/opened.
@@ -2786,7 +2787,7 @@ main {
         ; for a backup - a visible full-screen flash. Each exit restores the footer with draw_status().
         g_redrawn = true
         if filename[0] == 0 {
-            flash_status("Open or save a file first")
+            flash_status(msg(MSG_OPENFIRST))    ; same string as line below - reuse the banked msg pool
             bar_fill(STATUS_ROW, theme.CB_BAR)
             put_str_at(1, STATUS_ROW, msg(MSG_OPENFIRST))
             void wait_key()
@@ -3876,13 +3877,6 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; "Comment at" setting, theme.cmt_indent.
     ubyte[4] cmt_prefix = [$d2, $c5, $cd, $20]               ; "REM " in uppercase PETSCII
 
-    sub cfold(ubyte b) -> ubyte {
-        ; fold shifted-PETSCII letters ($C1-$DA) down onto $41-$5A so REM matches in any case
-        if b >= $c1 and b <= $da
-            return b - $80
-        return b
-    }
-
     sub rem_start(uword buf, ubyte blen) -> ubyte {
         ; index where a REM comment starts (after leading spaces), or 255 if the line isn't a comment.
         ; REM must be a whole token (end-of-line or a space next) so "REMARK" isn't mistaken for one.
@@ -3893,7 +3887,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             return 255
         ; compare against the FOLDED (uppercase $41-$5A) codes for R,E,M directly - a char literal like
         ; 'R' encodes to shifted PETSCII ($D2), which cfold would never produce, so match on $52/$45/$4D.
-        if cfold(@(buf + i)) == $52 and cfold(@(buf + i + 1)) == $45 and cfold(@(buf + i + 2)) == $4d {
+        if fold(@(buf + i)) == $52 and fold(@(buf + i + 1)) == $45 and fold(@(buf + i + 2)) == $4d {
             if i + 3 == blen or @(buf + i + 3) == ' '
                 return i
         }
