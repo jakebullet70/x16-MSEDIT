@@ -77,6 +77,19 @@ main {
                 }
             }
             return 255
+        } else if which == 2 {
+            ; top-MENU-BAR accelerator: a base letter -> menu index (F/E/S/D/W/H), else 255. Dev (3) only
+            ; when shown. arg is the letter from alt_letter[] (PETSCII lowercase, same as the labels here).
+            when arg {
+                'f' -> return 0
+                'e' -> return 1
+                's' -> return 2
+                'd' -> { if showdev != 0  return 3
+                         return 255 }
+                'w' -> return 4
+                'h' -> return 5
+            }
+            return 255
         } else {
             when active {
                 0 -> when arg { 2 -> return 3   4 -> return 5   5 -> return 2   7 -> return 1   8 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Close All 'l'@1, Exit 'x'@1

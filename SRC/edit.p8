@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 359         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 369         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -180,7 +180,9 @@ main {
         FKSNAP_ADDR, &find_term, &repl_term, STARTDIR_ADDR, &ww_on, &clip_line, &cur_col ]
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     const ubyte BERR_MAX = 80           ; longest BASLOAD error line kept - one full 80-column row.
-    ubyte[BERR_MAX] berr                ; the scraped BASLOAD error line, screen codes
+    const uword berr = $AB00            ; the scraped BASLOAD error line (screen codes) lives in CLIP_BANK
+                                        ; at $AB00 (above STARTDIR $AA70), NOT low RAM - saves 80 B. Only
+                                        ; berr_len stays low; the two access loops wrap push/pop CLIP_BANK.
     ubyte berr_len = 0                  ; length of berr (0 = no error captured)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ; fksnap (the 99-byte snapshot of all 9 KERNAL fkey macros, restored verbatim on exit) lives at
@@ -482,22 +484,8 @@ main {
         'k','i','t', 0 ,'g', 0 ,'m', 0 , 0 ,'n','q','d','z','s','p',
         'a','e','r','w','h','j','l','y','u','o', 0 ,'f','c','x','v','b' ]
 
-    sub menu_for_letter(ubyte letter) -> ubyte {
-        ; top-menu accelerator: F/E/S/D/W/H -> menu index, else 255
-        when letter {
-            'f' -> return 0
-            'e' -> return 1
-            's' -> return 2
-            'd' -> {                        ; Alt+D opens Dev only when it is shown
-                if theme.show_dev
-                    return 3
-                return 255
-            }
-            'w' -> return 4
-            'h' -> return 5
-        }
-        return 255
-    }
+    ; menu_for_letter (top-menu-bar accelerator: F/E/S/D/W/H -> menu index) moved to menus.ovl's
+    ; mnu_accel(which=2) to reclaim low RAM. Call it as mnu_accel(2, 0, letter, theme.show_dev as ubyte).
 
     ; item_accel + accel_off (the dropdown accelerator tables) moved to menus.ovl's mnu_accel ($A012)
     ; to reclaim ~330 B of low RAM - they belong beside the labels there. Call sites use mnu_accel
@@ -643,6 +631,7 @@ main {
         if session_on and not reloaded                  ; overlay the saved files+cursors onto the fresh slots
             edsess_rw(2)
         cursor_sprite_setup()                   ; the insert-mode underline cursor sprite (theme+mode set)
+        font_setup()                            ; capture the { } \ | ~ glyphs from the ROM ISO font (once)
         apply_charset_mode()                    ; apply the active doc's PETSCII/ISO mode before the first paint
         full_redraw()
         ; One status-row message, most specific first: a BASLOAD error names a line to fix, a rejected
@@ -1155,7 +1144,7 @@ main {
             ubyte col = theme.CB_BODY
             if c < nchar {
                 if theme.ISO_MODE
-                    ch = @(sp)                  ; ISO: stored byte is the tile index directly
+                    ch = iso_scr(@(sp))         ; ISO: ASCII byte -> shared-font screencode (chrome-safe)
                 else
                     ch = txt.petscii2scr(@(sp))
                 if hl_on
@@ -2477,21 +2466,16 @@ main {
     }
 
     sub apply_charset_mode() {
-        ; Reconfigure the KERNAL charset + keyboard for the ACTIVE doc's mode (per-doc theme.ISO_MODE,
-        ; loaded from the context on every doc switch). This MIRRORS the ROM X16 Edit cmd_encoding_set:
-        ; store the KERNAL_MODE number to $0372, load that charset, and for ISO ALSO set bit $40 + call
-        ; EXTAPI. ISO (mode 1): $0372 bit $40 + EXTAPI ($feab, A=$05 X=$9f) so the keyboard emits ASCII
-        ; ({} \ | ~). PETSCII (mode 3 = upper/lower): storing the bare mode CLEARS bit $40, which reverts
-        ; the KERNAL keyboard to PETSCII - the ROM's petscii path calls NO EXTAPI (clearing the flag is
-        ; enough; without this clear the keyboard stays stuck in ISO after an ISO->PETSCII switch).
-        ; cmt_prefix ("REM ") follows the mode. Phase 1 uses ROM fonts, so an ISO doc's box-draw chrome is
-        ; garbage until the custom font.
+        ; Per-doc mode switch (per-doc theme.ISO_MODE, loaded on every doc switch). Key idea: the DISPLAY
+        ; always uses the PETSCII upper/lower FONT (charset 3) - its screencode layout renders every piece
+        ; of chrome + UI text, and iso_scr maps an ISO doc's ASCII bytes onto it (incl the { } \ | ~ glyphs
+        ; patched in by font_setup). Only the KEYBOARD decode differs per mode. screen_set_charset MUST be
+        ; called (it sets KERNAL `mode` + reloads the font glyphs; skipping it left the charset/keyboard
+        ; state half-initialized -> wrong chars + lockup). ISO: set $0372 bit $40 + EXTAPI (iso_cursor_char
+        ; $9f) so keys emit ASCII { } \ | ~; PETSCII: clear bit $40 (no EXTAPI, per ROM). cmt_prefix follows.
+        cx16.screen_set_charset(3, 0)      ; PETSCII upper/lower font in BOTH modes (reloads the glyphs)
+        font_xfer(false)                   ; re-stamp the { } \ | ~ glyphs the reload just wiped
         if theme.ISO_MODE {
-            %asm {{
-                lda  #$01
-                sta  $0372
-            }}                                    ; KERNAL_MODE = 1 (ISO)
-            cx16.screen_set_charset(1, 0)
             %asm {{
                 lda  $0372
                 ora  #$40
@@ -2501,20 +2485,99 @@ main {
                 lda  #$05
                 jsr  $feab
             }}
-            cmt_prefix[0] = $52             ; "REM " as ASCII
+            cmt_prefix[0] = $52            ; "REM " as ASCII
             cmt_prefix[1] = $45
             cmt_prefix[2] = $4d
         } else {
             %asm {{
-                lda  #$03
+                lda  $0372
+                and  #$bf
                 sta  $0372
-            }}                                    ; KERNAL_MODE = 3 (pet upper/lower); clears ISO bit $40
-            cx16.screen_set_charset(3, 0)
-            cmt_prefix[0] = $d2             ; "REM " in shifted PETSCII
+            }}
+            cmt_prefix[0] = $d2            ; "REM " in shifted PETSCII
             cmt_prefix[1] = $c5
             cmt_prefix[2] = $cd
         }
-        sys.disable_caseswitch()            ; screen_set_charset can re-enable the case switch - re-lock
+        sys.disable_caseswitch()           ; keep the display charset locked (Shift+C= can't flip it)
+    }
+
+    ; Screencode slots for the five ISO-only glyphs in the shared PETSCII-superset font. These are
+    ; free graphics slots (NOT used by the box-draw chrome: SC_H $40, SC_V $5d, SC_VR $6b, SC_BL $6d,
+    ; SC_TR $6e, SC_TL $70, SC_VL $73, SC_BR $7d, SC_UP $1e) and never produced by petscii2scr for any
+    ; normal document byte, so font_setup can patch the { } \ | ~ glyphs there without disturbing chrome.
+    const ubyte SC_LBRACE = $5b            ; {
+    const ubyte SC_PIPE   = $5c            ; |
+    const ubyte SC_BSLASH = $1c            ; backslash
+    const ubyte SC_TILDE  = $5e            ; ~
+    const ubyte SC_RBRACE = $5f            ; }  (NOT its natural $5d, which is the box vertical rail)
+
+    sub iso_scr(ubyte b) -> ubyte {
+        ; ISO document display: map a stored ASCII byte to a screencode in the shared PETSCII-superset
+        ; font. Letters fold to the SAME slots a PETSCII doc uses (via a2p-then-petscii2scr), so ordinary
+        ; text renders identically in both modes; the five ISO-only chars { } \ | ~ (no PETSCII code of
+        ; their own) go to the custom glyph slots above. (`_` and backtick are not in the glyph set, so
+        ; they fall through to their PETSCII look - left-arrow / box-edge - a known limit.)
+        when b {
+            $7b -> return SC_LBRACE        ; {
+            $7c -> return SC_PIPE          ; |
+            $7d -> return SC_RBRACE        ; }
+            $7e -> return SC_TILDE         ; ~
+            $5c -> return SC_BSLASH        ; backslash
+        }
+        ubyte p = b
+        if b >= $41 and b <= $5a
+            p = b + $80                    ; ASCII A-Z -> PETSCII $C1-$DA (uppercase glyphs)
+        else if b >= $61 and b <= $7a
+            p = b - $20                    ; ASCII a-z -> PETSCII $41-$5A (lowercase glyphs)
+        return txt.petscii2scr(p)
+    }
+
+    ; --- ISO glyph patch. The shared display font is PETSCII (charset 3); these routines stamp the five
+    ; ISO-only glyphs { } \ | ~ into the free screencode slots iso_scr maps them to, so ISO docs show them.
+    ; The bitmaps are captured ONCE from the ROM ISO font (font_setup) and re-stamped after every
+    ; screen_set_charset(3) reload (font_patch, from apply_charset_mode). The X16 charset lives at VRAM
+    ; $1F000 (the default L1 tilebase, which EDIT never moves); glyph N is 8 bytes at $1F000 + N*8.
+    const uword FONT_VADDR = $f000         ; low 16 bits of the charset VRAM base ($1F000)
+    const ubyte FONT_A16   = $01           ; bit 16 of $1F000
+    ubyte[40] iso_glyphs                    ; 5 captured 8-byte glyphs, order: { } \ | ~
+    ubyte[5]  g_src = [$7b, $7d, $5c, $7c, $7e]                    ; ISO-font source slots
+    ubyte[5]  g_dst = [SC_LBRACE, SC_RBRACE, SC_BSLASH, SC_PIPE, SC_TILDE]   ; display-font dest slots
+
+    sub vera_glyph_addr(ubyte slot) {
+        ; point VERA DATA0 (auto-increment +1) at charset glyph `slot`
+        cx16.VERA_CTRL = 0
+        cx16.VERA_ADDR_L = lsb(FONT_VADDR + (slot as uword) * 8)
+        cx16.VERA_ADDR_M = msb(FONT_VADDR + (slot as uword) * 8)
+        cx16.VERA_ADDR_H = %00010000 | FONT_A16
+    }
+
+    sub font_xfer(bool capture) {
+        ; capture=true : read the 5 ISO glyphs from the (ISO) font VRAM into iso_glyphs.
+        ; capture=false: stamp iso_glyphs into the display font's free slots (the { } \ | ~ patch).
+        ubyte i
+        for i in 0 to 4 {
+            if capture
+                vera_glyph_addr(g_src[i])
+            else
+                vera_glyph_addr(g_dst[i])
+            uword p = &iso_glyphs + (i as uword) * 8
+            ubyte j
+            for j in 0 to 7 {
+                if capture
+                    @(p) = cx16.VERA_DATA0
+                else
+                    cx16.VERA_DATA0 = @(p)
+                p++
+            }
+        }
+    }
+
+    sub font_setup() {
+        ; Capture { } \ | ~ from the ROM ISO font (ASCII-ordered: glyph N = char code N), once at boot.
+        ; Restores the PETSCII display font before returning (apply_charset_mode reloads it anyway).
+        cx16.screen_set_charset(1, 0)          ; ISO font into the charset VRAM
+        font_xfer(true)
+        cx16.screen_set_charset(3, 0)          ; restore the PETSCII display font
     }
 
     sub kbd_decode_petscii() {
@@ -2557,7 +2620,7 @@ main {
             ubyte k = cbm.GETIN2()
             if k != 0 {
                 if k >= 161 and k <= 191 {
-                    ubyte mm = menu_for_letter(alt_letter[k - 161])
+                    ubyte mm = mnu_accel(2, 0, alt_letter[k - 161], theme.show_dev as ubyte)
                     if mm != 255
                         m = mm
                 }
@@ -3255,13 +3318,15 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         if n > BERR_MAX
             n = BERR_MAX
         c = 0
+        cx16.push_rambank(CLIP_BANK)            ; berr is banked; getchr/setchr use VERA (no bank clash)
         while c < n {
             ubyte s = txt.getchr(c, row)
             if s >= 1 and s <= 26
                 s += 64                         ; letter -> lowercase-charset uppercase slot
-            berr[c] = s
+            @(berr + c) = s
             c++
         }
+        cx16.pop_rambank()
         berr_len = n
     }
 
@@ -3318,10 +3383,12 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         if n > SCR_W - 1
             n = SCR_W - 1
         ubyte c = 0
+        cx16.push_rambank(CLIP_BANK)            ; berr is banked (see its declaration)
         while c < n {
-            txt.setchr(1 + c, STATUS_ROW, berr[c])
+            txt.setchr(1 + c, STATUS_ROW, @(berr + c))
             c++
         }
+        cx16.pop_rambank()
     }
 
     ; The About screen lives in misc.ovl (MISC_BANK) - see the extsub block near the top. What is
@@ -4897,7 +4964,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ; before the text-insert path below, which accepts k>=160; other ALT combos are swallowed).
         if not theme.ISO_MODE {
             if k >= 161 and k <= 191 {
-                ubyte m = menu_for_letter(alt_letter[k - 161])
+                ubyte m = mnu_accel(2, 0, alt_letter[k - 161], theme.show_dev as ubyte)
                 if m != 255
                     menu_mode_loop(m)
                 return
