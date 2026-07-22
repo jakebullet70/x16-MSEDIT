@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 374         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 378         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -459,7 +459,7 @@ main {
     extsub @bank 13 $A00C = edsess_op(ubyte op @R0, uword svc @R1, uword ptrs @R2) -> ubyte @A
     ; mnu_mode ($A00F, menus.ovl's 5th entry): draws the footer INS/OVR + CAPS field and returns the column
     ; past it. Hosted in the overlay so its put_str_at calls + string literals don't sit in scarce low RAM.
-    extsub @bank 13 $A00F = mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte @A
+    extsub @bank 13 $A00F = mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3, ubyte iso @R4) -> ubyte @A
     ; mnu_accel ($A012, menus.ovl's 6th entry): the dropdown accelerator tables (which 0 = folded letter
     ; -> item index; which 1 = item index -> accelerator column offset). Hosted beside the labels so the
     ; ~330 B of when-tables leave main's low RAM. showdev = theme.show_dev (the overlay has no theme).
@@ -1741,7 +1741,7 @@ main {
         col = put_uw_at(col, STATUS_ROW, cur_col + 1)
         ; INS/OVR + CAPS field. Drawn by menus.ovl (mnu_mode) to keep its strings/put_str_at out of low
         ; RAM. It returns the column just past the field (variable width - CAPS widens it when caps is on).
-        col = mnu_mode(col, STATUS_ROW, ovr_mode as ubyte, upper_mode as ubyte)
+        col = mnu_mode(col, STATUS_ROW, ovr_mode as ubyte, upper_mode as ubyte, theme.ISO_MODE as ubyte)
         ; (the active-document ABC indicator used to sit here; it lives at the right end of the MENU
         ;  bar now, beside the filename. The col advances that reserved its width are gone with it, so
         ;  the "Total lines" guard below sees the extra 6 columns it freed.)
@@ -1998,7 +1998,7 @@ main {
     sub menu_flags() -> ubyte {
         ; pack the states menus.ovl needs for its dynamic item labels:
         ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers, bit3 = Dev menu shown,
-        ; bit4 = a .EDIT.SESSION exists (Dev item shows Delete vs Create).
+        ; bit4 = a .EDIT.SESSION exists (Dev item shows Delete vs Create), bit5 = active doc is ISO.
         ; (when Dev is hidden, the Help menu also drops its BASLOAD + Hints-Tips items and compacts).
         ubyte f = 0
         if wrap_on
@@ -2011,6 +2011,8 @@ main {
             f |= 8
         if session_on
             f |= 16
+        if theme.ISO_MODE
+            f |= 32
         return f
     }
 
@@ -2139,7 +2141,7 @@ main {
             0 -> { n = 9  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
-            3 -> { n = 9  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
+            3 -> { n = 10  boxw = 22 }      ; Dev ("Uncomment Block Ctrl+W" / "Encoding     PETSCII")
             WINDOW_MENU -> { n = 4  boxw = 20 }   ; Window (Next + docs A/B/C: "A - <name>")
         }
         if active == 5 and not theme.show_dev
@@ -2264,7 +2266,8 @@ main {
                     5 -> comment_apply(2)       ; uncomment the selected block (strip REM)
                     6 -> act_session_toggle()   ; create/delete the per-folder .EDIT.SESSION (picker.ovl)
                     7 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
-                    else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
+                    8 -> ln_on = not ln_on      ; toggle the line-number gutter (repaints on close)
+                    else -> act_toggle_mode()   ; flip the active doc PETSCII<->ISO (also bound to Ctrl+F7)
                 }
             }
             WINDOW_MENU -> {                ; Window
@@ -2462,8 +2465,8 @@ main {
     }
 
     sub act_toggle_mode() {
-        ; Ctrl+F7 (test hook, phase 1): flip the ACTIVE doc's PETSCII/ISO mode. Phase 4 replaces this
-        ; with a Dev-menu item + a footer indicator.
+        ; Flip the ACTIVE doc's PETSCII/ISO mode. Reached from the Dev menu ("Encoding") and Ctrl+F7.
+        ; The footer's ISO/PET field (mnu_mode) reflects the result; full_redraw repaints both.
         theme.ISO_MODE = not theme.ISO_MODE
         apply_charset_mode()
         full_redraw()
@@ -5040,7 +5043,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             15 -> act_open()                ; Ctrl+O  open
             137 -> void save_now()          ; F2  save
             135 -> act_run_basload()        ; F5  save + run through BASLOAD
-            136 -> {                        ; F7 cycle docs; Ctrl+F7 toggles THIS doc's PETSCII/ISO mode (test)
+            136 -> {                        ; F7 cycle docs; Ctrl+F7 toggles THIS doc's PETSCII/ISO mode
                 if (g_mod & MOD_CTRL) != 0
                     act_toggle_mode()
                 else

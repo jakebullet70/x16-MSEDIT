@@ -54,8 +54,12 @@ syntax {
     }
 
     sub is_letter(ubyte b) -> bool {
+        ; ISO also accepts $c1-$da: a .BAS opened as PETSCII (uppercase = $c1-$da) and then toggled to
+        ; ISO keeps its PETSCII bytes in the buffer, and fold() already canonicalises $c1-$da -> $41-$5a,
+        ; so without this the whole line's keywords/REM never tokenise (only numbers, which are mode-
+        ; independent, still colour). A genuine Latin-1 doc's $c1-$da ARE letters too, so this is correct.
         if theme.ISO_MODE
-            return (b >= $41 and b <= $5a) or (b >= $61 and b <= $7a)
+            return (b >= $41 and b <= $5a) or (b >= $61 and b <= $7a) or (b >= $c1 and b <= $da)
         return (b >= $41 and b <= $5a) or (b >= $c1 and b <= $da)
     }
 

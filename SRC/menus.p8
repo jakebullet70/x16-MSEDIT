@@ -36,10 +36,11 @@ main {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
     }
 
-    sub mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte {
-        ; Paint the footer's INS/OVR indicator, plus CAPS when software Caps Lock is on. Moved out of
-        ; main's draw_status into this overlay to reclaim scarce low RAM (put_str_at calls + string
-        ; literals are costly there). ovr = overwrite mode, caps = software Caps Lock on (0/non-0).
+    sub mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3, ubyte iso @R4) -> ubyte {
+        ; Paint the footer's INS/OVR indicator, plus CAPS when software Caps Lock is on, plus the
+        ; per-doc encoding (ISO/PET). Moved out of main's draw_status into this overlay to reclaim
+        ; scarce low RAM (put_str_at calls + string literals are costly there). ovr = overwrite mode,
+        ; caps = software Caps Lock on (0/non-0), iso = active doc is ISO (0/non-0).
         ; Returns the column just past the field so main can guard its centred "Total lines" block.
         if ovr != 0
             put_str_at(col, row, "  OVR")
@@ -50,6 +51,11 @@ main {
             put_str_at(col, row, " CAPS")
             col += 5
         }
+        if iso != 0
+            put_str_at(col, row, " ISO")
+        else
+            put_str_at(col, row, " PET")
+        col += 4
         return col
     }
 
@@ -66,7 +72,7 @@ main {
                 0 -> when arg { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'c' -> return 6   'l' -> return 7   'x' -> return 8 }
                 1 -> when arg { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
                 2 -> when arg { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-                3 -> when arg { 'r' -> return 0   'b' -> return 1   'd' -> return 2   't' -> return 3   'c' -> return 4   'u' -> return 5   'f' -> return 6   's' -> return 7   'l' -> return 8 }
+                3 -> when arg { 'r' -> return 0   'b' -> return 1   'd' -> return 2   't' -> return 3   'c' -> return 4   'u' -> return 5   'f' -> return 6   's' -> return 7   'l' -> return 8   'e' -> return 9 }
                 4 -> when arg { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
                 else -> {                        ; Help. Dev shown: H/B/T/C/A -> 0/1/2/3/4. Dev hidden: H/C/A -> 0/1/2
                     if showdev != 0 {
@@ -172,11 +178,17 @@ main {
                         else
                             put_str_at(col, row, "Syntax Color Off")
                     }
-                    else -> {
+                    8 -> {
                         if (flags & 4) != 0
                             put_str_at(col, row, "Line Numbers On ")
                         else
                             put_str_at(col, row, "Line Numbers Off")
+                    }
+                    else -> {                          ; bit5 = active doc is ISO
+                        if (flags & 32) != 0
+                            put_str_at(col, row, "Encoding     ISO")
+                        else
+                            put_str_at(col, row, "Encoding     PETSCII")
                     }
                 }
             }
