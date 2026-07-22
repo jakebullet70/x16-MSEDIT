@@ -193,3 +193,53 @@ The two lessons EDIT takes from it: (1) move charset conversion off the storage
 boundary onto the display boundary (where it is lossless); (2) our PETSCII
 box-draw chrome is the SOLE reason we cannot flip to ISO the way X16 Edit does --
 which is what Path B's custom font buys back.
+
+## Per-document ISO/PETSCII - scope (decided 2026-07-22)
+
+GOAL: each of the 3 doc slots (A/B/C) remembers PETSCII or ISO; switching docs reconfigures
+display + keyboard. Only ONE doc shows at a time (VERA = one font per screen), so per-doc =
+swap font + mode on doc-switch, not two fonts on screen at once.
+
+DECISIONS:
+- Custom font lives at its OWN VRAM tilebase (`VERA_L1_TILEBASE`), loaded ONCE at startup;
+  mode-flip = point the tilebase register, NO 2KB re-upload. `screen_set_charset` only touches
+  the default charset slot, so the custom font is never clobbered. (New VERA register for EDIT.)
+- Font ships as `FONT.BIN` beside edit.prg, BLOAD'd into VRAM at boot (0 low RAM, +1 file, like
+  the .ovl/.md). Reuse the `diskio.loadlib` pattern (`edit.p8:597`).
+- Mode pick: New (untitled) = PETSCII; Open inherits the current active mode; boot = last
+  session's active mode (persisted in the CTX blob / ed.run). NO extension auto-detect.
+- Glyph set: `{} \ | ~` only (no Latin-9 accents) - fits with room to spare.
+
+PLUMBING (cheap):
+- Per-doc `bool iso_mode`: +1 CTX field after `hl_mode` (`edit.p8:340/350`), `NCTXF` 42->43.
+  Rides the banked CTX blob -> +1 B low RAM (the live global). `CTX_SIZE` unchanged (237 B slack).
+- `SES_VER` 4->5 REQUIRED (CTX layout shifts). ed.run file size +0 (padding). `SES_PTRS` /
+  `SESOVL_VER` unchanged.
+- Extract start()'s ISO block (`edit.p8:543-564`) -> `apply_charset_mode(bool iso)`. Call from
+  `switch_doc` (`edit.p8:2515`), `ses_svc` OP_ACTIVATE (`edit.p8:3099`), and startup for slot A.
+  `blank_slot` (`edit.p8:2472`) sets the default.
+
+THREE NEW SUBSYSTEMS (the real work):
+1. Reverse charset path (ISO->PETSCII): start()'s switch is ONE-WAY. `apply_charset_mode`'s
+   PETSCII branch must clear `$0372 &= ~$40`, re-call EXTAPI (`$feab`, A=$05 X=$9f) for PETSCII,
+   and reset `cmt_prefix` to PETSCII `[$d2,$c5,$cd]`. ~30 B, all new.
+2. Custom font upload (own tilebase): NEW - no tilebase / charset-VRAM code exists today. BLOAD
+   `FONT.BIN` to a dedicated VRAM address at boot; flip `VERA_L1_TILEBASE` per doc. Design the
+   256-glyph font: PETSCII/box-draw layout + `{} \ | ~` + the 3-slot remap (doc `}`->$5d=box rail,
+   backtick->$40=box edge, `^`->$1e=up-arrow; `{` at $5b free). ~60-120 B code + 2KB VRAM data.
+3. Clipboard mode tag: clip = raw bytes, no tag; cross-mode paste CORRUPTS ($41-$5A overlap:
+   PETSCII-lower = ISO-upper -> case flip on screen AND on save). Add +1 B `clip_iso` (precedent
+   `clip_line`, `edit.p8:180`) + convert-on-paste via `a2p`/`p2a` when src mode != dest. ~50-70 B.
+
+RAM: full feature ~340-480 B new vs 388 free -> reclaim needed before the font + clip land.
+Candidates (each > the shortfall): `item_accel`->menus.ovl ~200 B, REM builders ~200 B,
+`chain_load` ~180 B, search matcher ~150 B, `berr`->CLIP ~70 B (see [[edit-lowram-reclaim]]).
+
+PHASES:
+1. `apply_charset_mode(iso)` + reverse (ISO->PETSCII) path + per-doc `iso_mode` CTX field
+   (const->runtime) + `SES_VER` 4->5. Cost ~112 B -> FITS in 388 (no reclaim needed yet). Test:
+   doc A PETSCII / doc B ISO switch. No font yet -> ISO doc chrome garbage (acceptable interim).
+2. RECLAIM ~200-400 B (`item_accel` + REM builders -> menus.ovl) - before the font + clip code.
+3. Custom font: `FONT.BIN` own-tilebase upload + tilebase flip + the 3-glyph remap. Fixes ISO chrome.
+4. Clipboard mode tag + convert-on-paste.
+5. Footer per-doc PETSCII/ISO indicator.
