@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 340         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 344         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -542,6 +542,18 @@ main {
         TEXT_ROWS = SCR_H - 2                    ; the one geometry value kept as a var (SES_PTRS &TEXT_ROWS)
         if theme.ISO_MODE {
             cx16.screen_set_charset(1, 0)   ; ISO-8859-15 font (0 ptr = built-in ROM charset)
+            ; screen_set_charset loads the FONT only. To make the KEYBOARD emit ISO/ASCII bytes
+            ; ({} \ | ~ etc.), also ENTER ISO MODE: set KERNAL_MODE ($0372) bit $40 + call EXTAPI
+            ; ($feab, A=$05 X=$9f, C=0) - the exact sequence the ROM's X16 Edit uses (cmd.inc iso:).
+            %asm {{
+                lda  $0372
+                ora  #$40
+                sta  $0372
+                clc
+                ldx  #$9f
+                lda  #$05
+                jsr  $feab
+            }}
             ; the "REM " comment marker must be ASCII in ISO (not shifted-PETSCII) so it displays
             ; and saves as REM under the ISO font - patch cmt_prefix's R/E/M here (item 6).
             cmt_prefix[0] = $52             ; R

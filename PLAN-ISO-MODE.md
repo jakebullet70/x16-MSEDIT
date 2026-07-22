@@ -49,8 +49,10 @@ recommendation at the end splits the work accordingly.
 ## Path A checklist -- every ISO_MODE branch point
 
 ### 1. Charset & mode (1 site)
-- [ ] `edit.p8:543` `txt.lowercase()` -> `if ISO_MODE: cx16.screen_set_charset(1,0)`.
-      Keep `sys.disable_caseswitch()` (`edit.p8:544`) in BOTH modes.
+- [x] DONE `edit.p8:543`: full ISO switch (NOT just the font) - `cx16.screen_set_charset(1,0)` +
+      `$0372 |= $40` (KERNAL_MODE ISO flag) + EXTAPI `jsr $feab` (A=$05 X=$9f, C=0). Font alone left the
+      keyboard in PETSCII (no `{}`); the mode-flag + EXTAPI make keys emit ASCII. Matches ROM X16 Edit
+      (cmd.inc iso:). Keep `sys.disable_caseswitch()` in BOTH modes.
 - No change: snapshot/restore `edit.p8:716-735` already handles charset 1..3 (ISO=1).
 
 ### 2. Document rendering (1 site -- the easy half)
@@ -133,9 +135,10 @@ garbage under the ISO font. Consumers: `draw_status` `edit.p8:1758`, `box_msg`
 - No change: `tview.p8:330` `view_fold` is already correct ASCII folding.
 
 ### 10. Decisions -- settle BEFORE building
-- [ ] Does the X16 keyboard actually EMIT ISO bytes (`{` `}` `\` `|` `~`, accents)
-      in ISO charset mode? MAKE-OR-BREAK: if not, ISO_MODE alone still won't let
-      you type braces and the insert popup is still required. Verify first.
+- [x] RESOLVED (emu test): the X16 keyboard DOES emit `{` `}` etc. in ISO mode -
+      but ONLY after item 1's FULL switch (font + $0372 bit $40 + EXTAPI). Font-only
+      gave no braces. So ISO_MODE CAN be the input path; the insert popup is likely
+      UNNEEDED once chrome (items 7-9) is solved.
 - [ ] Filenames stay PETSCII by rule (`theme.p8:14` -- host FS matches those
       bytes). `fold_str` / `ends_with_ci` / `picker.fold` (`edit.p8:3336-3378`,
       Save As call sites `edit.p8:2635/2649`) are a SEPARATE encoding axis: keep
