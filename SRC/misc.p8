@@ -336,9 +336,16 @@ main {
                     ; the prompt would only take lower case. Deliberately NOT the document typing
                     ; path's blanket "k >= 160" - that range also carries Commodore+letter and
                     ; function keys, which would land in the buffer as garbage.
-                    if n < maxlen and ((k >= 32 and k <= 126) or (k >= $c1 and k <= $da)) {
-                        @(dest + n) = k
-                        n++
+                    if theme.ISO_MODE {
+                        if n < maxlen and ((k >= 32 and k <= 126) or (k >= $a0)) {
+                            @(dest + n) = k
+                            n++
+                        }
+                    } else {
+                        if n < maxlen and ((k >= 32 and k <= 126) or (k >= $c1 and k <= $da)) {
+                            @(dest + n) = k
+                            n++
+                        }
                     }
                 }
             }

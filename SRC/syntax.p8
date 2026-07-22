@@ -43,15 +43,19 @@ syntax {
     }
 
     sub fold(ubyte b) -> ubyte {
-        ; letters -> a single canonical range so either PETSCII case matches; else self.
+        ; letters -> a single canonical range ($41-$5A) so either case matches; else self.
         if b >= $41 and b <= $5a
-            return b                     ; PETSCII 'a'-'z'
+            return b                     ; PETSCII 'a'-'z' / ISO 'A'-'Z' (already canonical)
         if b >= $c1 and b <= $da
-            return b - $80               ; PETSCII 'A'-'Z' -> same range
+            return b - $80               ; PETSCII 'A'-'Z' (also the PETSCII keyword-table literals) -> $41-$5A
+        if theme.ISO_MODE and b >= $61 and b <= $7a
+            return b - $20               ; ISO 'a'-'z' document bytes -> $41-$5A
         return b
     }
 
     sub is_letter(ubyte b) -> bool {
+        if theme.ISO_MODE
+            return (b >= $41 and b <= $5a) or (b >= $61 and b <= $7a)
         return (b >= $41 and b <= $5a) or (b >= $c1 and b <= $da)
     }
 

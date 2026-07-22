@@ -15,6 +15,7 @@
 
 %import xarena
 %import diskio
+%import theme                           ; theme.ISO_MODE gates the a2p/p2a case-fold (identity in ISO)
 
 edoc {
     %option ignore_unused
@@ -52,6 +53,8 @@ edoc {
     ; are plain ASCII (so they round-trip with the host and other tools). The only
     ; real difference for printable text is the letter case ranges.
     sub a2p(ubyte b) -> ubyte {
+        if theme.ISO_MODE
+            return b                    ; ISO: internal bytes ARE the disk bytes - no fold
         if b >= $41 and b <= $5a
             return b + $80              ; ASCII A-Z -> PETSCII upper ($C1-$DA)
         if b >= $61 and b <= $7a
@@ -59,6 +62,8 @@ edoc {
         return b
     }
     sub p2a(ubyte b) -> ubyte {
+        if theme.ISO_MODE
+            return b                    ; ISO: no fold (also fixes $C1-$DA capital round-trip corruption)
         if b >= $41 and b <= $5a
             return b + $20              ; PETSCII lower -> ASCII a-z
         if b >= $c1 and b <= $da

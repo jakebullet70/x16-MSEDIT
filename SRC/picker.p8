@@ -179,8 +179,13 @@ main {
             prev_top = top
             full = false
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da            ; fold SHIFTed letters so D/F/B match either case
-                k -= $80
+            if theme.ISO_MODE {                 ; fold typed capitals so D/F/B match either case
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'f' -> {                        ; toggle Hide Dirs, then rescan with the new filter
                     hide_dirs = not hide_dirs
@@ -534,8 +539,13 @@ main {
             ubyte k = wait_key()
             if k == 27 or k == 3
                 return false
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             if k == 'y'
                 return true
             if k == 'n'

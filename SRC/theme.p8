@@ -19,6 +19,14 @@
 theme {
     %option ignore_unused
 
+    ; ---- global charset flag (see PLAN-ISO-MODE.md) ----------------------------------------
+    ; false = today's PETSCII-lowercase editor, byte-for-byte. This is a compile-time const, so
+    ; prog8 dead-strips every `if ISO_MODE {..}` true-branch: the false build is IDENTICAL to the
+    ; PETSCII build at zero RAM/code cost. Flip to true (rebuild) to run the KERNAL ISO-8859-15
+    ; charset - encoding-clean internals + no $C1-$DA save corruption. Lives here because theme is
+    ; imported by every UI unit (edit/syntax/picker/tview/misc; edoc imports it too for this).
+    const bool ISO_MODE = false
+
     const ubyte FIRST = 1
     const ubyte LAST  = 3
     const ubyte NCOL  = 21              ; colour bytes per theme (must match the var order below)

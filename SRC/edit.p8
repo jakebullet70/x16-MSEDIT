@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 339         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 340         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -540,9 +540,18 @@ main {
         ; 40-col still returns to it. The UI lays itself out from SCR_W/SCR_H below.
         cx16.set_screen_mode($01)               ; 80x30 (SCR_W/SCR_H/STATUS_ROW are consts to match)
         TEXT_ROWS = SCR_H - 2                    ; the one geometry value kept as a var (SES_PTRS &TEXT_ROWS)
-        txt.lowercase()
-        sys.disable_caseswitch()        ; lock the charset in lowercase - Shift+Commodore can't
-                                        ; flip the whole display to uppercase mid-edit (as in XFMGR2)
+        if theme.ISO_MODE {
+            cx16.screen_set_charset(1, 0)   ; ISO-8859-15 font (0 ptr = built-in ROM charset)
+            ; the "REM " comment marker must be ASCII in ISO (not shifted-PETSCII) so it displays
+            ; and saves as REM under the ISO font - patch cmt_prefix's R/E/M here (item 6).
+            cmt_prefix[0] = $52             ; R
+            cmt_prefix[1] = $45             ; E
+            cmt_prefix[2] = $4d             ; M
+        } else {
+            txt.lowercase()
+        }
+        sys.disable_caseswitch()        ; lock the charset - Shift+Commodore can't flip the whole
+                                        ; display mid-edit (as in XFMGR2); wanted in ISO mode too
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
@@ -1176,7 +1185,10 @@ main {
             ubyte ch = SPACE_SC
             ubyte col = theme.CB_BODY
             if c < nchar {
-                ch = txt.petscii2scr(@(sp))
+                if theme.ISO_MODE
+                    ch = @(sp)                  ; ISO: stored byte is the tile index directly
+                else
+                    ch = txt.petscii2scr(@(sp))
                 if hl_on
                     col = hlcol[si]
                 sp++
@@ -1939,8 +1951,13 @@ main {
         box_msg(msg(MSG_SAVECHG), theme.CB_BAR)              ; settle to the normal box, stays readable
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'y' -> return 1
                 'n' -> return 0
@@ -1957,8 +1974,13 @@ main {
         box_msg(msg(MSG_OVERWRITE), theme.CB_BAR)
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'y' -> return true
                 'n', 27, 3 -> return false
@@ -2172,8 +2194,13 @@ main {
         draw_dropdown(active, x0, y0, x1, y1, n, sel)   ; full box once; navigation patches 2 rows
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             ubyte acc = item_accel(active, k)   ; letter accelerator activates the item
             if acc != 255
                 return acc
@@ -3327,9 +3354,11 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; ---------- search / replace ----------
 
     sub fold(ubyte b) -> ubyte {
-        ; case-fold a PETSCII letter to lowercase ($C1-$DA upper -> $41-$5A lower)
+        ; case-fold a letter to the canonical $41-$5A range so either case matches.
+        if theme.ISO_MODE and b >= $61 and b <= $7a
+            return b - $20              ; ISO 'a'-'z' document/term bytes -> $41-$5A
         if b >= $c1 and b <= $da
-            return b - $80
+            return b - $80              ; PETSCII 'A'-'Z' -> $41-$5A (filename fold rides this - item 10)
         return b
     }
 
@@ -3571,8 +3600,13 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         draw_ww_label(false)                    ; read-only "Whole Word" reminder when it's on
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'y', ' ', 13 -> return 'y'
                 'n' -> return 'n'
@@ -4916,8 +4950,13 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             133 -> act_keymap()             ; F1  Help (keyboard map / edit.md)
             else -> {
                 if (k >= 32 and k <= 126) or (k >= 160) {
-                    if upper_mode and k >= $41 and k <= $5a
-                        k += $80        ; software Caps Lock: fold lowercase a-z ($41-$5A) to capital ($C1-$DA)
+                    if theme.ISO_MODE {
+                        if upper_mode and k >= $61 and k <= $7a
+                            k -= $20    ; software Caps Lock (ISO): fold a-z ($61-$7A) up to A-Z ($41-$5A)
+                    } else {
+                        if upper_mode and k >= $41 and k <= $5a
+                            k += $80    ; software Caps Lock: fold lowercase a-z ($41-$5A) to capital ($C1-$DA)
+                    }
                     if sel_active
                         delete_selection()
                     ed_insert(k)
