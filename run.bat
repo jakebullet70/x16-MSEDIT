@@ -1,21 +1,23 @@
 @ECHO OFF
-REM Build EDIT and run it in the emulator from the run\ folder.
+REM Stage the already-built EDIT binaries and run them in the emulator from the run\ folder.
+REM This DOES NOT compile - run `build.bat` yourself when the sources change. run.bat only
+REM copies whatever is currently in build\ into run\MSEDIT and launches.
 REM The run\ folder is the host filesystem root the editor sees, and holds
 REM sample text files to open/save.
 REM
-REM Usage:  run.bat [source.p8]    (defaults to edit.p8)
+REM Usage:  run.bat
 
 SETLOCAL
-SET SRC=%1
-IF "%SRC%"=="" SET SRC=edit.p8
 
-REM 1) compile (build.bat writes everything into build\; the project root stays source-only)
-CALL "%~dp0build.bat" %SRC%
-IF ERRORLEVEL 1 GOTO :EOF
-
-REM 2) stage the fresh binaries out of build\ into the program folder run\MSEDIT (EDIT lives in
-REM    its own directory; the fsroot stays run\, which is where the documents and ed.run are).
+REM 1) require a prior build - build.bat writes edit.prg + the overlays into build\.
 SET BUILDDIR=%~dp0build
+IF NOT EXIST "%BUILDDIR%\edit.prg" (
+    ECHO build\edit.prg not found - run build.bat first.
+    GOTO :EOF
+)
+
+REM 2) stage the built binaries out of build\ into the program folder run\MSEDIT (EDIT lives in
+REM    its own directory; the fsroot stays run\, which is where the documents and ed.run are).
 SET RUNDIR=%~dp0run
 SET PROGDIR=%RUNDIR%\MSEDIT
 IF NOT EXIST "%PROGDIR%" MKDIR "%PROGDIR%"
@@ -43,10 +45,8 @@ REM    GPC-compiled inside the emulator and no part of build.bat produces it. Se
 REM    is where a freshly compiled run\C.PRG2BASLOAD.PRG gets promoted into bin\.
 IF EXIST "%~dp0bin\PRG2BASLOAD.PRG" COPY /Y "%~dp0bin\PRG2BASLOAD.PRG" "%PROGDIR%\PRG2BASLOAD.PRG" >NUL
 
-REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG)
-CALL "%~dp0build.bat" edcfg.p8
-IF ERRORLEVEL 1 GOTO :EOF
-COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\EDCFG.PRG" >NUL
+REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG), if it was built.
+IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\EDCFG.PRG" >NUL
 
 REM 2b) write the /ED root launcher (a tokenized `10 LOAD"/MSEDIT/EDIT.PRG"`), if absent.
 REM     After File>Run BASLOAD (F5), EDIT arms SHIFT+RUN to the DOS-wedge command ^/ED, which
