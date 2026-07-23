@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 380         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 381         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -402,6 +402,10 @@ main {
     ; $A012: hands back the addresses of the three BASIC keyword blobs, which live in misc.ovl's
     ; string pool to keep ~450 B of keyword text out of low RAM. syntax.set_kw caches them + this bank.
     extsub @bank 10 $A012 = ovl_kw_addrs(uword outp @R0)
+    ; program hand-off on exit (moved to misc.ovl to reclaim low RAM; both only run once at exit and
+    ; touch KERNAL/VERA only, so the $A000 window is free for the overlay). prog/name stay in low RAM.
+    extsub @bank 10 $A015 = ovl_chain_load(uword prog @R0)
+    extsub @bank 10 $A018 = ovl_chain_basload(uword name @R0)
     ; msg_text ($A009 in menus.ovl, NOT misc.ovl - misc was full): copies a cold status-bar message
     ; (see MSG_* below) from the overlay's string pool into a low-RAM buffer. Those ~450 B of
     ; user-facing toast/prompt text never run in a hot loop, so they live in the overlay; msg(id)
@@ -675,9 +679,9 @@ main {
         caps_restore()                          ; put Caps Lock back as we found it - before ALL exit branches
         txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
         if run_config {
-            chain_load(theme.path_to(cfgprog))  ; hand off to EDCFG; it reloads EDIT (and ed.run) on exit
+            ovl_chain_load(theme.path_to(cfgprog))  ; hand off to EDCFG (misc.ovl); reloads EDIT on exit
         } else if run_basload {
-            chain_to_basload(filename)          ; hand off to BASLOAD; F8 stays armed for the return
+            ovl_chain_basload(filename)         ; hand off to BASLOAD (misc.ovl); F8 stays armed to return
         } else {
             restore_fkeys()                     ; put all fkeys back as the user had them (un-hijacks F8)
             txt.print("bye!\n")
@@ -3071,26 +3075,6 @@ main {
         g_redrawn = true
     }
 
-    sub chain_load(str prog) {
-        ; LOAD + RUN a .prg from BASIC's REPL: print the LOAD line on screen, then feed CR + RUN + CR
-        ; through the keyboard queue so BASIC re-reads the printed line. Same dance as chain_to_basload
-        ; (and the same one the /ED launcher performs), just for an arbitrary program.
-        txt.chrout($93)                         ; clear screen, cursor home
-        txt.nl()
-        txt.print("load")
-        txt.chrout($22)                         ; "
-        txt.print(prog)
-        txt.chrout($22)
-        txt.chrout($91)                         ; cursor up x2 -> back onto the LOAD line
-        txt.chrout($91)
-        cx16.kbdbuf_clear()
-        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen LOAD line
-        cx16.kbdbuf_put('r')
-        cx16.kbdbuf_put('u')
-        cx16.kbdbuf_put('n')
-        cx16.kbdbuf_put($0d)                    ; RUN + CR
-    }
-
     sub arm_return_key() {
         ; reprogram F8 (KERNAL pfkey key 8) to the DOS-wedge command that reloads EDIT.
         ; macro `retkey` = up-arrow "/ED" + CR; persists in the KERNAL editor across the run.
@@ -3161,36 +3145,6 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             sta  $00
             plp
         }}
-    }
-
-    sub chain_to_basload(str name) {
-        ; print `BASLOAD"name"` on screen, then feed CR + RUN + CR through the 10-byte keyboard
-        ; queue so BASIC re-reads the line and runs the tokenized program (see XFMGR chain_run).
-        txt.chrout($93)                         ; clear screen, cursor home
-        txt.plot(7, 0)                         ; reminder starts at COL 10 of the top row: when EDIT exits,
-        txt.print("*press f8 to return to edit*") ; BASIC prints "READY." at row 0 col 0 (6 chars) and would
-                                                ; clobber the front of the reminder - the col-10 offset keeps
-                                                ; it clear of that, with a small gap. The inject dance below
-                                                ; is the ORIGINAL, unchanged: it homes, drops to row 1 and
-                                                ; puts the BASLOAD command there. Row 1 is a separate logical
-                                                ; line (the reminder doesn't wrap), so the RETURN inject reads
-                                                ; ONLY the command, never the reminder. nl()/cursor-up are
-                                                ; used (NOT plot) - a raw plot leaves the screen editor in a
-                                                ; state where the injected RETURN fails to read the line.
-        txt.plot(0, 0)                          ; home for the unchanged dance (cursor rides over the reminder)
-        txt.nl()                                ; -> row 1
-        txt.print("basload")                    ; command on row 1, exactly as before - inject re-reads this
-        txt.chrout($22)                         ; "
-        txt.print(name)
-        txt.chrout($22)
-        txt.chrout($91)                         ; cursor up x2 -> back onto the BASLOAD line
-        txt.chrout($91)
-        cx16.kbdbuf_clear()
-        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen BASLOAD line
-        cx16.kbdbuf_put('r')
-        cx16.kbdbuf_put('u')
-        cx16.kbdbuf_put('n')
-        cx16.kbdbuf_put($0d)                    ; RUN + CR
     }
 
     sub ses_xfer(uword bankaddr, uword count, bool saving) -> bool {
