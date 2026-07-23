@@ -48,6 +48,10 @@ IF EXIST "%~dp0bin\PRG2BASLOAD.PRG" COPY /Y "%~dp0bin\PRG2BASLOAD.PRG" "%PROGDIR
 REM 2a) the settings program (Help>Config chain-loads MSEDIT/EDCFG.PRG), if it was built.
 IF EXIST "%BUILDDIR%\edcfg.prg" COPY /Y "%BUILDDIR%\edcfg.prg" "%PROGDIR%\EDCFG.PRG" >NUL
 
+REM 2c) also stage the same fileset into the X16INSPECTOR test folder (the user tests from there
+REM     too). Same build\ -> dest copy, UPPERCASE names, leaves EDIT.CFG alone. See deploy-inspector.bat.
+CALL "%~dp0deploy-inspector.bat"
+
 REM 2b) write the /ED root launcher (a tokenized `10 LOAD"/MSEDIT/EDIT.PRG"`), if absent.
 REM     After File>Run BASLOAD (F5), EDIT arms SHIFT+RUN to the DOS-wedge command ^/ED, which
 REM     runs this launcher to reload EDIT. Modeled on XFMGR's /XT. Edit the path inside if
