@@ -155,10 +155,6 @@
   otherwise open it (or drop into File > View if no slot is free / it isn't a source we want to edit).
   Parse the filename off the `#INCLUDE` directive on the current line, resolve it relative to the
   current document's directory, then reuse act_window_goto / the picker's open path.
-- **Thin font like `inspector.prg`** — switch EDIT's display to the narrower/thin character set that
-  `inspector.prg` uses (look at how it installs its charset) so more fits on screen / it reads cleaner.
-  Check whether it is a full 8x8 charset upload to VRAM and how it coexists with our lowercase lock
-  (sys.disable_caseswitch) and the PETSCII box-draw glyphs the UI relies on.
 - **Batch BASLOAD build tool (LOADBATCH.PRG)** — a small utility that build-runs a whole project of
   BASLOAD sources from one plain-text script. The script is one `BASLOAD"NAME.BAS"` per line, e.g.:
 
@@ -200,6 +196,12 @@
   drive root.
 
 ## Done
+
+- **Thin display font (build 380)** — inspector.prg turned out to just use a STOCK KERNAL charset
+  (`POKE $030C,4:SYS $FF62`), no custom upload. So EDIT simply loads the thin PETSCII upper/lower
+  charset (5) instead of 3 in apply_charset_mode, and captures the `{ } \ | ~` patch glyphs from the
+  thin ISO font (charset 6) so they match. Box-draw chrome + lowercase + ISO glyphs verified thin. No
+  RAM cost. It's just a charset number, so trivial to revert.
 
 - **Too-big file refused; session messages simplified (v0.9.287)** — (1) opening a file past the
   doc's line cap no longer shows a truncated half: act_open now resets to a fresh empty document
