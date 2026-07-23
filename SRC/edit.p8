@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 381         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 382         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -2492,7 +2492,7 @@ main {
         ; called (it sets KERNAL `mode` + reloads the font glyphs; skipping it left the charset/keyboard
         ; state half-initialized -> wrong chars + lockup). ISO: set $0372 bit $40 + EXTAPI (iso_cursor_char
         ; $9f) so keys emit ASCII { } \ | ~; PETSCII: clear bit $40 (no EXTAPI, per ROM). cmt_prefix follows.
-        cx16.screen_set_charset(3, 0)      ; PETSCII upper/lower font in BOTH modes (reloads the glyphs)
+        cx16.screen_set_charset(5, 0)      ; THIN PETSCII upper/lower font in BOTH modes (reloads glyphs)
         font_xfer(false)                   ; re-stamp the { } \ | ~ glyphs the reload just wiped
         if theme.ISO_MODE {
             %asm {{
@@ -2551,10 +2551,10 @@ main {
         return txt.petscii2scr(p)
     }
 
-    ; --- ISO glyph patch. The shared display font is PETSCII (charset 3); these routines stamp the five
-    ; ISO-only glyphs { } \ | ~ into the free screencode slots iso_scr maps them to, so ISO docs show them.
-    ; The bitmaps are captured ONCE from the ROM ISO font (font_setup) and re-stamped after every
-    ; screen_set_charset(3) reload (font_patch, from apply_charset_mode). The X16 charset lives at VRAM
+    ; --- ISO glyph patch. The shared display font is thin PETSCII (charset 5); these routines stamp the
+    ; five ISO-only glyphs { } \ | ~ into the free screencode slots iso_scr maps them to, so ISO docs show
+    ; them. The bitmaps are captured ONCE from the ROM thin ISO font (font_setup) and re-stamped after every
+    ; screen_set_charset(5) reload (font_patch, from apply_charset_mode). The X16 charset lives at VRAM
     ; $1F000 (the default L1 tilebase, which EDIT never moves); glyph N is 8 bytes at $1F000 + N*8.
     const uword FONT_VADDR = $f000         ; low 16 bits of the charset VRAM base ($1F000)
     const ubyte FONT_A16   = $01           ; bit 16 of $1F000
@@ -2592,11 +2592,12 @@ main {
     }
 
     sub font_setup() {
-        ; Capture { } \ | ~ from the ROM ISO font (ASCII-ordered: glyph N = char code N), once at boot.
-        ; Restores the PETSCII display font before returning (apply_charset_mode reloads it anyway).
-        cx16.screen_set_charset(1, 0)          ; ISO font into the charset VRAM
+        ; Capture { } \ | ~ from the ROM THIN ISO font (charset 6, ASCII-ordered: glyph N = char code N),
+        ; once at boot - thin so the patched glyphs match the thin display font. Restores the thin PETSCII
+        ; display font before returning (apply_charset_mode reloads it anyway).
+        cx16.screen_set_charset(6, 0)          ; thin ISO font into the charset VRAM
         font_xfer(true)
-        cx16.screen_set_charset(3, 0)          ; restore the PETSCII display font
+        cx16.screen_set_charset(5, 0)          ; restore the thin PETSCII display font
     }
 
     sub kbd_decode_petscii() {
