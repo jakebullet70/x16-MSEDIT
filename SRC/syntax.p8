@@ -43,24 +43,27 @@ syntax {
     }
 
     sub fold(ubyte b) -> ubyte {
-        ; letters -> a single canonical range ($41-$5A) so either case matches; else self.
+        ; letters -> a single canonical range ($41-$5A) so either case AND either encoding matches.
+        ; ENCODING-AGNOSTIC (no theme.ISO_MODE test): the mode toggle is a VIEW flip, not a buffer
+        ; re-encode, so a line's bytes can be in EITHER encoding whatever the active mode is - ISO text
+        ; typed then viewed in PETSCII ($61-$7A), or PETSCII text viewed in ISO ($C1-$DA). All three
+        ; letter conventions fold to $41-$5A here (the keyword table folds the same way), so keyword/REM
+        ; matching is robust regardless of which mode entered the text or which mode shows it.
         if b >= $41 and b <= $5a
             return b                     ; PETSCII 'a'-'z' / ISO 'A'-'Z' (already canonical)
         if b >= $c1 and b <= $da
             return b - $80               ; PETSCII 'A'-'Z' (also the PETSCII keyword-table literals) -> $41-$5A
-        if theme.ISO_MODE and b >= $61 and b <= $7a
-            return b - $20               ; ISO 'a'-'z' document bytes -> $41-$5A
+        if b >= $61 and b <= $7a
+            return b - $20               ; ISO 'a'-'z' -> $41-$5A
         return b
     }
 
     sub is_letter(ubyte b) -> bool {
-        ; ISO also accepts $c1-$da: a .BAS opened as PETSCII (uppercase = $c1-$da) and then toggled to
-        ; ISO keeps its PETSCII bytes in the buffer, and fold() already canonicalises $c1-$da -> $41-$5a,
-        ; so without this the whole line's keywords/REM never tokenise (only numbers, which are mode-
-        ; independent, still colour). A genuine Latin-1 doc's $c1-$da ARE letters too, so this is correct.
-        if theme.ISO_MODE
-            return (b >= $41 and b <= $5a) or (b >= $61 and b <= $7a) or (b >= $c1 and b <= $da)
-        return (b >= $41 and b <= $5a) or (b >= $c1 and b <= $da)
+        ; ENCODING-AGNOSTIC (see fold): accept all three letter ranges so tokens scan whatever encoding
+        ; the buffer bytes are in. $61-$7A are PETSCII graphics in a genuine PETSCII doc, but folding
+        ; them as letters is harmless there (BASIC source has none inside identifiers, and they can't
+        ; match a keyword) and is exactly what recovers ISO-typed lowercase viewed in PETSCII.
+        return (b >= $41 and b <= $5a) or (b >= $61 and b <= $7a) or (b >= $c1 and b <= $da)
     }
 
     sub is_digit(ubyte b) -> bool {

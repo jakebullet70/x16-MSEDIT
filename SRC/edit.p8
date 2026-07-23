@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 378         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 380         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -2466,9 +2466,17 @@ main {
 
     sub act_toggle_mode() {
         ; Flip the ACTIVE doc's PETSCII/ISO mode. Reached from the Dev menu ("Encoding") and Ctrl+F7.
-        ; The footer's ISO/PET field (mnu_mode) reflects the result; full_redraw repaints both.
-        theme.ISO_MODE = not theme.ISO_MODE
-        apply_charset_mode()
+        ; RE-ENCODES the buffer so the displayed text stays visually stable across the switch (case is
+        ; preserved, keywords keep colouring) instead of the same bytes being reinterpreted. ISO->PETSCII
+        ; is lossy for { } \ | ~ (no PETSCII glyph - they survive as raw bytes but show as graphics).
+        commit_editbuf()                        ; flush the live line into the arena (still old encoding)
+        bool to_iso = not theme.ISO_MODE        ; the mode we are switching TO
+        edoc.recode(to_iso)                     ; convert every committed line in place
+        theme.ISO_MODE = to_iso
+        cur_len = edoc.load(cur_row, &editbuf)  ; reload the live line in the NEW encoding
+        cur_dirty = false
+        undo_clear()                            ; snapshots are old-encoding far pointers - drop them
+        apply_charset_mode()                    ; reconfigure font/keyboard for the new mode
         full_redraw()
     }
 
