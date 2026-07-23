@@ -15,6 +15,7 @@
 
 %import xarena
 %import diskio
+%import theme                           ; theme.ISO_MODE gates the a2p/p2a case-fold (identity in ISO)
 
 edoc {
     %option ignore_unused
@@ -37,8 +38,8 @@ edoc {
     uword line_count
     bool  oom                           ; set if an allocation failed (document full)
 
-    uword iobuf = memory("iobuf", 256, 0)   ; disk read chunk buffer (main RAM). 256 = the load_file
-                                            ; read size below; was 512 (over-allocated - only 256 used).
+    uword iobuf = memory("iobuf", 128, 0)   ; disk read chunk buffer (main RAM). 128 = the load_file
+                                            ; read size below; 256 -> 128 reclaimed 128 B to fund per-doc ISO mode.
     ubyte[252] linebuf                       ; scratch: assembling / reading one line (<= MAX_LEN 250; load
                                              ; force-breaks longer, so 252 = 250 + a 2-byte boundary margin)
 
@@ -52,6 +53,8 @@ edoc {
     ; are plain ASCII (so they round-trip with the host and other tools). The only
     ; real difference for printable text is the letter case ranges.
     sub a2p(ubyte b) -> ubyte {
+        if theme.ISO_MODE
+            return b                    ; ISO: internal bytes ARE the disk bytes - no fold
         if b >= $41 and b <= $5a
             return b + $80              ; ASCII A-Z -> PETSCII upper ($C1-$DA)
         if b >= $61 and b <= $7a
@@ -59,11 +62,52 @@ edoc {
         return b
     }
     sub p2a(ubyte b) -> ubyte {
+        if theme.ISO_MODE
+            return b                    ; ISO: no fold (also fixes $C1-$DA capital round-trip corruption)
         if b >= $41 and b <= $5a
             return b + $20              ; PETSCII lower -> ASCII a-z
         if b >= $c1 and b <= $da
             return b - $80              ; PETSCII upper -> ASCII A-Z
         return b
+    }
+
+    sub recode(bool to_iso) {
+        ; Convert EVERY committed line's bytes between the two encodings, IN PLACE (same length, so no
+        ; arena realloc - just rewrite the chars where they sit). Called by the doc mode toggle so the
+        ; displayed text stays visually stable across a switch instead of being reinterpreted.
+        ; DIRECTION IS EXPLICIT (does not read theme.ISO_MODE): the caller passes the mode being switched
+        ; TO. Letters only; digits/punctuation/space and the ISO-only { } \ | ~ pass through unchanged
+        ; (so those round-trip as raw bytes). NOTE: a genuine PETSCII graphics char in $61-$7A is NOT
+        ; round-trip-safe (it looks like an ASCII lowercase letter) - fine for text/BASIC source, the
+        ; intended content. Flush the live editbuf (commit_editbuf) BEFORE calling, reload it AFTER.
+        uword idx = 0
+        while idx < line_count {
+            ubyte bank = ent_bank(idx)
+            cx16.push_rambank(bank)
+            uword p = ent_off(idx)         ; record = [len][chars]; ent_off read under the pushed bank is fine
+            ubyte slen = @(p)
+            p++
+            ubyte i = 0
+            while i < slen {
+                ubyte b = @(p)
+                if to_iso {                            ; PETSCII -> ASCII
+                    if b >= $41 and b <= $5a
+                        b += $20                       ; PETSCII lower -> ASCII a-z
+                    else if b >= $c1 and b <= $da
+                        b -= $80                       ; PETSCII upper -> ASCII A-Z
+                } else {                               ; ASCII -> PETSCII
+                    if b >= $61 and b <= $7a
+                        b -= $20                       ; ASCII a-z -> PETSCII lower ($41-$5A)
+                    else if b >= $41 and b <= $5a
+                        b += $80                       ; ASCII A-Z -> PETSCII upper ($C1-$DA)
+                }
+                @(p) = b
+                p++
+                i++
+            }
+            cx16.pop_rambank()
+            idx++
+        }
     }
 
     sub init() {
@@ -228,7 +272,7 @@ edoc {
         ubyte ll = 0
         bool prev_cr = false
         repeat {
-            uword n = diskio.f_read(iobuf, 256)
+            uword n = diskio.f_read(iobuf, 128)
             if n == 0
                 break
             uword j = 0

@@ -55,7 +55,7 @@ main {
     ; a module-level initialized var is emitted BEFORE the code and would shove the jump table off
     ; its fixed offsets. The screen text below is all inline literals inside subs - those are fine;
     ; it is only main's init-data that moves the table.
-    %jmptable ( main.help_about, main.ovl_prompt, main.ses_setup, main.ses_write, main.ses_restore, main.kw_addrs )
+    %jmptable ( main.help_about, main.ovl_prompt, main.ses_setup, main.ses_write, main.ses_restore, main.kw_addrs, main.chain_load, main.chain_basload )
 
     const ubyte SPACE_SC = sc:' '
     const ubyte SC_TL = sc:'┌'
@@ -336,9 +336,16 @@ main {
                     ; the prompt would only take lower case. Deliberately NOT the document typing
                     ; path's blanket "k >= 160" - that range also carries Commodore+letter and
                     ; function keys, which would land in the buffer as garbage.
-                    if n < maxlen and ((k >= 32 and k <= 126) or (k >= $c1 and k <= $da)) {
-                        @(dest + n) = k
-                        n++
+                    if theme.ISO_MODE {
+                        if n < maxlen and ((k >= 32 and k <= 126) or (k >= $a0)) {
+                            @(dest + n) = k
+                            n++
+                        }
+                    } else {
+                        if n < maxlen and ((k >= 32 and k <= 126) or (k >= $c1 and k <= $da)) {
+                            @(dest + n) = k
+                            n++
+                        }
                     }
                 }
             }
@@ -745,5 +752,57 @@ main {
             if k != 0
                 return k
         }
+    }
+
+    ; ---- program hand-off (exit path) ----
+    ; Both print a command line on the BASIC screen, then feed CR + RUN + CR through the 10-byte
+    ; keyboard queue so BASIC re-reads the line. Moved here from edit.p8 to reclaim main low RAM:
+    ; they run ONCE on exit and touch only KERNAL/VERA (no $A000-window banking of their own), so an
+    ; overlay is a safe home. prog/name point into main's low RAM, which stays mapped under bank 10.
+    sub print_ptr(uword p) {
+        while @(p) != 0 {
+            txt.chrout(@(p))
+            p++
+        }
+    }
+
+    sub chain_load(uword prog @R0) {
+        ; LOAD + RUN an arbitrary .prg (used for the EDCFG hand-off).
+        txt.chrout($93)                         ; clear screen, cursor home
+        txt.nl()
+        txt.print("load")
+        txt.chrout($22)                         ; "
+        print_ptr(prog)
+        txt.chrout($22)
+        txt.chrout($91)                         ; cursor up x2 -> back onto the LOAD line
+        txt.chrout($91)
+        cx16.kbdbuf_clear()
+        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen LOAD line
+        cx16.kbdbuf_put('r')
+        cx16.kbdbuf_put('u')
+        cx16.kbdbuf_put('n')
+        cx16.kbdbuf_put($0d)                    ; RUN + CR
+    }
+
+    sub chain_basload(uword name @R0) {
+        ; print `BASLOAD"name"` and run it (F5 hand-off). The screen dance is unchanged from edit.p8:
+        ; the col-10 reminder clears BASIC's "READY." and the injected RETURN re-reads only row 1.
+        txt.chrout($93)                         ; clear screen, cursor home
+        txt.plot(7, 0)
+        txt.print("*press f8 to return to edit*")
+        txt.plot(0, 0)                          ; home for the inject dance (cursor rides over the reminder)
+        txt.nl()                                ; -> row 1
+        txt.print("basload")                    ; command on row 1 - inject re-reads this
+        txt.chrout($22)                         ; "
+        print_ptr(name)
+        txt.chrout($22)
+        txt.chrout($91)                         ; cursor up x2 -> back onto the BASLOAD line
+        txt.chrout($91)
+        cx16.kbdbuf_clear()
+        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen BASLOAD line
+        cx16.kbdbuf_put('r')
+        cx16.kbdbuf_put('u')
+        cx16.kbdbuf_put('n')
+        cx16.kbdbuf_put($0d)                    ; RUN + CR
     }
 }

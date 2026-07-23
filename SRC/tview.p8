@@ -412,8 +412,13 @@ main {
                     txt.plot(7 + n, SCR_BOT)
                 }
             } else {
-                if g_key >= $c1 and g_key <= $da
-                    g_key -= $80
+                if theme.ISO_MODE {
+                    if g_key >= $61 and g_key <= $7a
+                        g_key -= $20
+                } else {
+                    if g_key >= $c1 and g_key <= $da
+                        g_key -= $80
+                }
                 if n < 32 and g_key >= 32 and g_key < 127 {
                     view_find[n] = g_key
                     txt.chrout(g_key)
@@ -598,8 +603,13 @@ main {
             draw_footer(nxt)
 
             g_key = wait_key()
-            if g_key >= $c1 and g_key <= $da
-                g_key -= $80
+            if theme.ISO_MODE {
+                if g_key >= $61 and g_key <= $7a
+                    g_key -= $20
+            } else {
+                if g_key >= $c1 and g_key <= $da
+                    g_key -= $80
+            }
             when g_key {
                 27, 3, 'q' -> return
                 2 -> {                          ; PgDn: next page

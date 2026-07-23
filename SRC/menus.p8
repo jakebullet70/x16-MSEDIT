@@ -24,7 +24,7 @@
 main {
     %option ignore_unused
 
-    %jmptable ( main.mnu_item, main.mnu_bar, main.msg_text, main.edsess_op, main.mnu_mode )
+    %jmptable ( main.mnu_item, main.mnu_bar, main.msg_text, main.edsess_op, main.mnu_mode, main.mnu_accel )
 
     ; static screen geometry, mirrored from edit.p8 (consts allocate no storage, so they don't
     ; disturb the %jmptable offsets the way an initialized var would).
@@ -36,10 +36,11 @@ main {
         ; library init ($A000): the compiler emits the BSS-clear here. Nothing else to do.
     }
 
-    sub mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte {
-        ; Paint the footer's INS/OVR indicator, plus CAPS when software Caps Lock is on. Moved out of
-        ; main's draw_status into this overlay to reclaim scarce low RAM (put_str_at calls + string
-        ; literals are costly there). ovr = overwrite mode, caps = software Caps Lock on (0/non-0).
+    sub mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3, ubyte iso @R4) -> ubyte {
+        ; Paint the footer's INS/OVR indicator, plus CAPS when software Caps Lock is on, plus the
+        ; per-doc encoding (ISO/PET). Moved out of main's draw_status into this overlay to reclaim
+        ; scarce low RAM (put_str_at calls + string literals are costly there). ovr = overwrite mode,
+        ; caps = software Caps Lock on (0/non-0), iso = active doc is ISO (0/non-0).
         ; Returns the column just past the field so main can guard its centred "Total lines" block.
         if ovr != 0
             put_str_at(col, row, "  OVR")
@@ -50,7 +51,64 @@ main {
             put_str_at(col, row, " CAPS")
             col += 5
         }
+        if iso != 0
+            put_str_at(col, row, " ISO")
+        else
+            put_str_at(col, row, " PET")
+        col += 4
         return col
+    }
+
+    sub mnu_accel(ubyte which @R0, ubyte active @R1, ubyte arg @R2, ubyte showdev @R3) -> ubyte {
+        ; Dropdown accelerator tables, hosted beside the labels so they leave main's low RAM.
+        ; which 0: arg = a folded letter ($41-$5A, PETSCII lowercase = the char-literal encoding) ->
+        ;          the item index the accelerator activates, else 255.
+        ; which 1: arg = item index -> the accelerator letter's column offset within the label (for
+        ;          highlighting), else 0.
+        ; showdev = theme.show_dev (this overlay has no theme copy); the Help/Dev rows depend on it.
+        ; These MUST stay in lock-step with mnu_item's labels below - a wrong offset mis-highlights.
+        if which == 0 {
+            when active {
+                0 -> when arg { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'c' -> return 6   'l' -> return 7   'x' -> return 8 }
+                1 -> when arg { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
+                2 -> when arg { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
+                3 -> when arg { 'r' -> return 0   'b' -> return 1   'd' -> return 2   't' -> return 3   'c' -> return 4   'u' -> return 5   'f' -> return 6   's' -> return 7   'l' -> return 8   'e' -> return 9 }
+                4 -> when arg { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
+                else -> {                        ; Help. Dev shown: H/B/T/C/A -> 0/1/2/3/4. Dev hidden: H/C/A -> 0/1/2
+                    if showdev != 0 {
+                        when arg { 'h' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'a' -> return 4 }
+                    } else {
+                        when arg { 'h' -> return 0   'c' -> return 1   'a' -> return 2 }
+                    }
+                }
+            }
+            return 255
+        } else if which == 2 {
+            ; top-MENU-BAR accelerator: a base letter -> menu index (F/E/S/D/W/H), else 255. Dev (3) only
+            ; when shown. arg is the letter from alt_letter[] (PETSCII lowercase, same as the labels here).
+            when arg {
+                'f' -> return 0
+                'e' -> return 1
+                's' -> return 2
+                'd' -> { if showdev != 0  return 3
+                         return 255 }
+                'w' -> return 4
+                'h' -> return 5
+            }
+            return 255
+        } else {
+            when active {
+                0 -> when arg { 2 -> return 3   4 -> return 5   5 -> return 2   7 -> return 1   8 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Close All 'l'@1, Exit 'x'@1
+                1 -> when arg { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8
+                2 -> when arg { 1 -> return 5 }                       ; Find Next 'N'@5
+                3 -> when arg { 1 -> return 5   6 -> return 15 }      ; Make Backup 'B'@5, Session file 'f'@15
+                5 -> {                                               ; Help: Hints-Tips 'T'@6 (Dev-only row)
+                    if showdev != 0 and arg == 2
+                        return 6
+                }
+            }
+            return 0
+        }
     }
 
     sub mnu_item(ubyte active @R0, ubyte i @R1, ubyte col @R2, ubyte row @R3, ubyte flags @R4) {
@@ -120,11 +178,17 @@ main {
                         else
                             put_str_at(col, row, "Syntax Color Off")
                     }
-                    else -> {
+                    8 -> {
                         if (flags & 4) != 0
                             put_str_at(col, row, "Line Numbers On ")
                         else
                             put_str_at(col, row, "Line Numbers Off")
+                    }
+                    else -> {                          ; bit5 = active doc is ISO
+                        if (flags & 32) != 0
+                            put_str_at(col, row, "Encoding     ISO")
+                        else
+                            put_str_at(col, row, "Encoding     PETSCII")
                     }
                 }
             }

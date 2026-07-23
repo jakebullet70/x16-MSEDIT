@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 339         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 381         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -126,8 +126,8 @@ main {
     ;
     ; The contexts are written at the full CTX_SIZE even though the CTX table only fills 466 of it -
     ; padding is free on disk and it means no length constant can drift out of step with the table.
-    const ubyte SES_VER = 4             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
-                                        ; (v2: UNDO_DEPTH 24 -> 20; v3: 20 -> 14; v4: 14 -> 12; each shortened the context)
+    const ubyte SES_VER = 5             ; bump on ANY layout change - INCLUDING a change to CTX_ADDR/CTX_LEN
+                                        ; (v2: UNDO_DEPTH 24 -> 20; v3: 20 -> 14; v4: 14 -> 12; v5: +per-doc iso_mode CTX field)
     const uword CLIP_MAX = 1024         ; clipbuf is $A000-$A3FF in CLIP_BANK
     ; magic + version as ONE record: it writes in a single f_write and verifies in a single compare
     ; loop, so the version can never be checked separately from (or forgotten alongside) the signature
@@ -180,7 +180,9 @@ main {
         FKSNAP_ADDR, &find_term, &repl_term, STARTDIR_ADDR, &ww_on, &clip_line, &cur_col ]
     uword basload_err_line = 0          ; line# scraped off the boot screen's BASLOAD error (0 = none)
     const ubyte BERR_MAX = 80           ; longest BASLOAD error line kept - one full 80-column row.
-    ubyte[BERR_MAX] berr                ; the scraped BASLOAD error line, screen codes
+    const uword berr = $AB00            ; the scraped BASLOAD error line (screen codes) lives in CLIP_BANK
+                                        ; at $AB00 (above STARTDIR $AA70), NOT low RAM - saves 80 B. Only
+                                        ; berr_len stays low; the two access loops wrap push/pop CLIP_BANK.
     ubyte berr_len = 0                  ; length of berr (0 = no error captured)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ; fksnap (the 99-byte snapshot of all 9 KERNAL fkey macros, restored verbatim on exit) lives at
@@ -332,12 +334,12 @@ main {
     ; the per-document context is this ordered list of (address, byte-length) fields. save_ctx/load_ctx
     ; walk it in one loop (see ctx_xfer). Keep CTX_ADDR and CTX_LEN in lock-step; total length = 402
     ; at UNDO_DEPTH 20 (the ten ring entries scale with it; the rest is fixed at 82).
-    const ubyte NCTXF = 42
+    const ubyte NCTXF = 43
     uword[NCTXF] CTX_ADDR = [
         &edoc.line_count, &edoc.oom, &xarena.cur_bank, &xarena.cur_ptr, &xarena.high_bank,
         &cur_row, &top_line, &prev_cur_row, &cur_col, &left_col, &top_seg, &modified, &ovr_mode,
         &filename,
-        &ln_on, &gutter_w, &wrap_on, &hl_on, &hl_mode,
+        &ln_on, &gutter_w, &wrap_on, &hl_on, &hl_mode, &theme.ISO_MODE,
         &sel_active, &sel_cleared, &anc_row, &anc_col, &s_row, &e_row, &s_col, &e_col,
         &found_row, &found_col,
         &g_group, &u_sp, &d_sp,
@@ -347,7 +349,7 @@ main {
         2, 1, 1, 2, 1,
         2, 2, 2, 1, 1, 1, 1, 1,
         41,
-        1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1,
         1, 1, 2, 1, 2, 2, 1, 1,
         2, 1,
         2, 1, 1,
@@ -400,6 +402,10 @@ main {
     ; $A012: hands back the addresses of the three BASIC keyword blobs, which live in misc.ovl's
     ; string pool to keep ~450 B of keyword text out of low RAM. syntax.set_kw caches them + this bank.
     extsub @bank 10 $A012 = ovl_kw_addrs(uword outp @R0)
+    ; program hand-off on exit (moved to misc.ovl to reclaim low RAM; both only run once at exit and
+    ; touch KERNAL/VERA only, so the $A000 window is free for the overlay). prog/name stay in low RAM.
+    extsub @bank 10 $A015 = ovl_chain_load(uword prog @R0)
+    extsub @bank 10 $A018 = ovl_chain_basload(uword name @R0)
     ; msg_text ($A009 in menus.ovl, NOT misc.ovl - misc was full): copies a cold status-bar message
     ; (see MSG_* below) from the overlay's string pool into a low-RAM buffer. Those ~450 B of
     ; user-facing toast/prompt text never run in a hot loop, so they live in the overlay; msg(id)
@@ -457,7 +463,15 @@ main {
     extsub @bank 13 $A00C = edsess_op(ubyte op @R0, uword svc @R1, uword ptrs @R2) -> ubyte @A
     ; mnu_mode ($A00F, menus.ovl's 5th entry): draws the footer INS/OVR + CAPS field and returns the column
     ; past it. Hosted in the overlay so its put_str_at calls + string literals don't sit in scarce low RAM.
-    extsub @bank 13 $A00F = mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3) -> ubyte @A
+    extsub @bank 13 $A00F = mnu_mode(ubyte col @R0, ubyte row @R1, ubyte ovr @R2, ubyte caps @R3, ubyte iso @R4) -> ubyte @A
+    ; mnu_accel ($A012, menus.ovl's 6th entry): the dropdown accelerator tables (which 0 = folded letter
+    ; -> item index; which 1 = item index -> accelerator column offset). Hosted beside the labels so the
+    ; ~330 B of when-tables leave main's low RAM. showdev = theme.show_dev (the overlay has no theme).
+    extsub @bank 13 $A012 = mnu_accel(ubyte which @R0, ubyte active @R1, ubyte arg @R2, ubyte showdev @R3) -> ubyte @A
+    ; mnu_rem (picker.ovl $A00C, its 4th jmptable entry - menus.ovl was full): the REM-comment builders
+    ; (op 0 = rem_start, 1 = build_commented with extra=cmt_indent, 2 = build_uncommented with extra=rs).
+    ; buf/workp are &tmpbuf/&workbuf (low RAM, mapped for the overlay); iso = theme.ISO_MODE (fold + prefix).
+    extsub @bank 8 $A00C = mnu_rem(ubyte op @R0, ubyte blen @R1, ubyte extra @R2, ubyte iso @R3, uword buf @R4, uword workp @R5) -> ubyte @A
     bool menus_ok                       ; menus.ovl loaded OK -> dropdown item labels are available
     ubyte[9] menuctx                    ; packed state handed to mnu_bar (see draw_menubar)
     str  menusovl = "menus.ovl"
@@ -478,56 +492,13 @@ main {
         'k','i','t', 0 ,'g', 0 ,'m', 0 , 0 ,'n','q','d','z','s','p',
         'a','e','r','w','h','j','l','y','u','o', 0 ,'f','c','x','v','b' ]
 
-    sub menu_for_letter(ubyte letter) -> ubyte {
-        ; top-menu accelerator: F/E/S/D/W/H -> menu index, else 255
-        when letter {
-            'f' -> return 0
-            'e' -> return 1
-            's' -> return 2
-            'd' -> {                        ; Alt+D opens Dev only when it is shown
-                if theme.show_dev
-                    return 3
-                return 255
-            }
-            'w' -> return 4
-            'h' -> return 5
-        }
-        return 255
-    }
+    ; menu_for_letter (top-menu-bar accelerator: F/E/S/D/W/H -> menu index) moved to menus.ovl's
+    ; mnu_accel(which=2) to reclaim low RAM. Call it as mnu_accel(2, 0, letter, theme.show_dev as ubyte).
 
-    sub item_accel(ubyte active, ubyte key) -> ubyte {
-        ; dropdown item accelerator: a folded letter -> item index, else 255
-        when active {
-            0 -> when key { 'n' -> return 0   'o' -> return 1   'w' -> return 2   's' -> return 3   'a' -> return 4   'v' -> return 5   'c' -> return 6   'l' -> return 7   'x' -> return 8 }
-            1 -> when key { 'u' -> return 0   'r' -> return 1   't' -> return 2   'c' -> return 3   'p' -> return 4   'd' -> return 5   'i' -> return 6   'm' -> return 7   'n' -> return 8   'w' -> return 9 }
-            2 -> when key { 'f' -> return 0   'n' -> return 1   'r' -> return 2   'g' -> return 3 }
-            3 -> when key { 'r' -> return 0   'b' -> return 1   'd' -> return 2   't' -> return 3   'c' -> return 4   'u' -> return 5   'f' -> return 6   's' -> return 7   'l' -> return 8 }
-            4 -> when key { 'n' -> return 0   'a' -> return 1   'b' -> return 2   'c' -> return 3 }   ; Window: Next/A/B/C
-            else -> {                        ; Help. Dev shown: H/B/T/C/A -> 0/1/2/3/4. Dev hidden (no BASLOAD/Hints): H/C/A -> 0/1/2
-                if theme.show_dev {
-                    when key { 'h' -> return 0   'b' -> return 1   't' -> return 2   'c' -> return 3   'a' -> return 4 }
-                } else {
-                    when key { 'h' -> return 0   'c' -> return 1   'a' -> return 2 }
-                }
-            }
-        }
-        return 255
-    }
-
-    sub accel_off(ubyte active, ubyte i) -> ubyte {
-        ; column offset of the accelerator letter within an item label (for highlighting)
-        when active {
-            0 -> when i { 2 -> return 3   4 -> return 5   5 -> return 2   7 -> return 1   8 -> return 1 }   ; View 'w'@3, Save As 'A'@5, Save All 'v'@2, Close All 'l'@1, Exit 'x'@1 (New/Open/Save/Close @0 default)
-            1 -> when i { 2 -> return 2   6 -> return 4   8 -> return 8 }   ; Cut 'T'@2, Duplicate 'i'@4, Move Down 'n'@8 (Move Up 'M'@0 default)
-            2 -> when i { 1 -> return 5 }                       ; Find Next 'N'@5
-            3 -> when i { 1 -> return 5   6 -> return 15 }      ; Dev: Make Backup 'B'@5, Session file 'f'@15 (others 'R/D/T/C/U/S/L' @0)
-            5 -> {                                              ; Help
-                if theme.show_dev and i == 2                    ; Hints-Tips 'T'@6 (Dev-only row; all other Help items @0)
-                    return 6
-            }
-        }
-        return 0
-    }
+    ; item_accel + accel_off (the dropdown accelerator tables) moved to menus.ovl's mnu_accel ($A012)
+    ; to reclaim ~330 B of low RAM - they belong beside the labels there. Call sites use mnu_accel
+    ; directly: which 0 (folded letter -> item index) in run_dropdown; which 1 (item -> accel column)
+    ; in draw_dropdown_item. theme.show_dev is passed since the overlay has no theme copy.
 
     sub start() {
         saved_mode, cx16.r0L, cx16.r0H = cx16.get_screen_mode()
@@ -540,9 +511,11 @@ main {
         ; 40-col still returns to it. The UI lays itself out from SCR_W/SCR_H below.
         cx16.set_screen_mode($01)               ; 80x30 (SCR_W/SCR_H/STATUS_ROW are consts to match)
         TEXT_ROWS = SCR_H - 2                    ; the one geometry value kept as a var (SES_PTRS &TEXT_ROWS)
-        txt.lowercase()
-        sys.disable_caseswitch()        ; lock the charset in lowercase - Shift+Commodore can't
-                                        ; flip the whole display to uppercase mid-edit (as in XFMGR2)
+        txt.lowercase()                 ; boot charset = PETSCII lowercase. The ACTIVE doc's real mode
+                                        ; (per-doc theme.ISO_MODE) is applied by apply_charset_mode once
+                                        ; the slots are loaded, below (before the first full_redraw).
+        sys.disable_caseswitch()        ; lock the charset - Shift+Commodore can't flip the whole
+                                        ; display mid-edit (as in XFMGR2); wanted in ISO mode too
 
         g_emu = emudbg.is_emulator()    ; remember the runtime environment
         xarena.detect_banks()           ; clamp banked storage to the RAM actually installed
@@ -666,6 +639,8 @@ main {
         if session_on and not reloaded                  ; overlay the saved files+cursors onto the fresh slots
             edsess_rw(2)
         cursor_sprite_setup()                   ; the insert-mode underline cursor sprite (theme+mode set)
+        font_setup()                            ; capture the { } \ | ~ glyphs from the ROM ISO font (once)
+        apply_charset_mode()                    ; apply the active doc's PETSCII/ISO mode before the first paint
         full_redraw()
         ; One status-row message, most specific first: a BASLOAD error names a line to fix, a rejected
         ; session explains why the editor came up empty, missing files explain the blank slots. Silence
@@ -704,9 +679,9 @@ main {
         caps_restore()                          ; put Caps Lock back as we found it - before ALL exit branches
         txt.clear_screen()                      ; clean screen in the restored charset/colours before sign-off
         if run_config {
-            chain_load(theme.path_to(cfgprog))  ; hand off to EDCFG; it reloads EDIT (and ed.run) on exit
+            ovl_chain_load(theme.path_to(cfgprog))  ; hand off to EDCFG (misc.ovl); reloads EDIT on exit
         } else if run_basload {
-            chain_to_basload(filename)          ; hand off to BASLOAD; F8 stays armed for the return
+            ovl_chain_basload(filename)         ; hand off to BASLOAD (misc.ovl); F8 stays armed to return
         } else {
             restore_fkeys()                     ; put all fkeys back as the user had them (un-hijacks F8)
             txt.print("bye!\n")
@@ -1176,7 +1151,10 @@ main {
             ubyte ch = SPACE_SC
             ubyte col = theme.CB_BODY
             if c < nchar {
-                ch = txt.petscii2scr(@(sp))
+                if theme.ISO_MODE
+                    ch = iso_scr(@(sp))         ; ISO: ASCII byte -> shared-font screencode (chrome-safe)
+                else
+                    ch = txt.petscii2scr(@(sp))
                 if hl_on
                     col = hlcol[si]
                 sp++
@@ -1767,7 +1745,7 @@ main {
         col = put_uw_at(col, STATUS_ROW, cur_col + 1)
         ; INS/OVR + CAPS field. Drawn by menus.ovl (mnu_mode) to keep its strings/put_str_at out of low
         ; RAM. It returns the column just past the field (variable width - CAPS widens it when caps is on).
-        col = mnu_mode(col, STATUS_ROW, ovr_mode as ubyte, upper_mode as ubyte)
+        col = mnu_mode(col, STATUS_ROW, ovr_mode as ubyte, upper_mode as ubyte, theme.ISO_MODE as ubyte)
         ; (the active-document ABC indicator used to sit here; it lives at the right end of the MENU
         ;  bar now, beside the filename. The col advances that reserved its width are gone with it, so
         ;  the "Total lines" guard below sees the extra 6 columns it freed.)
@@ -1847,7 +1825,12 @@ main {
                 hold &= (255 - MOD_CAPS)
             }
             if (hold & MOD_ALT) != 0 {
-                alt_was = true              ; ALT held - wait to see if a letter follows
+                if theme.ISO_MODE {
+                    iso_alt_menu()          ; ISO: read the C=+letter accelerator under a temporary
+                    cursor_update()         ; PETSCII keyboard decode, open that menu, restore ISO decode
+                    continue                ; then wait for the next real key
+                }
+                alt_was = true              ; PETSCII: ALT held - wait to see if a letter chord follows
             } else {
                 if alt_was {                ; ALT released with no key -> return 0 = "open the menu". 0 is
                     alt_was = false         ; never a real key here, so no collision (unlike the old 200 = 'H').
@@ -1939,8 +1922,13 @@ main {
         box_msg(msg(MSG_SAVECHG), theme.CB_BAR)              ; settle to the normal box, stays readable
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'y' -> return 1
                 'n' -> return 0
@@ -1957,8 +1945,13 @@ main {
         box_msg(msg(MSG_OVERWRITE), theme.CB_BAR)
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'y' -> return true
                 'n', 27, 3 -> return false
@@ -2009,7 +2002,7 @@ main {
     sub menu_flags() -> ubyte {
         ; pack the states menus.ovl needs for its dynamic item labels:
         ; bit0 = word wrap, bit1 = syntax colour, bit2 = line numbers, bit3 = Dev menu shown,
-        ; bit4 = a .EDIT.SESSION exists (Dev item shows Delete vs Create).
+        ; bit4 = a .EDIT.SESSION exists (Dev item shows Delete vs Create), bit5 = active doc is ISO.
         ; (when Dev is hidden, the Help menu also drops its BASLOAD + Hints-Tips items and compacts).
         ubyte f = 0
         if wrap_on
@@ -2022,6 +2015,8 @@ main {
             f |= 8
         if session_on
             f |= 16
+        if theme.ISO_MODE
+            f |= 32
         return f
     }
 
@@ -2112,7 +2107,7 @@ main {
         }
         ; recolour just the accelerator letter (keep the row's bg) - drawn last so it
         ; survives the selection fill
-        txt.setclr(x0 + 2 + accel_off(active, i), row, (base & $f0) | theme.ACCEL_FG)
+        txt.setclr(x0 + 2 + mnu_accel(1, active, i, theme.show_dev as ubyte), row, (base & $f0) | theme.ACCEL_FG)
     }
 
     sub draw_dropdown(ubyte active, ubyte x0, ubyte y0, ubyte x1, ubyte y1, ubyte n, ubyte sel) {
@@ -2150,7 +2145,7 @@ main {
             0 -> { n = 9  boxw = 17 }       ; File ("Open...    Ctrl+O")
             1 -> { n = 10  boxw = 22 }      ; Edit ("Paste        Ctrl+V/F4")
             2 -> { n = 4  boxw = 21 }       ; Search ("Replace...  Ctrl+R/F8")
-            3 -> { n = 9  boxw = 22 }       ; Dev ("Uncomment Block Ctrl+W")
+            3 -> { n = 10  boxw = 22 }      ; Dev ("Uncomment Block Ctrl+W" / "Encoding     PETSCII")
             WINDOW_MENU -> { n = 4  boxw = 20 }   ; Window (Next + docs A/B/C: "A - <name>")
         }
         if active == 5 and not theme.show_dev
@@ -2172,9 +2167,14 @@ main {
         draw_dropdown(active, x0, y0, x1, y1, n, sel)   ; full box once; navigation patches 2 rows
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
-            ubyte acc = item_accel(active, k)   ; letter accelerator activates the item
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
+            ubyte acc = mnu_accel(0, active, k, theme.show_dev as ubyte)   ; letter accelerator activates the item
             if acc != 255
                 return acc
             when k {
@@ -2270,7 +2270,8 @@ main {
                     5 -> comment_apply(2)       ; uncomment the selected block (strip REM)
                     6 -> act_session_toggle()   ; create/delete the per-folder .EDIT.SESSION (picker.ovl)
                     7 -> hl_on = not hl_on      ; toggle syntax colouring (menu_mode_loop repaints)
-                    else -> ln_on = not ln_on   ; toggle the line-number gutter (repaints on close)
+                    8 -> ln_on = not ln_on      ; toggle the line-number gutter (repaints on close)
+                    else -> act_toggle_mode()   ; flip the active doc PETSCII<->ISO (also bound to Ctrl+F7)
                 }
             }
             WINDOW_MENU -> {                ; Window
@@ -2449,6 +2450,7 @@ main {
         wrap_on = false
         hl_on = false
         hl_mode = HL_BASIC
+        theme.ISO_MODE = false          ; fresh slots start in PETSCII (New = PETSCII)
     }
 
     sub init_doc_slots() {
@@ -2466,6 +2468,190 @@ main {
         cur_dirty = false
     }
 
+    sub act_toggle_mode() {
+        ; Flip the ACTIVE doc's PETSCII/ISO mode. Reached from the Dev menu ("Encoding") and Ctrl+F7.
+        ; RE-ENCODES the buffer so the displayed text stays visually stable across the switch (case is
+        ; preserved, keywords keep colouring) instead of the same bytes being reinterpreted. ISO->PETSCII
+        ; is lossy for { } \ | ~ (no PETSCII glyph - they survive as raw bytes but show as graphics).
+        commit_editbuf()                        ; flush the live line into the arena (still old encoding)
+        bool to_iso = not theme.ISO_MODE        ; the mode we are switching TO
+        edoc.recode(to_iso)                     ; convert every committed line in place
+        theme.ISO_MODE = to_iso
+        cur_len = edoc.load(cur_row, &editbuf)  ; reload the live line in the NEW encoding
+        cur_dirty = false
+        undo_clear()                            ; snapshots are old-encoding far pointers - drop them
+        apply_charset_mode()                    ; reconfigure font/keyboard for the new mode
+        full_redraw()
+    }
+
+    sub apply_charset_mode() {
+        ; Per-doc mode switch (per-doc theme.ISO_MODE, loaded on every doc switch). Key idea: the DISPLAY
+        ; always uses the PETSCII upper/lower FONT (charset 3) - its screencode layout renders every piece
+        ; of chrome + UI text, and iso_scr maps an ISO doc's ASCII bytes onto it (incl the { } \ | ~ glyphs
+        ; patched in by font_setup). Only the KEYBOARD decode differs per mode. screen_set_charset MUST be
+        ; called (it sets KERNAL `mode` + reloads the font glyphs; skipping it left the charset/keyboard
+        ; state half-initialized -> wrong chars + lockup). ISO: set $0372 bit $40 + EXTAPI (iso_cursor_char
+        ; $9f) so keys emit ASCII { } \ | ~; PETSCII: clear bit $40 (no EXTAPI, per ROM). cmt_prefix follows.
+        cx16.screen_set_charset(3, 0)      ; PETSCII upper/lower font in BOTH modes (reloads the glyphs)
+        font_xfer(false)                   ; re-stamp the { } \ | ~ glyphs the reload just wiped
+        if theme.ISO_MODE {
+            %asm {{
+                lda  $0372
+                ora  #$40
+                sta  $0372
+                clc
+                ldx  #$9f
+                lda  #$05
+                jsr  $feab
+            }}
+            cmt_prefix[0] = $52            ; "REM " as ASCII
+            cmt_prefix[1] = $45
+            cmt_prefix[2] = $4d
+        } else {
+            %asm {{
+                lda  $0372
+                and  #$bf
+                sta  $0372
+            }}
+            cmt_prefix[0] = $d2            ; "REM " in shifted PETSCII
+            cmt_prefix[1] = $c5
+            cmt_prefix[2] = $cd
+        }
+        sys.disable_caseswitch()           ; keep the display charset locked (Shift+C= can't flip it)
+    }
+
+    ; Screencode slots for the five ISO-only glyphs in the shared PETSCII-superset font. These are
+    ; free graphics slots (NOT used by the box-draw chrome: SC_H $40, SC_V $5d, SC_VR $6b, SC_BL $6d,
+    ; SC_TR $6e, SC_TL $70, SC_VL $73, SC_BR $7d, SC_UP $1e) and never produced by petscii2scr for any
+    ; normal document byte, so font_setup can patch the { } \ | ~ glyphs there without disturbing chrome.
+    const ubyte SC_LBRACE = $5b            ; {
+    const ubyte SC_PIPE   = $5c            ; |
+    const ubyte SC_BSLASH = $1c            ; backslash
+    const ubyte SC_TILDE  = $5e            ; ~
+    const ubyte SC_RBRACE = $5f            ; }  (NOT its natural $5d, which is the box vertical rail)
+
+    sub iso_scr(ubyte b) -> ubyte {
+        ; ISO document display: map a stored ASCII byte to a screencode in the shared PETSCII-superset
+        ; font. Letters fold to the SAME slots a PETSCII doc uses (via a2p-then-petscii2scr), so ordinary
+        ; text renders identically in both modes; the five ISO-only chars { } \ | ~ (no PETSCII code of
+        ; their own) go to the custom glyph slots above. (`_` and backtick are not in the glyph set, so
+        ; they fall through to their PETSCII look - left-arrow / box-edge - a known limit.)
+        when b {
+            $7b -> return SC_LBRACE        ; {
+            $7c -> return SC_PIPE          ; |
+            $7d -> return SC_RBRACE        ; }
+            $7e -> return SC_TILDE         ; ~
+            $5c -> return SC_BSLASH        ; backslash
+        }
+        ubyte p = b
+        if b >= $41 and b <= $5a
+            p = b + $80                    ; ASCII A-Z -> PETSCII $C1-$DA (uppercase glyphs)
+        else if b >= $61 and b <= $7a
+            p = b - $20                    ; ASCII a-z -> PETSCII $41-$5A (lowercase glyphs)
+        return txt.petscii2scr(p)
+    }
+
+    ; --- ISO glyph patch. The shared display font is PETSCII (charset 3); these routines stamp the five
+    ; ISO-only glyphs { } \ | ~ into the free screencode slots iso_scr maps them to, so ISO docs show them.
+    ; The bitmaps are captured ONCE from the ROM ISO font (font_setup) and re-stamped after every
+    ; screen_set_charset(3) reload (font_patch, from apply_charset_mode). The X16 charset lives at VRAM
+    ; $1F000 (the default L1 tilebase, which EDIT never moves); glyph N is 8 bytes at $1F000 + N*8.
+    const uword FONT_VADDR = $f000         ; low 16 bits of the charset VRAM base ($1F000)
+    const ubyte FONT_A16   = $01           ; bit 16 of $1F000
+    ubyte[40] iso_glyphs                    ; 5 captured 8-byte glyphs, order: { } \ | ~
+    ubyte[5]  g_src = [$7b, $7d, $5c, $7c, $7e]                    ; ISO-font source slots
+    ubyte[5]  g_dst = [SC_LBRACE, SC_RBRACE, SC_BSLASH, SC_PIPE, SC_TILDE]   ; display-font dest slots
+
+    sub vera_glyph_addr(ubyte slot) {
+        ; point VERA DATA0 (auto-increment +1) at charset glyph `slot`
+        cx16.VERA_CTRL = 0
+        cx16.VERA_ADDR_L = lsb(FONT_VADDR + (slot as uword) * 8)
+        cx16.VERA_ADDR_M = msb(FONT_VADDR + (slot as uword) * 8)
+        cx16.VERA_ADDR_H = %00010000 | FONT_A16
+    }
+
+    sub font_xfer(bool capture) {
+        ; capture=true : read the 5 ISO glyphs from the (ISO) font VRAM into iso_glyphs.
+        ; capture=false: stamp iso_glyphs into the display font's free slots (the { } \ | ~ patch).
+        ubyte i
+        for i in 0 to 4 {
+            if capture
+                vera_glyph_addr(g_src[i])
+            else
+                vera_glyph_addr(g_dst[i])
+            uword p = &iso_glyphs + (i as uword) * 8
+            ubyte j
+            for j in 0 to 7 {
+                if capture
+                    @(p) = cx16.VERA_DATA0
+                else
+                    cx16.VERA_DATA0 = @(p)
+                p++
+            }
+        }
+    }
+
+    sub font_setup() {
+        ; Capture { } \ | ~ from the ROM ISO font (ASCII-ordered: glyph N = char code N), once at boot.
+        ; Restores the PETSCII display font before returning (apply_charset_mode reloads it anyway).
+        cx16.screen_set_charset(1, 0)          ; ISO font into the charset VRAM
+        font_xfer(true)
+        cx16.screen_set_charset(3, 0)          ; restore the PETSCII display font
+    }
+
+    sub kbd_decode_petscii() {
+        ; Flip ONLY the KERNAL keyboard decode back to PETSCII by clearing the ISO flag ($0372 bit $40).
+        ; The ISO FONT is untouched (no screen_set_charset), so the screen still shows ISO glyphs; only
+        ; how keys are decoded changes. Used briefly while C= is held so a C=+letter chord delivers the
+        ; PETSCII graphics code 161-191 that alt_letter maps to a menu letter.
+        %asm {{
+            lda  $0372
+            and  #$bf
+            sta  $0372
+        }}
+    }
+
+    sub kbd_decode_iso() {
+        ; Restore ISO keyboard decode (ISO flag + EXTAPI) after kbd_decode_petscii, so typing { } \ | ~
+        ; works again. Same sequence apply_charset_mode uses for ISO, minus the font load (already ISO).
+        %asm {{
+            lda  $0372
+            ora  #$40
+            sta  $0372
+            clc
+            ldx  #$9f
+            lda  #$05
+            jsr  $feab
+        }}
+    }
+
+    sub iso_alt_menu() {
+        ; ISO-mode menu open. In ISO the KERNAL keymap turns C= into a compose modifier, so a C=+letter
+        ; chord never delivers a decodable menu letter. Trick: flip only the keyboard decode to PETSCII
+        ; (the ISO font stays), so C=+letter now arrives as a graphics code 161-191 we CAN map - giving
+        ; real Alt+E / Alt+W. We enter here having just seen C= held with nothing in the buffer yet, so
+        ; the flip lands before the letter is decoded. Falls back to the menu bar (m=0) if C= is released
+        ; with no letter, or if a non-accelerator arrives. Restores ISO decode before opening the menu so
+        ; the dropdown accelerators (which use the ISO fold) and later text typing behave normally.
+        kbd_decode_petscii()
+        ubyte m = 0
+        repeat {
+            ubyte k = cbm.GETIN2()
+            if k != 0 {
+                if k >= 161 and k <= 191 {
+                    ubyte mm = mnu_accel(2, 0, alt_letter[k - 161], theme.show_dev as ubyte)
+                    if mm != 255
+                        m = mm
+                }
+                break
+            }
+            if (cx16.kbdbuf_get_modifiers() & MOD_ALT) == 0
+                break                       ; C= released with no letter -> open the bar (m stays 0)
+        }
+        kbd_decode_iso()
+        menu_mode_loop(m)
+    }
+
     sub switch_doc() {
         ; F7: cycle A->B->C->A. Flush the live line, save the active context, bring up the next doc.
         commit_editbuf()
@@ -2474,6 +2660,7 @@ main {
         if g_active_slot >= NDOCS
             g_active_slot = 0
         load_ctx(g_active_slot)
+        apply_charset_mode()            ; this doc may be a different mode than the one we left
         cur_len = edoc.load(cur_row, &editbuf)
         cur_dirty = false
         full_redraw()
@@ -2888,26 +3075,6 @@ main {
         g_redrawn = true
     }
 
-    sub chain_load(str prog) {
-        ; LOAD + RUN a .prg from BASIC's REPL: print the LOAD line on screen, then feed CR + RUN + CR
-        ; through the keyboard queue so BASIC re-reads the printed line. Same dance as chain_to_basload
-        ; (and the same one the /ED launcher performs), just for an arbitrary program.
-        txt.chrout($93)                         ; clear screen, cursor home
-        txt.nl()
-        txt.print("load")
-        txt.chrout($22)                         ; "
-        txt.print(prog)
-        txt.chrout($22)
-        txt.chrout($91)                         ; cursor up x2 -> back onto the LOAD line
-        txt.chrout($91)
-        cx16.kbdbuf_clear()
-        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen LOAD line
-        cx16.kbdbuf_put('r')
-        cx16.kbdbuf_put('u')
-        cx16.kbdbuf_put('n')
-        cx16.kbdbuf_put($0d)                    ; RUN + CR
-    }
-
     sub arm_return_key() {
         ; reprogram F8 (KERNAL pfkey key 8) to the DOS-wedge command that reloads EDIT.
         ; macro `retkey` = up-arrow "/ED" + CR; persists in the KERNAL editor across the run.
@@ -2978,36 +3145,6 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             sta  $00
             plp
         }}
-    }
-
-    sub chain_to_basload(str name) {
-        ; print `BASLOAD"name"` on screen, then feed CR + RUN + CR through the 10-byte keyboard
-        ; queue so BASIC re-reads the line and runs the tokenized program (see XFMGR chain_run).
-        txt.chrout($93)                         ; clear screen, cursor home
-        txt.plot(7, 0)                         ; reminder starts at COL 10 of the top row: when EDIT exits,
-        txt.print("*press f8 to return to edit*") ; BASIC prints "READY." at row 0 col 0 (6 chars) and would
-                                                ; clobber the front of the reminder - the col-10 offset keeps
-                                                ; it clear of that, with a small gap. The inject dance below
-                                                ; is the ORIGINAL, unchanged: it homes, drops to row 1 and
-                                                ; puts the BASLOAD command there. Row 1 is a separate logical
-                                                ; line (the reminder doesn't wrap), so the RETURN inject reads
-                                                ; ONLY the command, never the reminder. nl()/cursor-up are
-                                                ; used (NOT plot) - a raw plot leaves the screen editor in a
-                                                ; state where the injected RETURN fails to read the line.
-        txt.plot(0, 0)                          ; home for the unchanged dance (cursor rides over the reminder)
-        txt.nl()                                ; -> row 1
-        txt.print("basload")                    ; command on row 1, exactly as before - inject re-reads this
-        txt.chrout($22)                         ; "
-        txt.print(name)
-        txt.chrout($22)
-        txt.chrout($91)                         ; cursor up x2 -> back onto the BASLOAD line
-        txt.chrout($91)
-        cx16.kbdbuf_clear()
-        cx16.kbdbuf_put($0d)                    ; CR: submit the on-screen BASLOAD line
-        cx16.kbdbuf_put('r')
-        cx16.kbdbuf_put('u')
-        cx16.kbdbuf_put('n')
-        cx16.kbdbuf_put($0d)                    ; RUN + CR
     }
 
     sub ses_xfer(uword bankaddr, uword count, bool saving) -> bool {
@@ -3150,13 +3287,15 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         if n > BERR_MAX
             n = BERR_MAX
         c = 0
+        cx16.push_rambank(CLIP_BANK)            ; berr is banked; getchr/setchr use VERA (no bank clash)
         while c < n {
             ubyte s = txt.getchr(c, row)
             if s >= 1 and s <= 26
                 s += 64                         ; letter -> lowercase-charset uppercase slot
-            berr[c] = s
+            @(berr + c) = s
             c++
         }
+        cx16.pop_rambank()
         berr_len = n
     }
 
@@ -3213,10 +3352,12 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         if n > SCR_W - 1
             n = SCR_W - 1
         ubyte c = 0
+        cx16.push_rambank(CLIP_BANK)            ; berr is banked (see its declaration)
         while c < n {
-            txt.setchr(1 + c, STATUS_ROW, berr[c])
+            txt.setchr(1 + c, STATUS_ROW, @(berr + c))
             c++
         }
+        cx16.pop_rambank()
     }
 
     ; The About screen lives in misc.ovl (MISC_BANK) - see the extsub block near the top. What is
@@ -3327,9 +3468,11 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; ---------- search / replace ----------
 
     sub fold(ubyte b) -> ubyte {
-        ; case-fold a PETSCII letter to lowercase ($C1-$DA upper -> $41-$5A lower)
+        ; case-fold a letter to the canonical $41-$5A range so either case matches.
+        if theme.ISO_MODE and b >= $61 and b <= $7a
+            return b - $20              ; ISO 'a'-'z' document/term bytes -> $41-$5A
         if b >= $c1 and b <= $da
-            return b - $80
+            return b - $80              ; PETSCII 'A'-'Z' -> $41-$5A (filename fold rides this - item 10)
         return b
     }
 
@@ -3571,8 +3714,13 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         draw_ww_label(false)                    ; read-only "Whole Word" reminder when it's on
         repeat {
             ubyte k = wait_key()
-            if k >= $c1 and k <= $da
-                k -= $80
+            if theme.ISO_MODE {
+                if k >= $61 and k <= $7a
+                    k -= $20
+            } else {
+                if k >= $c1 and k <= $da
+                    k -= $80
+            }
             when k {
                 'y', ' ', 13 -> return 'y'
                 'n' -> return 'n'
@@ -3877,73 +4025,9 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; "Comment at" setting, theme.cmt_indent.
     ubyte[4] cmt_prefix = [$d2, $c5, $cd, $20]               ; "REM " in uppercase PETSCII
 
-    sub rem_start(uword buf, ubyte blen) -> ubyte {
-        ; index where a REM comment starts (after leading spaces), or 255 if the line isn't a comment.
-        ; REM must be a whole token (end-of-line or a space next) so "REMARK" isn't mistaken for one.
-        ubyte i = 0
-        while i < blen and @(buf + i) == ' '
-            i++
-        if i + 3 > blen
-            return 255
-        ; compare against the FOLDED (uppercase $41-$5A) codes for R,E,M directly - a char literal like
-        ; 'R' encodes to shifted PETSCII ($D2), which cfold would never produce, so match on $52/$45/$4D.
-        if fold(@(buf + i)) == $52 and fold(@(buf + i + 1)) == $45 and fold(@(buf + i + 2)) == $4d {
-            if i + 3 == blen or @(buf + i + 3) == ' '
-                return i
-        }
-        return 255
-    }
-
-    sub build_commented(uword buf, ubyte blen) -> ubyte {
-        ; workbuf = buf with "REM " inserted at column 0, or after the leading spaces if cmt_indent
-        ubyte ins = 0
-        if theme.cmt_indent != 0
-            while ins < blen and @(buf + ins) == ' '
-                ins++
-        ubyte o = 0
-        ubyte i = 0
-        while i < ins and o < edoc.MAX_LEN {            ; copy the leading indent (indent mode)
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        ubyte j = 0
-        while j < 4 and o < edoc.MAX_LEN {              ; insert the REM prefix
-            workbuf[o] = cmt_prefix[j]
-            o++
-            j++
-        }
-        while i < blen and o < edoc.MAX_LEN {           ; copy the rest of the line
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        return o
-    }
-
-    sub build_uncommented(uword buf, ubyte blen, ubyte rs) -> ubyte {
-        ; workbuf = buf with the REM (3 chars at rs) + up to 3 following spaces removed
-        ubyte cut = rs + 3
-        ubyte sp = 0
-        while sp < 3 and cut < blen and @(buf + cut) == ' ' {
-            cut++
-            sp++
-        }
-        ubyte o = 0
-        ubyte i = 0
-        while i < rs {                                  ; keep any indent before REM
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        i = cut
-        while i < blen {                                ; keep everything after the stripped REM
-            workbuf[o] = @(buf + i)
-            o++
-            i++
-        }
-        return o
-    }
+    ; rem_start / build_commented / build_uncommented moved to menus.ovl's mnu_rem ($A015) to reclaim
+    ; ~200 B of low RAM (the overlay writes main's workbuf directly - low RAM stays mapped). comment_apply
+    ; calls mnu_rem with buf=&tmpbuf, workp=&workbuf, iso=theme.ISO_MODE.
 
     sub comment_apply(ubyte mode) {
         ; mode 0 = toggle the current line; 1 = comment the block; 2 = uncomment the block. One undo
@@ -3968,7 +4052,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         bool do_add = mode != 2                         ; comment adds REM; uncomment strips it
         if mode == 0 {
             ubyte cl = edoc.load(cur_row, &tmpbuf)
-            do_add = rem_start(&tmpbuf, cl) == 255      ; toggle: add only if the line isn't a comment
+            do_add = mnu_rem(0, cl, 0, theme.ISO_MODE as ubyte, &tmpbuf, 0) == 255   ; toggle: add only if not a comment
         }
         ubyte llen
         ubyte newlen
@@ -3987,14 +4071,14 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 ; the end - and Uncomment could not put them back, since it only removes the prefix.
                 ; Leaving the line untouched is recoverable; truncating it is not.
                 if (llen as uword) + 4 <= edoc.MAX_LEN {
-                    newlen = build_commented(&tmpbuf, llen)
+                    newlen = mnu_rem(1, llen, theme.cmt_indent, theme.ISO_MODE as ubyte, &tmpbuf, &workbuf)
                     urec_replace(r, &tmpbuf, llen)
                     void edoc.commit(r, &workbuf, newlen)
                 }
             } else {
-                rs = rem_start(&tmpbuf, llen)
+                rs = mnu_rem(0, llen, 0, theme.ISO_MODE as ubyte, &tmpbuf, 0)
                 if rs != 255 {
-                    newlen = build_uncommented(&tmpbuf, llen, rs)
+                    newlen = mnu_rem(2, llen, rs, theme.ISO_MODE as ubyte, &tmpbuf, &workbuf)
                     urec_replace(r, &tmpbuf, llen)
                     void edoc.commit(r, &workbuf, newlen)
                 }
@@ -4032,7 +4116,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte llen = edoc.load(s_row, &tmpbuf)
             i = s_col
             while i < e_col and i < llen {
-                @(clipbuf + o) = tmpbuf[i]
+                @(clipbuf + o) = edoc.p2a(tmpbuf[i])    ; clip is canonical ASCII (mode-neutral)
                 o++
                 i++
             }
@@ -4040,7 +4124,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte slen = edoc.load(s_row, &tmpbuf)
             i = s_col
             while i < slen and o < 1023 {
-                @(clipbuf + o) = tmpbuf[i]
+                @(clipbuf + o) = edoc.p2a(tmpbuf[i])    ; clip is canonical ASCII (mode-neutral)
                 o++
                 i++
             }
@@ -4058,7 +4142,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 ubyte ml = edoc.load(r, &tmpbuf)
                 ubyte j = 0
                 while j < ml and o < 1023 {
-                    @(clipbuf + o) = tmpbuf[j]
+                    @(clipbuf + o) = edoc.p2a(tmpbuf[j])
                     o++
                     j++
                 }
@@ -4071,7 +4155,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte elen = edoc.load(e_row, &tmpbuf)
             ubyte k2 = 0
             while k2 < e_col and k2 < elen and o < 1023 {
-                @(clipbuf + o) = tmpbuf[k2]
+                @(clipbuf + o) = edoc.p2a(tmpbuf[k2])
                 o++
                 k2++
             }
@@ -4086,7 +4170,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ubyte i = 0
         cx16.push_rambank(CLIP_BANK)            ; clipbuf is banked; editbuf is low RAM
         while i < cur_len {
-            @(clipbuf + i) = editbuf[i]
+            @(clipbuf + i) = edoc.p2a(editbuf[i])   ; clip is canonical ASCII (mode-neutral)
             i++
         }
         cx16.pop_rambank()
@@ -4225,7 +4309,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             ubyte bi = 0
             cx16.push_rambank(CLIP_BANK)        ; stage the banked clip line into low-RAM tmpbuf
             while bi < lsb(clip_len) {
-                tmpbuf[bi] = @(clipbuf + bi)
+                tmpbuf[bi] = edoc.a2p(@(clipbuf + bi))  ; canonical ASCII clip -> active doc encoding
                 bi++
             }
             cx16.pop_rambank()
@@ -4246,7 +4330,7 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             uword pi = 0
             cx16.push_rambank(CLIP_BANK)        ; clip reads below; do_split's edoc calls nest and restore
             while pi < clip_len {
-                ubyte ch = @(clipbuf + pi)
+                ubyte ch = edoc.a2p(@(clipbuf + pi))   ; canonical ASCII clip -> active doc encoding
                 pi++
                 if ch == 13 {
                     if not do_split() {
@@ -4780,13 +4864,22 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     ; ---------- key dispatch ----------
 
     sub editor_key(ubyte k) {
-        ; ALT+letter (Commodore-key graphics codes 161..191) opens that menu directly;
-        ; intercept before the text-insert path below (which accepts k>=160). Other ALT
-        ; combos are swallowed so they don't insert a graphics char.
-        if k >= 161 and k <= 191 {
-            ubyte m = menu_for_letter(alt_letter[k - 161])
-            if m != 255
-                menu_mode_loop(m)
+        ; Commodore(ALT)+letter opens a menu. In PETSCII the KERNAL delivers the chord as a graphics
+        ; code 161..191 that alt_letter maps back to a base letter -> open that menu directly (intercept
+        ; before the text-insert path below, which accepts k>=160; other ALT combos are swallowed).
+        if not theme.ISO_MODE {
+            if k >= 161 and k <= 191 {
+                ubyte m = mnu_accel(2, 0, alt_letter[k - 161], theme.show_dev as ubyte)
+                if m != 255
+                    menu_mode_loop(m)
+                return
+            }
+        } else if (g_mod & MOD_ALT) != 0 {
+            ; ISO: the ISO keymap has no Commodore graphics table, so C= acts as AltGr/compose and the
+            ; emitted byte can't be decoded to a menu letter. Claim any Commodore chord to open the menu
+            ; bar (we type no accented/compose chars - the glyph set is { } \ | ~, all base keys); the
+            ; user then picks the menu with the arrow keys or a dropdown accelerator letter.
+            menu_mode_loop(0)
             return
         }
         ; selection management: Shift+cursor extends the selection, any other
@@ -4912,12 +5005,22 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
             15 -> act_open()                ; Ctrl+O  open
             137 -> void save_now()          ; F2  save
             135 -> act_run_basload()        ; F5  save + run through BASLOAD
-            136 -> switch_doc()             ; F7  cycle the active document (A->B->C)
+            136 -> {                        ; F7 cycle docs; Ctrl+F7 toggles THIS doc's PETSCII/ISO mode
+                if (g_mod & MOD_CTRL) != 0
+                    act_toggle_mode()
+                else
+                    switch_doc()
+            }
             133 -> act_keymap()             ; F1  Help (keyboard map / edit.md)
             else -> {
                 if (k >= 32 and k <= 126) or (k >= 160) {
-                    if upper_mode and k >= $41 and k <= $5a
-                        k += $80        ; software Caps Lock: fold lowercase a-z ($41-$5A) to capital ($C1-$DA)
+                    if theme.ISO_MODE {
+                        if upper_mode and k >= $61 and k <= $7a
+                            k -= $20    ; software Caps Lock (ISO): fold a-z ($61-$7A) up to A-Z ($41-$5A)
+                    } else {
+                        if upper_mode and k >= $41 and k <= $5a
+                            k += $80    ; software Caps Lock: fold lowercase a-z ($41-$5A) to capital ($C1-$DA)
+                    }
                     if sel_active
                         delete_selection()
                     ed_insert(k)
