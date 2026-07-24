@@ -34,7 +34,7 @@ main {
     ; get_editor_key returns 0 to mean "ALT released with no key -> open the menu bar" (0 is never a real
     ; key it returns). This replaced a MENU_KEY=200 sentinel that equalled PETSCII capital 'H' ($C8=200),
     ; so a real Shift+H (or a caps-folded 'h') used to open the menu instead of typing the letter.
-    const uword BUILD_NUM  = 382         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
+    const uword BUILD_NUM  = 389         ; version's build segment: About shows "v0.9.<BUILD_NUM>".
                                         ; build.bat's build-sync step AUTO-INCREMENTS this (and README's
                                         ; "Version 0.9.N") by 1 on every compile - do not hand-edit.
 
@@ -87,7 +87,8 @@ main {
     bool run_config = false             ; Help>Config armed the hand-off to the EDCFG settings program
     str cfgprog = "edcfg.prg"           ; the settings program; theme.path_to() prefixes the
                                         ; install folder (read out of the root ED launcher)
-    str runstate = "ed.run"             ; session-state file at the fsroot (see the layout note below)
+    str runstate = ".ed.run"            ; session-state file at the fsroot -> ".ED.RUN" on disk (hidden-file
+                                        ; convention, like .EDIT.SESSION). See the layout note below.
     ; ---- session state (ed.run) ----
     ; A hand-off to BASLOAD / EDCFG (and later to any of our own utility programs) reloads EDIT from
     ; scratch, so everything in low RAM is lost. ed.run is what survives the trip. It used to carry
@@ -183,6 +184,8 @@ main {
     const uword berr = $AB00            ; the scraped BASLOAD error line (screen codes) lives in CLIP_BANK
                                         ; at $AB00 (above STARTDIR $AA70), NOT low RAM - saves 80 B. Only
                                         ; berr_len stays low; the two access loops wrap push/pop CLIP_BANK.
+    const uword SAVEDIR_ADDR = $AB50    ; 82 bytes in CLIP_BANK (above berr): the cwd saved across an ed.run
+                                        ; write, so write_run_state can force cwd to root and put it back.
     ubyte berr_len = 0                  ; length of berr (0 = no error captured)
     ubyte[5] retkey = [$5e, $2f, $45, $44, $0d]  ; F8 return macro: up-arrow "/ED" + CR -> reloads EDIT
     ; fksnap (the 99-byte snapshot of all 9 KERNAL fkey macros, restored verbatim on exit) lives at
@@ -3166,7 +3169,9 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
     sub write_run_state() {
         ; Snapshot the whole workspace into ed.run. The body lives in misc.ovl (ses_write) - it is
         ; the coldest code in the program, moved out for low RAM. No overlay -> no session file, but
-        ; EDIT still runs; the reload then just comes up fresh.
+        ; EDIT still runs; the reload then just comes up fresh. ed.run is forced to the launch root
+        ; around its OPEN/CLOSE (see ses_svc op OP_OPEN_W / OP_CLOSE_W) - not here, because ses_write
+        ; SAVES THE DOCUMENTS FIRST and those must stay in the current (document's) folder.
         if ses_ok
             ovl_ses_write()
     }
@@ -3176,6 +3181,13 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
         ; Returns true if a session was restored - start() then skips its fresh-launch setup.
         if not ses_ok
             return false
+        ; ses_restore reads/deletes .ed.run at the root, then must return to the folder EDIT was
+        ; restarted in before loading the (bare-named) documents. That folder is the boot cwd, still in
+        ; STARTDIR_ADDR right now - but ses_restore's fields() overwrites STARTDIR with the session's own
+        ; value, so copy it into SAVEDIR first for OP_OPEN_R / OP_FINISH_R to chdir back to.
+        cx16.push_rambank(CLIP_BANK)
+        void strings.copy(STARTDIR_ADDR, SAVEDIR_ADDR)
+        cx16.pop_rambank()
         return ovl_ses_restore() != 0
     }
 
@@ -3213,17 +3225,57 @@ _rsl:       lda  cx16.r1L           ; CLIP_BANK to read fksnap
                 recompute_gutter()
             }
             8 -> b2r(ses_xfer(cx16.r1, cx16.r2, cx16.r3L != 0))
-            9 -> {
+            9 -> {                              ; open .ed.run for READ - AT THE ROOT, then keep the cwd
+                ; .ed.run lives at the root (see OP_OPEN_W). Read/delete it there, but do NOT strand the
+                ; cwd at root: EDIT must come back up in the SAME folder it was restarted in (the document's
+                ; folder on a BASLOAD F8 return), so Open/Save and the bare-named document loads still resolve
+                ; there. The folder to return to is in SAVEDIR (restore_run_state stashed the boot cwd there).
+                ; Do NOT call diskio.curdir() here - a command-channel op right before f_open corrupts the
+                ; read (the file opens but reads back garbage -> "session issue"). chdir("/"); OP_FINISH_R
+                ; restores the cwd after the delete; on a miss (no session) put it back now.
+                diskio.chdir("/")
                 b2r(diskio.f_open(runstate))
-                if cx16.r0L == 0
+                if cx16.r0L == 0 {
                     void diskio.status()
+                    cx16.push_rambank(CLIP_BANK)        ; no session -> restore the cwd now (no OP_FINISH_R)
+                    if @(SAVEDIR_ADDR) != 0
+                        diskio.chdir(SAVEDIR_ADDR)
+                    cx16.pop_rambank()
+                }
             }
-            10 -> b2r(diskio.f_open_w(runstate))
-            11 -> diskio.f_close_w()
-            12 -> {                             ; finish reading: close + consume (one-shot file)
+            10 -> {                             ; open ed.run for WRITE - AT THE LAUNCH ROOT
+                ; The picker may have chdir'd into a subfolder (the document's folder), and ses_write has
+                ; already saved the DOCUMENTS there (good). But ed.run must live at the root: the reload
+                ; restores it at the root cwd, so a bare write into the subfolder orphans it and the session
+                ; is silently lost. Save the cwd, chdir("/") (the proven root nav - EDCFG uses it), delete
+                ; any stale ed.run (host FS won't overwrite in place, see [[edit-diskio-overwrite]]) and
+                ; create fresh. OP_CLOSE_W restores the cwd so the BASLOAD/EDCFG hand-off keeps the doc folder.
+                cx16.push_rambank(CLIP_BANK)            ; SAVEDIR is in the bank window
+                @(SAVEDIR_ADDR) = 0
+                cx16.r1 = diskio.curdir()               ; the document's folder (curdir buffer is low RAM)
+                if cx16.r1 != 0
+                    void strings.copy(cx16.r1, SAVEDIR_ADDR)
+                cx16.pop_rambank()
+                diskio.chdir("/")                       ; -> root
+                diskio.delete(runstate)                 ; clear a stale ed.run so the create really overwrites
+                void diskio.status()                    ; drop the not-found status if it wasn't there
+                b2r(diskio.f_open_w(runstate))
+            }
+            11 -> {                             ; close ed.run, then return to the document's folder
+                diskio.f_close_w()
+                cx16.push_rambank(CLIP_BANK)
+                if @(SAVEDIR_ADDR) != 0
+                    diskio.chdir(SAVEDIR_ADDR)
+                cx16.pop_rambank()
+            }
+            12 -> {                             ; finish reading: close + consume (one-shot file), AT ROOT
                 diskio.f_close()
-                diskio.delete(runstate)
+                diskio.delete(runstate)             ; still at root (OP_OPEN_R chdir'd here)
                 void diskio.status()
+                cx16.push_rambank(CLIP_BANK)        ; back to the folder EDIT was restarted in, BEFORE the
+                if @(SAVEDIR_ADDR) != 0             ; documents load (their bare names resolve there)
+                    diskio.chdir(SAVEDIR_ADDR)
+                cx16.pop_rambank()
             }
             13 -> cx16.r0 = diskio.f_read(cx16.r1, cx16.r2)
             14 -> void diskio.f_write(cx16.r1, cx16.r2)

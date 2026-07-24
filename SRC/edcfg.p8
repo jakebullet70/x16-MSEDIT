@@ -40,6 +40,7 @@ main {
                                         ; prefixes the install folder from the root ED launcher
     ubyte[24] cfg_line                  ; cfg write buffer ("theme=N\r tab=W\r ...")
     str savename = "?" * 48             ; scratch: builds the chdir target (progdir minus trailing slash)
+    str savedcwd = "?" * 82             ; the cwd before we cd into progdir - so we return THERE, not root
 
     ubyte SCR_W, SCR_H
     ubyte saved_mode                    ; screen mode we were launched in; restored on the way out
@@ -141,10 +142,15 @@ main {
         ; scratch / "@:" replace addressed by an ABSOLUTE path silently no-ops - so the stale file
         ; survives and the write fails (or lands past leftover bytes). The one sequence that works is
         ; exactly what the installer's copy_one does: chdir into the folder, delete the BARE name, then
-        ; create it fresh. We restore the cwd afterwards (chdir back to the fsroot root) because the
-        ; chain-load into EDIT reads ed.run / the /ed launcher from there.
+        ; create it fresh. Afterwards we return to the cwd we CAME FROM (the document's folder) - NOT the
+        ; root - so EDIT chain-loads back up in that folder. (EDIT's own restore reads/deletes .ed.run at
+        ; the root regardless of cwd, so we no longer have to sit at root for the hand-off.)
         bool moved = theme.progdir[0] != 0          ; empty progdir = cfg is already in the cwd
         if moved {
+            savedcwd[0] = 0                          ; remember where we were before cd'ing into progdir
+            uword cp = diskio.curdir()
+            if cp != 0
+                void strings.copy(cp, savedcwd)
             void strings.copy(theme.progdir, savename)   ; "/msedit/" -> strip the trailing slash
             ubyte pl = lsb(strings.length(savename))
             if pl > 1 and savename[pl - 1] == '/'
@@ -166,8 +172,12 @@ main {
             ok = diskio.f_write(cfg_line, n)
             diskio.f_close_w()
         }
-        if moved
-            diskio.chdir("/")                       ; back to the fsroot root (ed.run + /ed live there)
+        if moved {
+            if savedcwd[0] != 0
+                diskio.chdir(savedcwd)              ; back to the document's folder EDCFG was launched in
+            else
+                diskio.chdir("/")                   ; curdir unsupported -> fall back to the root
+        }
         return ok
     }
 
